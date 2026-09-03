@@ -4,8 +4,8 @@ use bambu_alloc as _;
 use std::path::PathBuf;
 
 use bambu_config::{
-    bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, IroningType, SeamPosition,
-    SliceSettings, SurfacePattern, TopOneWallType,
+    bbl_oracle_paths, load_bbl_process, ConfigError, FuzzySkinType, InfillPattern, IroningType,
+    SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -44,6 +44,8 @@ pub enum CliError {
     SurfacePattern(String),
     #[error("unknown one-wall-top '{0}' (off|all|topmost)")]
     TopOneWall(String),
+    #[error("unknown fuzzy-skin '{0}' (none|external|all|allwalls)")]
+    FuzzySkin(String),
     #[error("{0}")]
     Message(String),
 }
@@ -127,6 +129,9 @@ enum Commands {
         /// Only one wall on top surfaces (`top_one_wall_type`: off|all|topmost).
         #[arg(long)]
         one_wall_top: Option<String>,
+        /// Fuzzy skin on walls (`fuzzy_skin`: none|external|all|allwalls).
+        #[arg(long)]
+        fuzzy_skin: Option<String>,
         /// Raft layers under the object (`raft_layers`). 0 disables.
         #[arg(long)]
         raft: Option<u32>,
@@ -274,6 +279,7 @@ fn run() -> Result<(), CliError> {
             top_pattern,
             bottom_pattern,
             one_wall_top,
+            fuzzy_skin,
             raft,
             precise_z,
             cpu,
@@ -354,6 +360,10 @@ fn run() -> Result<(), CliError> {
             if let Some(name) = one_wall_top {
                 slice_settings.top_one_wall =
                     TopOneWallType::from_name(&name).ok_or(CliError::TopOneWall(name))?;
+            }
+            if let Some(name) = fuzzy_skin {
+                slice_settings.fuzzy_skin =
+                    FuzzySkinType::from_name(&name).ok_or(CliError::FuzzySkin(name))?;
             }
             if let Some(n) = raft {
                 slice_settings.raft_layers = n;

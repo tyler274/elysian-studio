@@ -119,6 +119,44 @@ impl TopOneWallType {
     }
 }
 
+/// C++ `FuzzySkinType` (`fuzzy_skin`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FuzzySkinType {
+    #[default]
+    None,
+    /// Outer contours only (`external`).
+    External,
+    /// Outer contours and holes (`all`).
+    All,
+    /// Every wall loop (`allwalls`).
+    AllWalls,
+}
+
+impl FuzzySkinType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "none" | "off" | "0" | "false" | "disabled" | "disabled_fuzzy" => Self::None,
+            "external" | "contour" | "outer" => Self::External,
+            "all" | "contour and hole" | "holes" => Self::All,
+            "allwalls" | "all walls" | "all_walls" => Self::AllWalls,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::External => "external",
+            Self::All => "all",
+            Self::AllWalls => "allwalls",
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// C++ `IroningType` (`ironing_type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IroningType {
@@ -222,6 +260,12 @@ pub struct SliceSettings {
     pub infill_pattern: InfillPattern,
     pub seam: SeamPosition,
     pub wall_generator: WallGenerator,
+    /// C++ `fuzzy_skin` (BBL default is `none`).
+    pub fuzzy_skin: FuzzySkinType,
+    pub fuzzy_skin_thickness_mm: f64,
+    pub fuzzy_skin_point_distance_mm: f64,
+    /// Apply jitter on object layer 0 (`fuzzy_skin_first_layer`).
+    pub fuzzy_skin_first_layer: bool,
     pub nozzle_diameter_mm: f64,
     pub filament_diameter_mm: f64,
     pub flow_ratio: f64,
@@ -291,6 +335,10 @@ impl Default for SliceSettings {
             infill_pattern: InfillPattern::Gyroid,
             seam: SeamPosition::Aligned,
             wall_generator: WallGenerator::Classic,
+            fuzzy_skin: FuzzySkinType::None,
+            fuzzy_skin_thickness_mm: 0.3,
+            fuzzy_skin_point_distance_mm: 0.8,
+            fuzzy_skin_first_layer: false,
             nozzle_diameter_mm: 0.4,
             filament_diameter_mm: 1.75,
             flow_ratio: 1.0,

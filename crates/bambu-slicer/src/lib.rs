@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod clip;
+mod fuzzy;
 mod infill;
 mod ironing;
 mod perimeters;
@@ -132,14 +133,23 @@ pub fn slice_from_contours(
         let peri = perimeters::classic_perimeters(&prepared[i].1, settings, seam_hint, upper);
         seam_hint = peri.seam_hint;
         let (spec, contours) = prepared[i].clone();
+        let mut outer_walls = peri.outer;
+        let mut inner_walls = peri.inner;
+        fuzzy::apply_walls(
+            &mut outer_walls,
+            &mut inner_walls,
+            settings,
+            spec.index,
+            spec.slice_z_mm,
+        );
         out.push(Layer {
             z_mm: spec.slice_z_mm,
             index: i,
             height_mm: spec.height_mm,
             print_z_mm: spec.print_z_mm,
             contours,
-            outer_walls: peri.outer,
-            inner_walls: peri.inner,
+            outer_walls,
+            inner_walls,
             infill_region: peri.infill_region,
             infill: Vec::new(),
             solid_infill: Vec::new(),
@@ -244,7 +254,7 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
 mod tests {
     use super::*;
     use bambu_config::{
-        InfillPattern, SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
+        FuzzySkinType, InfillPattern, SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
     };
     use bambu_geom::TriangleMesh;
 
@@ -331,6 +341,57 @@ mod tests {
         let last = b.layers.last().unwrap();
         assert!(last.inner_walls.is_empty());
         assert!(!last.outer_walls.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_skin_jitters_outer_walls_not_first_layer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let plain = slice_mesh(&mesh, &settings).unwrap();
+        settings.fuzzy_skin = FuzzySkinType::External;
+        let fuzzy = slice_mesh(&mesh, &settings).unwrap();
+        let mid = plain.layers.len() / 2;
+        let plain_n: usize = plain.layers[mid].outer_walls.iter().map(|p| p.len()).sum();
+        let fuzzy_n: usize = fuzzy.layers[mid].outer_walls.iter().map(|p| p.len()).sum();
+        assert!(
+            fuzzy_n > plain_n * 5,
+            "mid outer wall should gain jitter points: {fuzzy_n} vs {plain_n}"
+        );
+        let first_plain: usize = plain.layers[0].outer_walls.iter().map(|p| p.len()).sum();
+        let first_fuzzy: usize = fuzzy.layers[0].outer_walls.iter().map(|p| p.len()).sum();
+        assert_eq!(
+            first_plain, first_fuzzy,
+            "first layer stays unfuzzed unless fuzzy_skin_first_layer"
+        );
+        let inner_plain: usize = plain.layers[mid].inner_walls.iter().map(|p| p.len()).sum();
+        let inner_fuzzy: usize = fuzzy.layers[mid].inner_walls.iter().map(|p| p.len()).sum();
+        assert_eq!(
+            inner_plain, inner_fuzzy,
+            "External leaves inner walls alone"
+        );
+        let again = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(
+            fuzzy.layers[mid].outer_walls, again.layers[mid].outer_walls,
+            "seeded noise is stable"
+        );
+    }
+
+    #[test]
+    fn fuzzy_all_walls_jitters_inner_loops() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let plain = slice_mesh(&mesh, &settings).unwrap();
+        settings.fuzzy_skin = FuzzySkinType::AllWalls;
+        let fuzzy = slice_mesh(&mesh, &settings).unwrap();
+        let mid = plain.layers.len() / 2;
+        let inner_plain: usize = plain.layers[mid].inner_walls.iter().map(|p| p.len()).sum();
+        let inner_fuzzy: usize = fuzzy.layers[mid].inner_walls.iter().map(|p| p.len()).sum();
+        assert!(
+            inner_fuzzy > inner_plain * 3,
+            "AllWalls should jitter inner walls: {inner_fuzzy} vs {inner_plain}"
+        );
     }
 
     #[test]

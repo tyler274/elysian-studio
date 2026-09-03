@@ -6,8 +6,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings, SurfacePattern,
-    TopOneWallType, WallGenerator,
+    FuzzySkinType, InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings,
+    SurfacePattern, TopOneWallType, WallGenerator,
 };
 
 #[derive(Debug, Error)]
@@ -115,6 +115,20 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
         if name.eq_ignore_ascii_case("classic") {
             s.wall_generator = WallGenerator::Classic;
         }
+    }
+    if let Some(name) = text(map, "fuzzy_skin") {
+        if let Some(t) = FuzzySkinType::from_name(&name) {
+            s.fuzzy_skin = t;
+        }
+    }
+    if let Some(v) = num(map, "fuzzy_skin_thickness") {
+        s.fuzzy_skin_thickness_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "fuzzy_skin_point_distance") {
+        s.fuzzy_skin_point_distance_mm = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "fuzzy_skin_first_layer") {
+        s.fuzzy_skin_first_layer = v;
     }
     if let Some(v) = u32_val(map, "skirt_loops") {
         s.skirt_loops = v;
@@ -381,6 +395,7 @@ mod tests {
         assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
         assert_eq!(s.raft_layers, 0);
         assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
+        assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
