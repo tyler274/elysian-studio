@@ -1,9 +1,27 @@
+# Rust
 /target
+**/*.rs.bk
+*.pdb
+
+# Nix
 /result
 /result-*
 .direnv
 .envrc
+
+# Editors / IDEs
 *.swp
 *.swo
+*~
 .idea/
 .vscode/
+*.code-workspace
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local slice output
+*.gcode
+!tests/golden/**
