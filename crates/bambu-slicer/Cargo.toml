@@ -14,5 +14,7 @@ bambu-config.workspace = true
 bambu-geom.workspace = true
 bambu-model.workspace = true
 glam.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+wide.workspace = true

@@ -1,3 +1,17 @@
+//! FFF slice step machine.
+//!
+//! **CPU pool:** Rayon replaces TBB. Independent layers (contours, infill,
+//! ironing, classic support fills) use ordered `par_iter` / `par_chunks` so
+//! join-by-index matches `RAYON_NUM_THREADS=1`. Do not `ThreadPoolBuilder::install`
+//! inside a Rayon job. Perimeters stay sequential because `seam_hint` chains
+//! across layers. Lightning infill and downward support columns stay sequential.
+//! Tokio is UI/LAN only; wgpu stays on the GPU queue. Clipper2 is per-job — never
+//! share a document across threads.
+//!
+//! **SIMD:** `wide` `f32x4`/`i64x4`/`f64x4` culls and scanline tests; leftover
+//! lanes use the scalar kernel. Integer Clipper stays scalar. Release builds
+//! should pass `-C target-cpu=x86-64-v3` (AVX2) or the host NEON equivalent.
+
 #![forbid(unsafe_code)]
 
 mod clip;
@@ -18,6 +32,7 @@ use bambu_config::SliceSettings;
 use bambu_geom::{
     difference_polygons, offset_polygons, union_polygons, Point, Polygon, Polyline, TriangleMesh,
 };
+use rayon::prelude::*;
 use thiserror::Error;
 
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
@@ -76,7 +91,7 @@ pub fn slice_mesh(
 ) -> Result<SliceResult, SlicerError> {
     let plan = layer_plan(mesh, settings)?;
     let contours = plan
-        .iter()
+        .par_iter()
         .copied()
         .map(|spec| {
             (
@@ -106,25 +121,14 @@ pub fn slice_from_contours(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
 ) -> SliceResult {
-    let mut prepared = Vec::new();
-    for (spec, mut contours) in layers {
-        contours = union_polygons(&contours);
-        contours = compensate_xy(
-            &contours,
-            settings.xy_contour_compensation_mm,
-            settings.xy_hole_compensation_mm,
-        );
-        if spec.index == 0 && settings.elephant_foot_mm > 1e-9 {
-            let shrunk = offset_polygons(&contours, -settings.elephant_foot_mm);
-            if !shrunk.is_empty() {
-                contours = union_polygons(&shrunk);
-            }
-        }
-        if contours.is_empty() {
-            continue;
-        }
-        prepared.push((spec, contours));
-    }
+    let prepared: Vec<_> = layers
+        .into_par_iter()
+        .map(|(spec, contours)| prepare_layer_contours(spec, contours, settings))
+        .collect();
+    let prepared: Vec<_> = prepared
+        .into_iter()
+        .filter(|(_, contours)| !contours.is_empty())
+        .collect();
 
     let mut out = Vec::new();
     let mut seam_hint = None;
@@ -190,6 +194,26 @@ pub fn slice_from_contours(
     }
 
     SliceResult { layers: out }
+}
+
+fn prepare_layer_contours(
+    spec: LayerSpec,
+    mut contours: Vec<Polygon>,
+    settings: &SliceSettings,
+) -> (LayerSpec, Vec<Polygon>) {
+    contours = union_polygons(&contours);
+    contours = compensate_xy(
+        &contours,
+        settings.xy_contour_compensation_mm,
+        settings.xy_hole_compensation_mm,
+    );
+    if spec.index == 0 && settings.elephant_foot_mm > 1e-9 {
+        let shrunk = offset_polygons(&contours, -settings.elephant_foot_mm);
+        if !shrunk.is_empty() {
+            contours = union_polygons(&shrunk);
+        }
+    }
+    (spec, contours)
 }
 
 /// Bambu `_shrink_contour_holes`: offset outer rings by `contour_mm` and holes
@@ -824,5 +848,34 @@ mod tests {
             area(&b.layers, mid) > area(&a.layers, mid) + 5.0,
             "inner layers should grow"
         );
+    }
+
+    #[test]
+    fn n_threads_match_single_thread() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        let one = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| slice_mesh(&mesh, &settings).unwrap());
+        let many = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| slice_mesh(&mesh, &settings).unwrap());
+        assert_eq!(one.layers.len(), many.layers.len());
+        for (a, b) in one.layers.iter().zip(&many.layers) {
+            assert_eq!(a.print_z_mm, b.print_z_mm);
+            assert_eq!(a.contours, b.contours);
+            assert_eq!(a.outer_walls, b.outer_walls);
+            assert_eq!(a.inner_walls, b.inner_walls);
+            assert_eq!(a.infill, b.infill);
+            assert_eq!(a.solid_infill, b.solid_infill);
+            assert_eq!(a.top_surface, b.top_surface);
+            assert_eq!(a.ironing, b.ironing);
+        }
     }
 }

@@ -6,6 +6,7 @@
 
 use bambu_config::SliceSettings;
 use bambu_geom::{difference_polygons, offset_polygons, union_polygons, Polygon};
+use rayon::prelude::*;
 
 use crate::infill;
 use crate::Layer;
@@ -16,12 +17,19 @@ pub fn apply_classic(layers: &mut [Layer], settings: &SliceSettings) {
     }
 
     let n = layers.len();
+    let tan_th = settings.support_threshold_angle_deg.to_radians().tan();
     let mut overhangs: Vec<Vec<Polygon>> = vec![Vec::new(); n];
-    for i in 1..n {
-        let dz = (layers[i].print_z_mm - layers[i - 1].print_z_mm).max(1e-6);
-        let expansion = dz * settings.support_threshold_angle_deg.to_radians().tan();
-        let supported = offset_polygons(&layers[i - 1].contours, expansion);
-        overhangs[i] = difference_polygons(&layers[i].contours, &supported);
+    {
+        let layers: &[Layer] = layers;
+        overhangs.par_iter_mut().enumerate().for_each(|(i, slot)| {
+            if i == 0 {
+                return;
+            }
+            let dz = (layers[i].print_z_mm - layers[i - 1].print_z_mm).max(1e-6);
+            let expansion = dz * tan_th;
+            let supported = offset_polygons(&layers[i - 1].contours, expansion);
+            *slot = difference_polygons(&layers[i].contours, &supported);
+        });
     }
 
     let xy = settings.support_xy_distance_mm;
@@ -37,26 +45,27 @@ pub fn apply_classic(layers: &mut [Layer], settings: &SliceSettings) {
 
     let interface_n = settings.support_interface_layers.max(1);
     let inset = settings.line_width_mm * 0.5;
-    for i in 0..n {
+    let support_spacing = settings.support_spacing_mm();
+    let interface_spacing = settings.line_width_mm * 1.1;
+    layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if regions[i].is_empty() {
-            continue;
+            return;
         }
         let fill_region = offset_polygons(&regions[i], -inset);
+        layer.support_region = regions[i].clone();
         if fill_region.is_empty() {
-            continue;
+            return;
         }
         let is_interface = (1..=interface_n).any(|d| {
             let j = i + d as usize;
             j < n && !overhangs[j].is_empty()
         });
-        layers[i].support_region = std::mem::take(&mut regions[i]);
         if is_interface {
-            layers[i].support_interface =
-                infill::rectilinear(&fill_region, settings.line_width_mm * 1.1, i);
+            layer.support_interface = infill::rectilinear(&fill_region, interface_spacing, i);
         } else {
-            layers[i].support = infill::rectilinear(&fill_region, settings.support_spacing_mm(), i);
+            layer.support = infill::rectilinear(&fill_region, support_spacing, i);
         }
-    }
+    });
 }
 
 pub fn first_layer_footprint(layer: &Layer) -> Vec<Polygon> {

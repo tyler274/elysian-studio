@@ -1,21 +1,27 @@
 //! Triangle–plane intersection and loop stitching.
+//!
+//! Triangle walks are Rayon-parallel on large meshes (ordered `par_chunks`
+//! collect). A `wide::f32x4` Z-overlap cull feeds the scalar f64 edge
+//! interpolator so clipper input stays bit-identical to a fully scalar walk.
 
 use std::collections::HashMap;
 
 use bambu_geom::{scale, Point, Polygon, TriangleMesh};
 use glam::Vec3;
+use rayon::prelude::*;
+use wide::{f32x4, CmpGe, CmpLe};
+
+/// Parallelize the triangle walk only when a single plane has enough work to
+/// pay for Rayon splitting. Layer-parallel `slice_mesh` already fills the pool
+/// on typical parts.
+const TRI_PARALLEL_MIN: usize = 4096;
+const TRI_CHUNK: usize = 256;
+/// Inclusive f32 pad so the SIMD cull never drops a triangle the 1e-9 scalar
+/// interpolator would still hit.
+const CULL_EPS: f32 = 1e-5;
 
 pub fn slice_at_z(mesh: &TriangleMesh, z: f32) -> Vec<Polygon> {
-    let mut segments: Vec<(Point, Point)> = Vec::new();
-    for idx in &mesh.indices {
-        let [a, b, c] = mesh.triangle(*idx);
-        if let Some((p0, p1)) = triangle_plane_segment(a, b, c, z) {
-            if p0 != p1 {
-                segments.push((p0, p1));
-            }
-        }
-    }
-    loops_from_segments(&segments)
+    loops_from_segments(&collect_segments(mesh, z))
 }
 
 /// Convert plane-hit segments into closed contours. Used by the CPU slicer and
@@ -26,6 +32,77 @@ pub fn loops_from_segments(segments: &[(Point, Point)]) -> Vec<Polygon> {
 
 pub fn point_from_xy_mm(x: f64, y: f64) -> Point {
     Point::new(snap(scale(x)), snap(scale(y)))
+}
+
+fn collect_segments(mesh: &TriangleMesh, z: f32) -> Vec<(Point, Point)> {
+    if mesh.indices.len() >= TRI_PARALLEL_MIN {
+        let parts: Vec<Vec<(Point, Point)>> = mesh
+            .indices
+            .par_chunks(TRI_CHUNK)
+            .map(|chunk| segments_from_indices(mesh, chunk, z))
+            .collect();
+        parts.into_iter().flatten().collect()
+    } else {
+        segments_from_indices(mesh, &mesh.indices, z)
+    }
+}
+
+fn segments_from_indices(mesh: &TriangleMesh, indices: &[[u32; 3]], z: f32) -> Vec<(Point, Point)> {
+    let mut segments = Vec::new();
+    let (chunks, rem) = indices.as_chunks::<4>();
+    for chunk in chunks {
+        let tris = [
+            mesh.triangle(chunk[0]),
+            mesh.triangle(chunk[1]),
+            mesh.triangle(chunk[2]),
+            mesh.triangle(chunk[3]),
+        ];
+        let hits = triangles_overlap_z4(tris, z);
+        for (tri, hit) in tris.into_iter().zip(hits) {
+            if hit {
+                push_segment(&mut segments, tri, z);
+            }
+        }
+    }
+    for idx in rem {
+        let tri = mesh.triangle(*idx);
+        if triangle_overlaps_z(tri, z) {
+            push_segment(&mut segments, tri, z);
+        }
+    }
+    segments
+}
+
+fn push_segment(segments: &mut Vec<(Point, Point)>, tri: [Vec3; 3], z: f32) {
+    if let Some((p0, p1)) = triangle_plane_segment(tri[0], tri[1], tri[2], z) {
+        if p0 != p1 {
+            segments.push((p0, p1));
+        }
+    }
+}
+
+fn triangle_overlaps_z(tri: [Vec3; 3], z: f32) -> bool {
+    let min_z = tri[0].z.min(tri[1].z).min(tri[2].z);
+    let max_z = tri[0].z.max(tri[1].z).max(tri[2].z);
+    min_z - CULL_EPS <= z && max_z + CULL_EPS >= z
+}
+
+fn triangles_overlap_z4(tris: [[Vec3; 3]; 4], z: f32) -> [bool; 4] {
+    let z0 = f32x4::from([tris[0][0].z, tris[1][0].z, tris[2][0].z, tris[3][0].z]);
+    let z1 = f32x4::from([tris[0][1].z, tris[1][1].z, tris[2][1].z, tris[3][1].z]);
+    let z2 = f32x4::from([tris[0][2].z, tris[1][2].z, tris[2][2].z, tris[3][2].z]);
+    let mn = z0.min(z1.min(z2));
+    let mx = z0.max(z1.max(z2));
+    let zz = f32x4::splat(z);
+    let eps = f32x4::splat(CULL_EPS);
+    let hit = mn.cmp_le(zz + eps) & mx.cmp_ge(zz - eps);
+    let bits: [f32; 4] = hit.to_array();
+    [
+        bits[0] != 0.0,
+        bits[1] != 0.0,
+        bits[2] != 0.0,
+        bits[3] != 0.0,
+    ]
 }
 
 fn triangle_plane_segment(a: Vec3, b: Vec3, c: Vec3, z: f32) -> Option<(Point, Point)> {
@@ -160,4 +237,51 @@ fn edge_key(a: Point, b: Point) -> (Point, Point) {
 
 fn mark_used(used: &mut HashMap<(Point, Point), bool>, a: Point, b: Point) {
     used.insert(edge_key(a, b), true);
+}
+
+#[cfg(test)]
+fn collect_segments_scalar(mesh: &TriangleMesh, z: f32) -> Vec<(Point, Point)> {
+    let mut segments = Vec::new();
+    for idx in &mesh.indices {
+        push_segment(&mut segments, mesh.triangle(*idx), z);
+    }
+    segments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::TriangleMesh;
+
+    #[test]
+    fn simd_cull_matches_scalar_segments() {
+        let mesh = TriangleMesh::cube(20.0);
+        for z in [0.1_f32, 0.14, 10.0, 19.9] {
+            let simd = collect_segments(&mesh, z);
+            let scalar = collect_segments_scalar(&mesh, z);
+            assert_eq!(simd, scalar, "z={z}");
+        }
+    }
+
+    #[test]
+    fn overlap_mask_matches_scalar_cull() {
+        let mesh = TriangleMesh::cube(20.0);
+        let z = 10.0_f32;
+        for chunk in mesh.indices.as_chunks::<4>().0 {
+            let tris = [
+                mesh.triangle(chunk[0]),
+                mesh.triangle(chunk[1]),
+                mesh.triangle(chunk[2]),
+                mesh.triangle(chunk[3]),
+            ];
+            let simd = triangles_overlap_z4(tris, z);
+            let scalar = [
+                triangle_overlaps_z(tris[0], z),
+                triangle_overlaps_z(tris[1], z),
+                triangle_overlaps_z(tris[2], z),
+                triangle_overlaps_z(tris[3], z),
+            ];
+            assert_eq!(simd, scalar);
+        }
+    }
 }

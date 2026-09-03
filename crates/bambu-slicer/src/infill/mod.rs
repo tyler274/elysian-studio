@@ -2,6 +2,7 @@
 
 use bambu_config::{InfillPattern, SliceSettings, SurfacePattern};
 use bambu_geom::{offset_polygons, scale, Point, Polygon, Polyline};
+use wide::{i64x4, CmpLt};
 
 use crate::clip::clip_polylines;
 
@@ -116,10 +117,11 @@ fn scanlines(
     } else {
         spacing / 2
     };
+    let edges = collect_scan_edges(polygons, vertical);
     let mut lines = Vec::new();
     let mut v = min_v + stagger;
     while v <= max_v {
-        let mut us = collect_scanline_us(polygons, v, vertical);
+        let mut us = collect_scanline_us(&edges, v);
         us.sort_unstable();
         let mut i = 0;
         while i + 1 < us.len() {
@@ -148,8 +150,16 @@ fn scanlines(
     lines
 }
 
-fn collect_scanline_us(polygons: &[Polygon], v: i64, vertical: bool) -> Vec<i64> {
-    let mut us = Vec::new();
+#[derive(Clone, Copy)]
+struct ScanEdge {
+    lo_u: i64,
+    lo_v: i64,
+    hi_u: i64,
+    hi_v: i64,
+}
+
+fn collect_scan_edges(polygons: &[Polygon], vertical: bool) -> Vec<ScanEdge> {
+    let mut edges = Vec::new();
     for poly in polygons {
         let n = poly.len();
         if n < 3 {
@@ -168,13 +178,41 @@ fn collect_scanline_us(polygons: &[Polygon], v: i64, vertical: bool) -> Vec<i64>
             } else {
                 (b_u, b_v, a_u, a_v)
             };
-            if v < lo_v || v >= hi_v {
-                continue;
+            edges.push(ScanEdge {
+                lo_u,
+                lo_v,
+                hi_u,
+                hi_v,
+            });
+        }
+    }
+    edges
+}
+
+fn scan_u(edge: ScanEdge, v: i64) -> i64 {
+    let dv = edge.hi_v - edge.lo_v;
+    let t = (v - edge.lo_v) as i128;
+    (edge.lo_u as i128 + t * (edge.hi_u - edge.lo_u) as i128 / dv as i128) as i64
+}
+
+fn collect_scanline_us(edges: &[ScanEdge], v: i64) -> Vec<i64> {
+    let mut us = Vec::new();
+    let (chunks, rem) = edges.as_chunks::<4>();
+    for chunk in chunks {
+        let lo_v = i64x4::from([chunk[0].lo_v, chunk[1].lo_v, chunk[2].lo_v, chunk[3].lo_v]);
+        let hi_v = i64x4::from([chunk[0].hi_v, chunk[1].hi_v, chunk[2].hi_v, chunk[3].hi_v]);
+        let vv = i64x4::splat(v);
+        let hit = !vv.cmp_lt(lo_v) & vv.cmp_lt(hi_v);
+        let bits: [i64; 4] = hit.to_array();
+        for (edge, bit) in chunk.iter().zip(bits) {
+            if bit != 0 {
+                us.push(scan_u(*edge, v));
             }
-            let dv = hi_v - lo_v;
-            let t = (v - lo_v) as i128;
-            let u = lo_u as i128 + t * (hi_u - lo_u) as i128 / dv as i128;
-            us.push(u as i64);
+        }
+    }
+    for edge in rem {
+        if v >= edge.lo_v && v < edge.hi_v {
+            us.push(scan_u(*edge, v));
         }
     }
     us
@@ -212,4 +250,43 @@ pub(crate) fn bbox(polygons: &[Polygon]) -> Option<(Point, Point)> {
 
 pub(crate) fn clip_to_region(paths: Vec<Polyline>, region: &[Polygon]) -> Vec<Polyline> {
     clip_polylines(&paths, region)
+}
+
+#[cfg(test)]
+fn collect_scanline_us_scalar(edges: &[ScanEdge], v: i64) -> Vec<i64> {
+    let mut us = Vec::new();
+    for edge in edges {
+        if v >= edge.lo_v && v < edge.hi_v {
+            us.push(scan_u(*edge, v));
+        }
+    }
+    us
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::scale;
+
+    #[test]
+    fn simd_scanline_cull_matches_scalar() {
+        let s = scale(1.0);
+        let hex = vec![
+            Point::new(5 * s, 0),
+            Point::new(10 * s, 2 * s),
+            Point::new(10 * s, 8 * s),
+            Point::new(5 * s, 10 * s),
+            Point::new(0, 8 * s),
+            Point::new(0, 2 * s),
+        ];
+        let edges = collect_scan_edges(&[hex], false);
+        assert!(edges.len() >= 4);
+        for v in [0, s, 5 * s, 10 * s - 1] {
+            assert_eq!(
+                collect_scanline_us(&edges, v),
+                collect_scanline_us_scalar(&edges, v),
+                "v={v}"
+            );
+        }
+    }
 }

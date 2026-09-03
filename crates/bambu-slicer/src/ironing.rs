@@ -2,6 +2,7 @@
 
 use bambu_config::{IroningPattern, IroningType, SliceSettings};
 use bambu_geom::offset_polygons;
+use rayon::prelude::*;
 
 use crate::infill;
 use crate::Layer;
@@ -19,20 +20,20 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     };
     let spacing = settings.ironing_spacing_mm.max(0.02);
 
-    for (i, layer) in layers.iter_mut().enumerate() {
+    layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         let area = ironing_area(settings.ironing_type, i, n, layer);
         if area.is_empty() {
-            continue;
+            return;
         }
         let inset_area = offset_polygons(&area, -inset);
         if inset_area.is_empty() {
-            continue;
+            return;
         }
         layer.ironing = match settings.ironing_pattern {
             IroningPattern::Concentric => infill::concentric(&inset_area, spacing),
             IroningPattern::Rectilinear => infill::solid_monotonic(&inset_area, spacing, i),
         };
-    }
+    });
 }
 
 fn ironing_area(kind: IroningType, i: usize, n: usize, layer: &Layer) -> Vec<bambu_geom::Polygon> {

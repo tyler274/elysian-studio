@@ -39,6 +39,8 @@ jpeg-decoder = { version = "0.3", default-features = false }
 pollster = "0.4"
 quick-xml = "0.37"
 rand = "0.8"
+rayon = "1"
+wide = "0.7"
 rfd = "0.15"
 rsa = { version = "0.9", features = ["pem", "std"] }
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }
