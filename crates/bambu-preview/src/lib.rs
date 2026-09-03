@@ -35,7 +35,7 @@ impl ToolpathBuffer {
     pub fn from_slice(sliced: &SliceResult) -> Self {
         let mut vertices = Vec::new();
         for layer in &sliced.layers {
-            let z = layer.z_mm as f32;
+            let z = layer.print_z_mm as f32;
             emit_paths(&mut vertices, &layer.skirt, z, ExtrusionRole::Skirt, true);
             emit_paths(&mut vertices, &layer.brim, z, ExtrusionRole::Brim, true);
             emit_paths(

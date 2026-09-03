@@ -18,7 +18,7 @@ pub fn apply_classic(layers: &mut [Layer], settings: &SliceSettings) {
     let n = layers.len();
     let mut overhangs: Vec<Vec<Polygon>> = vec![Vec::new(); n];
     for i in 1..n {
-        let dz = (layers[i].z_mm - layers[i - 1].z_mm).max(1e-6);
+        let dz = (layers[i].print_z_mm - layers[i - 1].print_z_mm).max(1e-6);
         let expansion = dz * settings.support_threshold_angle_deg.to_radians().tan();
         let supported = offset_polygons(&layers[i - 1].contours, expansion);
         overhangs[i] = difference_polygons(&layers[i].contours, &supported);

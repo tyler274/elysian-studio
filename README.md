@@ -28,7 +28,8 @@ Vulkan backend on Linux: the plater viewport, G-code preview overlay, and the
 triangle–plane contour pass. Clipper union, walls, infill, top/bottom shells, ironing, skirt, brim, and
 classic supports stay on the CPU for integer determinism. `bambu-cli slice` and the UI **Slice** button use
 Vulkan compute when an adapter is present and fall back to CPU otherwise
-(`--cpu` / `--gpu` to force).
+(`--cpu` / `--gpu` to force). Layering follows Bambu / PrusaSlicer 3.0
+`generate_object_layers`: contours at mid-slab `slice_z`, G-code at `print_z`, first layer height from `initial_layer_print_height`. Bambu `precise_z_height` (`--precise-z`) retunes the last five slabs to the object top. First-layer `elefant_foot_compensation` insets layer 0 (`--elephant-foot`).
 
 ## Build
 
@@ -40,7 +41,7 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --gpu
 cargo run -p bambu-cli -- slice model.3mf -o /tmp/model.gcode
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --brim 5 --skirt 2 --top 4 --bottom 3
-cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --ironing top
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --layer-height 0.2 --first-layer 0.28 --precise-z
 # table-like overhangs:
 # cargo run -p bambu-cli -- slice overhang.stl -o /tmp/overhang.gcode --support
 cargo run -p bambu-ui

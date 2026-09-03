@@ -31,7 +31,9 @@ pub enum CliError {
     StdIo(#[from] std::io::Error),
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("unknown infill pattern '{0}' (rectilinear|grid|concentric|gyroid|honeycomb)")]
+    #[error(
+        "unknown infill pattern '{0}' (rectilinear|grid|concentric|gyroid|honeycomb|3dhoneycomb)"
+    )]
     InfillPattern(String),
     #[error("unknown seam '{0}' (aligned|rear|nearest|random)")]
     Seam(String),
@@ -66,6 +68,9 @@ enum Commands {
         bbl_0_20: bool,
         #[arg(long)]
         layer_height: Option<f64>,
+        /// First layer height in millimeters (C++ `initial_layer_print_height`).
+        #[arg(long)]
+        first_layer: Option<f64>,
         #[arg(long)]
         infill: Option<f64>,
         #[arg(long)]
@@ -98,6 +103,12 @@ enum Commands {
         /// Ironing: off, top, topmost, or solid.
         #[arg(long)]
         ironing: Option<String>,
+        /// First-layer inward offset in millimetres (`elefant_foot_compensation`).
+        #[arg(long)]
+        elephant_foot: Option<f64>,
+        /// Bambu `precise_z_height`: retune the last five layers to the object top.
+        #[arg(long)]
+        precise_z: bool,
         /// Force CPU triangle–plane intersection.
         #[arg(long, conflicts_with = "gpu")]
         cpu: bool,
@@ -220,6 +231,7 @@ fn run() -> Result<(), CliError> {
             settings,
             bbl_0_20,
             layer_height,
+            first_layer,
             infill,
             walls,
             infill_pattern,
@@ -232,6 +244,8 @@ fn run() -> Result<(), CliError> {
             bottom,
             top,
             ironing,
+            elephant_foot,
+            precise_z,
             cpu,
             gpu,
         } => {
@@ -248,6 +262,9 @@ fn run() -> Result<(), CliError> {
             };
             if let Some(h) = layer_height {
                 slice_settings.layer_height_mm = h;
+            }
+            if let Some(h) = first_layer {
+                slice_settings.first_layer_height_mm = h.max(1e-6);
             }
             if let Some(i) = infill {
                 slice_settings.infill_density = i;
@@ -286,6 +303,12 @@ fn run() -> Result<(), CliError> {
             if let Some(name) = ironing {
                 slice_settings.ironing_type =
                     IroningType::from_name(&name).ok_or(CliError::Ironing(name))?;
+            }
+            if let Some(mm) = elephant_foot {
+                slice_settings.elephant_foot_mm = mm.max(0.0);
+            }
+            if precise_z {
+                slice_settings.precise_z_height = true;
             }
             let gcode = slice_file(&input, &slice_settings, cpu, gpu)?;
             std::fs::write(&output, gcode)?;

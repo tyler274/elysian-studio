@@ -7,6 +7,7 @@ use crate::clip::clip_polylines;
 
 mod gyroid;
 mod honeycomb;
+mod honeycomb3d;
 
 pub fn generate(
     region: &[Polygon],
@@ -28,6 +29,9 @@ pub fn generate(
         InfillPattern::Concentric => concentric(region, spacing),
         InfillPattern::Gyroid => gyroid::fill(region, spacing, settings.infill_density, z_mm),
         InfillPattern::Honeycomb => honeycomb::fill(region, spacing, settings.infill_density),
+        InfillPattern::Honeycomb3D => {
+            honeycomb3d::fill(region, spacing, settings.infill_density, z_mm)
+        }
     }
 }
 

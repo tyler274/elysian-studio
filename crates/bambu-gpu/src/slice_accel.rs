@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 
 use bambu_config::SliceSettings;
 use bambu_geom::TriangleMesh;
-use bambu_slicer::{layer_z_values, slice_from_contours, slice_mesh, SliceResult, SlicerError};
+use bambu_slicer::{
+    layer_plan, slice_from_contours, slice_mesh, zip_plan_contours, SliceResult, SlicerError,
+};
 
 use crate::compute::VulkanSliceAccel;
 use crate::GpuError;
@@ -52,13 +54,14 @@ pub fn slice_with_gpu_or_cpu(
     mesh: &TriangleMesh,
     settings: &SliceSettings,
 ) -> Result<(SliceResult, SliceBackend), SlicerError> {
-    let zs = layer_z_values(mesh, settings)?;
+    let plan = layer_plan(mesh, settings)?;
+    let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
     if let Some(accel) = shared_accel() {
         match accel.contours_for_layers(mesh, &zs) {
             Ok(layers) => {
                 tracing::info!("sliced {} contour layers on Vulkan compute", layers.len());
                 return Ok((
-                    slice_from_contours(layers, settings),
+                    slice_from_contours(zip_plan_contours(&plan, layers), settings),
                     SliceBackend::VulkanCompute,
                 ));
             }
@@ -75,15 +78,20 @@ pub fn slice_on_vulkan(
     mesh: &TriangleMesh,
     settings: &SliceSettings,
 ) -> Result<SliceResult, GpuError> {
-    let zs = layer_z_values(mesh, settings).map_err(|e| GpuError::Request(e.to_string()))?;
+    let plan = layer_plan(mesh, settings).map_err(|e| GpuError::Request(e.to_string()))?;
+    let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
     let accel = VulkanSliceAccel::new()?;
     let layers = accel.contours_for_layers(mesh, &zs)?;
-    Ok(slice_from_contours(layers, settings))
+    Ok(slice_from_contours(
+        zip_plan_contours(&plan, layers),
+        settings,
+    ))
 }
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use bambu_config::SliceSettings;
     use bambu_geom::TriangleMesh;
 
     #[test]
@@ -94,9 +102,10 @@ mod tests {
         };
         let mesh = TriangleMesh::cube(20.0);
         let settings = SliceSettings::default();
-        let zs = layer_z_values(&mesh, &settings).unwrap();
+        let plan = bambu_slicer::layer_plan(&mesh, &settings).unwrap();
+        let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
         let gpu_layers = accel.contours_for_layers(&mesh, &zs).unwrap();
-        let gpu = slice_from_contours(gpu_layers, &settings);
+        let gpu = slice_from_contours(zip_plan_contours(&plan, gpu_layers), &settings);
         let cpu = slice_mesh(&mesh, &settings).unwrap();
         let delta = gpu.layers.len().abs_diff(cpu.layers.len());
         assert!(

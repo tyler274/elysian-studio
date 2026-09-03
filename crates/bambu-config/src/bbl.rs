@@ -61,6 +61,18 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     if let Some(v) = num(map, "initial_layer_print_height") {
         s.first_layer_height_mm = v;
     }
+    if let Some(v) = num(map, "min_layer_height") {
+        s.min_layer_height_mm = v.max(0.01);
+    }
+    if let Some(v) = num(map, "max_layer_height") {
+        s.max_layer_height_mm = v.max(s.min_layer_height_mm);
+    }
+    if let Some(v) = bool_val(map, "precise_z_height") {
+        s.precise_z_height = v;
+    }
+    if let Some(v) = num(map, "elefant_foot_compensation") {
+        s.elephant_foot_mm = v.max(0.0);
+    }
     if let Some(v) = num(map, "line_width") {
         s.line_width_mm = v;
     }
@@ -319,12 +331,15 @@ mod tests {
         assert!(!s.enable_support);
         assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
         assert!((s.ironing_flow - 0.10).abs() < 1e-9);
+        assert!((s.elephant_foot_mm - 0.15).abs() < 1e-9);
+        assert!(!s.precise_z_height);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
         assert_eq!(baked.infill_pattern, s.infill_pattern);
         assert!((baked.infill_density - s.infill_density).abs() < 1e-9);
         assert!((baked.brim_width_mm - s.brim_width_mm).abs() < 1e-9);
+        assert!((baked.elephant_foot_mm - s.elephant_foot_mm).abs() < 1e-9);
     }
 
     #[test]

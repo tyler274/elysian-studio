@@ -17,6 +17,8 @@ pub enum InfillPattern {
     #[default]
     Gyroid,
     Honeycomb,
+    /// Slic3r / Bambu `ip3DHoneycomb` (truncated octahedron slices).
+    Honeycomb3D,
 }
 
 impl InfillPattern {
@@ -27,6 +29,7 @@ impl InfillPattern {
             "concentric" => Self::Concentric,
             "gyroid" => Self::Gyroid,
             "honeycomb" | "hexagon" => Self::Honeycomb,
+            "3dhoneycomb" | "3d honeycomb" | "3d_honeycomb" => Self::Honeycomb3D,
             "zigzag" | "zig-zag" => Self::Rectilinear,
             _ => return None,
         })
@@ -39,6 +42,7 @@ impl InfillPattern {
             Self::Concentric => "concentric",
             Self::Gyroid => "gyroid",
             Self::Honeycomb => "honeycomb",
+            Self::Honeycomb3D => "3dhoneycomb",
         }
     }
 }
@@ -116,6 +120,15 @@ impl IroningPattern {
 pub struct SliceSettings {
     pub layer_height_mm: f64,
     pub first_layer_height_mm: f64,
+    /// C++ `min_layer_height` (default 0.07). Used to probe the next slab and
+    /// to clamp [`Self::precise_z_height`] adjustments.
+    pub min_layer_height_mm: f64,
+    /// C++ `max_layer_height` (default 3/4 nozzle).
+    pub max_layer_height_mm: f64,
+    /// Bambu `precise_z_height`: retune the last five slabs to the object top.
+    pub precise_z_height: bool,
+    /// First-layer inward offset (`elefant_foot_compensation`). 0 disables.
+    pub elephant_foot_mm: f64,
     pub line_width_mm: f64,
     pub wall_loops: u32,
     pub infill_density: f64,
@@ -164,6 +177,10 @@ impl Default for SliceSettings {
         Self {
             layer_height_mm: 0.2,
             first_layer_height_mm: 0.2,
+            min_layer_height_mm: 0.07,
+            max_layer_height_mm: 0.3,
+            precise_z_height: false,
+            elephant_foot_mm: 0.0,
             line_width_mm: 0.42,
             wall_loops: 2,
             infill_density: 0.20,
@@ -234,6 +251,7 @@ impl SliceSettings {
             skirt_loops: 0,
             brim_width_mm: 5.0,
             top_shell_layers: 5,
+            elephant_foot_mm: 0.15,
             travel_speed_mm_s: 400.0,
             print_speed_mm_s: 200.0,
             infill_speed_mm_s: 270.0,

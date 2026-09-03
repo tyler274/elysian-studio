@@ -8,14 +8,16 @@ mod prepare_infill;
 mod seams;
 mod skirt_brim;
 mod slice_plane;
+mod slicing;
 mod steps;
 mod support;
 
 use bambu_config::SliceSettings;
-use bambu_geom::{union_polygons, Polygon, Polyline, TriangleMesh};
+use bambu_geom::{offset_polygons, union_polygons, Polygon, Polyline, TriangleMesh};
 use thiserror::Error;
 
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
+pub use slicing::{generate_object_layers, layer_plan, layer_z_values, LayerSpec};
 pub use steps::{PrintObjectStep, PrintStep};
 
 #[derive(Debug, Error)]
@@ -30,6 +32,10 @@ pub enum SlicerError {
 pub struct Layer {
     pub z_mm: f64,
     pub index: usize,
+    /// Slab thickness (`Layer::height`). First layer may differ from the rest.
+    pub height_mm: f64,
+    /// Top of the slab (`Layer::print_z`); G-code Z and toolpath preview.
+    pub print_z_mm: f64,
     pub contours: Vec<Polygon>,
     pub outer_walls: Vec<Polyline>,
     pub inner_walls: Vec<Polyline>,
@@ -60,58 +66,62 @@ pub struct SliceResult {
     pub layers: Vec<Layer>,
 }
 
-/// Z samples used for a mesh (mid-layer, matching the CPU/GPU contour pass).
-pub fn layer_z_values(
-    mesh: &TriangleMesh,
-    settings: &SliceSettings,
-) -> Result<Vec<f64>, SlicerError> {
-    let aabb = mesh.aabb().ok_or(SlicerError::EmptyBounds)?;
-    if mesh.indices.is_empty() {
-        return Err(SlicerError::EmptyMesh);
-    }
-    let z_min = aabb.min.z as f64;
-    let z_max = aabb.max.z as f64;
-    let lh = settings.layer_height_mm;
-    let mut zs = Vec::new();
-    let mut z = z_min + lh * 0.5;
-    while z < z_max - 1e-6 {
-        zs.push(z);
-        z += lh;
-    }
-    Ok(zs)
-}
-
 pub fn slice_mesh(
     mesh: &TriangleMesh,
     settings: &SliceSettings,
 ) -> Result<SliceResult, SlicerError> {
-    let zs = layer_z_values(mesh, settings)?;
-    let contours = zs
+    let plan = layer_plan(mesh, settings)?;
+    let contours = plan
         .iter()
-        .map(|&z| (z, union_polygons(&slice_at_z(mesh, z as f32))))
+        .copied()
+        .map(|spec| {
+            (
+                spec,
+                union_polygons(&slice_at_z(mesh, spec.slice_z_mm as f32)),
+            )
+        })
         .collect();
     Ok(slice_from_contours(contours, settings))
+}
+
+/// Pair GPU/CPU contour samples with the [`LayerSpec`] plan (same order as `slice_z`).
+pub fn zip_plan_contours(
+    plan: &[LayerSpec],
+    contours: Vec<(f64, Vec<Polygon>)>,
+) -> Vec<(LayerSpec, Vec<Polygon>)> {
+    plan.iter()
+        .copied()
+        .zip(contours.into_iter().map(|(_, polys)| polys))
+        .collect()
 }
 
 /// Toolpath generation from already-computed layer contours (CPU Clipper).
 /// Contours may come from the CPU plane slicer or Vulkan compute readback.
 pub fn slice_from_contours(
-    layers: Vec<(f64, Vec<Polygon>)>,
+    layers: Vec<(LayerSpec, Vec<Polygon>)>,
     settings: &SliceSettings,
 ) -> SliceResult {
     let mut out = Vec::new();
     let mut seam_hint = None;
     let mut index = 0usize;
-    for (z, mut contours) in layers {
+    for (spec, mut contours) in layers {
         contours = union_polygons(&contours);
+        if spec.index == 0 && settings.elephant_foot_mm > 1e-9 {
+            let shrunk = offset_polygons(&contours, -settings.elephant_foot_mm);
+            if !shrunk.is_empty() {
+                contours = union_polygons(&shrunk);
+            }
+        }
         if contours.is_empty() {
             continue;
         }
         let peri = perimeters::classic_perimeters(&contours, settings, seam_hint);
         seam_hint = peri.seam_hint;
         out.push(Layer {
-            z_mm: z,
+            z_mm: spec.slice_z_mm,
             index,
+            height_mm: spec.height_mm,
+            print_z_mm: spec.print_z_mm,
             contours,
             outer_walls: peri.outer,
             inner_walls: peri.inner,
@@ -386,5 +396,67 @@ mod tests {
         let mesh = TriangleMesh::cube(20.0);
         let result = slice_mesh(&mesh, &SliceSettings::default()).unwrap();
         assert!(result.layers.iter().all(|l| l.ironing.is_empty()));
+    }
+
+    #[test]
+    fn first_layer_uses_print_z_and_height() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.first_layer_height_mm = 0.28;
+        settings.layer_height_mm = 0.2;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let first = &result.layers[0];
+        assert!((first.height_mm - 0.28).abs() < 1e-6);
+        assert!((first.print_z_mm - 0.28).abs() < 1e-6);
+        assert!((first.z_mm - 0.14).abs() < 1e-6);
+        let second = &result.layers[1];
+        assert!((second.height_mm - 0.2).abs() < 1e-6);
+        assert!((second.print_z_mm - 0.48).abs() < 1e-6);
+    }
+
+    #[test]
+    fn elephant_foot_shrinks_first_layer_only() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let plain = slice_mesh(&mesh, &settings).unwrap();
+        settings.elephant_foot_mm = 0.15;
+        let compensated = slice_mesh(&mesh, &settings).unwrap();
+        let a0 = plain.layers[0]
+            .contours
+            .iter()
+            .map(contour_area_mm2)
+            .sum::<f64>();
+        let b0 = compensated.layers[0]
+            .contours
+            .iter()
+            .map(contour_area_mm2)
+            .sum::<f64>();
+        assert!(
+            b0 < a0 - 1.0,
+            "first layer should shrink under elephant foot: {b0} vs {a0}"
+        );
+        let a1 = plain.layers[1]
+            .contours
+            .iter()
+            .map(contour_area_mm2)
+            .sum::<f64>();
+        let b1 = compensated.layers[1]
+            .contours
+            .iter()
+            .map(contour_area_mm2)
+            .sum::<f64>();
+        assert!((a1 - b1).abs() < 1.0, "upper layers stay uncompensated");
+    }
+
+    #[test]
+    fn honeycomb3d_fills_sparse_region() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Honeycomb3D;
+        settings.infill_density = 0.15;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let mid = &result.layers[result.layers.len() / 2];
+        assert!(!mid.infill.is_empty());
     }
 }
