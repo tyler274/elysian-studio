@@ -95,9 +95,113 @@ pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
     out
 }
 
+/// Open or closed path split into supported (`inside`) vs overhang runs.
+#[derive(Debug, Clone)]
+pub struct ClassifiedPath {
+    pub path: Polyline,
+    pub inside: bool,
+}
+
+/// Classify each edge by whether its midpoint lies in `polygons`.
+///
+/// Fully supported or fully overhanging loops keep the original vertices so
+/// G-code point density does not change on vertical walls.
+pub fn classify_polyline(
+    path: &[Point],
+    polygons: &[Polygon],
+    closed: bool,
+) -> Vec<ClassifiedPath> {
+    if path.len() < 2 {
+        return Vec::new();
+    }
+    if polygons.is_empty() {
+        return vec![ClassifiedPath {
+            path: path.to_vec(),
+            inside: false,
+        }];
+    }
+    let n = path.len();
+    let edge_count = if closed { n } else { n - 1 };
+    let mut flags = Vec::with_capacity(edge_count);
+    for i in 0..edge_count {
+        let a = path[i];
+        let b = path[(i + 1) % n];
+        let mid = Point::new(a.x.midpoint(b.x), a.y.midpoint(b.y));
+        flags.push(point_in_polygons(mid, polygons));
+    }
+    if flags.iter().all(|&f| f == flags[0]) {
+        return vec![ClassifiedPath {
+            path: path.to_vec(),
+            inside: flags[0],
+        }];
+    }
+    let mut runs: Vec<ClassifiedPath> = Vec::new();
+    let mut start = 0usize;
+    for i in 1..edge_count {
+        if flags[i] != flags[start] {
+            runs.push(edge_run(path, start, i, flags[start]));
+            start = i;
+        }
+    }
+    runs.push(edge_run(path, start, edge_count, flags[start]));
+    if closed && runs.len() > 1 && runs.first().map(|r| r.inside) == runs.last().map(|r| r.inside) {
+        let mut last = runs.pop().unwrap();
+        let mut first = runs.remove(0);
+        last.path.pop();
+        last.path.append(&mut first.path);
+        runs.insert(0, last);
+    }
+    runs
+}
+
+fn edge_run(path: &[Point], start: usize, end: usize, inside: bool) -> ClassifiedPath {
+    let n = path.len();
+    let mut pts = Vec::with_capacity(end - start + 1);
+    for i in start..=end {
+        pts.push(path[i % n]);
+    }
+    ClassifiedPath { path: pts, inside }
+}
+
 pub fn clip_polylines(paths: &[Polyline], polygons: &[Polygon]) -> Vec<Polyline> {
     paths
         .iter()
         .flat_map(|p| clip_polyline(p, polygons))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::scale;
+
+    fn square(size: f64) -> Polygon {
+        let h = scale(size / 2.0);
+        vec![
+            Point::new(-h, -h),
+            Point::new(h, -h),
+            Point::new(h, h),
+            Point::new(-h, h),
+        ]
+    }
+
+    #[test]
+    fn fully_inside_keeps_original_loop() {
+        let support = square(20.0);
+        let path = square(10.0);
+        let runs = classify_polyline(&path, &[support], true);
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].inside);
+        assert_eq!(runs[0].path.len(), 4);
+    }
+
+    #[test]
+    fn fully_outside_is_one_overhang_run() {
+        let support = square(4.0);
+        let path = square(20.0);
+        let runs = classify_polyline(&path, &[support], true);
+        assert_eq!(runs.len(), 1);
+        assert!(!runs[0].inside);
+        assert_eq!(runs[0].path.len(), 4);
+    }
 }

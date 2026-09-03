@@ -350,9 +350,21 @@ pub struct SliceSettings {
     pub temperature_c: u16,
     pub bed_temperature_c: u16,
     pub print_speed_mm_s: f64,
+    /// C++ `inner_wall_speed`. Defaults to the outer wall speed.
+    pub inner_wall_speed_mm_s: f64,
+    /// C++ `initial_layer_speed` (first printed layer walls and most features).
+    pub first_layer_speed_mm_s: f64,
+    /// C++ `initial_layer_infill_speed`.
+    pub first_layer_infill_speed_mm_s: f64,
     pub infill_speed_mm_s: f64,
     pub travel_speed_mm_s: f64,
     pub support_speed_mm_s: f64,
+    /// C++ `detect_overhang_wall`: clip walls against the layer below.
+    pub detect_overhang_wall: bool,
+    /// C++ `enable_overhang_speed`: slow unsupported wall segments.
+    pub enable_overhang_speed: bool,
+    /// C++ `overhang_totally_speed` / `overhang_4_4_speed` (mm/s).
+    pub overhang_speed_mm_s: f64,
     /// Skirt loops around layer 0 (0 disables).
     pub skirt_loops: u32,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
@@ -441,9 +453,15 @@ impl Default for SliceSettings {
             temperature_c: 220,
             bed_temperature_c: 60,
             print_speed_mm_s: 50.0,
+            inner_wall_speed_mm_s: 50.0,
+            first_layer_speed_mm_s: 50.0,
+            first_layer_infill_speed_mm_s: 80.0,
             infill_speed_mm_s: 80.0,
             travel_speed_mm_s: 120.0,
             support_speed_mm_s: 80.0,
+            detect_overhang_wall: true,
+            enable_overhang_speed: true,
+            overhang_speed_mm_s: 10.0,
             skirt_loops: 2,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
@@ -551,9 +569,14 @@ impl SliceSettings {
             support_type: SupportType::Tree,
             travel_speed_mm_s: 400.0,
             print_speed_mm_s: 200.0,
+            inner_wall_speed_mm_s: 300.0,
+            first_layer_speed_mm_s: 50.0,
+            first_layer_infill_speed_mm_s: 105.0,
             infill_speed_mm_s: 270.0,
             solid_infill_speed_mm_s: 250.0,
             support_speed_mm_s: 80.0,
+            enable_overhang_speed: true,
+            overhang_speed_mm_s: 10.0,
             ..Self::default()
         }
     }

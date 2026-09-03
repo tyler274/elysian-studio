@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use bambu_config::{Flow, SliceSettings};
-use bambu_geom::{unscale, Point, Polyline};
-use bambu_slicer::SliceResult;
+use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
+use bambu_slicer::{classify_polyline, SliceResult};
 use thiserror::Error;
 
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
@@ -35,20 +35,35 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "G92 E0")?;
 
     let travel_f = settings.travel_speed_mm_s * 60.0;
-    let wall_f = settings.print_speed_mm_s * 60.0;
+    let outer_f = settings.print_speed_mm_s * 60.0;
+    let inner_f = settings.inner_wall_speed_mm_s * 60.0;
+    let first_f = settings.first_layer_speed_mm_s * 60.0;
+    let first_infill_f = settings.first_layer_infill_speed_mm_s * 60.0;
     let infill_f = settings.infill_speed_mm_s * 60.0;
     let solid_f = settings.solid_infill_speed_mm_s * 60.0;
     let support_f = settings.support_speed_mm_s * 60.0;
+    let overhang_f = settings.overhang_speed_mm_s * 60.0;
 
     let mut e = 0.0_f64;
     let mut last: Option<(f64, f64)> = None;
-    for layer in &sliced.layers {
+    for (layer_i, layer) in sliced.layers.iter().enumerate() {
         writeln!(out, "; CHANGE_LAYER")?;
         writeln!(out, ";LAYER:{}", layer.index)?;
         writeln!(out, "; LAYER_HEIGHT:{}", layer.height_mm)?;
         writeln!(out, "G1 Z{:.3} F600", layer.print_z_mm)?;
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
+        let first = layer_i == 0;
+        let wall_f = if first { first_f } else { outer_f };
+        let inner_wall_f = if first { first_f } else { inner_f };
+        let sparse_f = if first { first_infill_f } else { infill_f };
+        let solid_layer_f = if first { first_f } else { solid_f };
+        let support_layer_f = if first { first_f } else { support_f };
+        let support_polys = if layer_i == 0 {
+            None
+        } else {
+            overhang_support(settings, sliced.layers.get(layer_i - 1))
+        };
 
         if !layer.skirt.is_empty() {
             writeln!(out, "; FEATURE: Skirt")?;
@@ -84,7 +99,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                support_f,
+                support_layer_f,
                 travel_f,
                 &mut last,
             )?;
@@ -97,37 +112,39 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                support_f,
+                support_layer_f,
                 travel_f,
                 &mut last,
             )?;
         }
-        if !layer.outer_walls.is_empty() {
-            writeln!(out, "; FEATURE: Outer wall")?;
-            emit_paths(
-                &mut out,
-                &layer.outer_walls,
-                true,
-                &mut e,
-                e_per_mm,
-                wall_f,
-                travel_f,
-                &mut last,
-            )?;
-        }
-        if !layer.inner_walls.is_empty() {
-            writeln!(out, "; FEATURE: Inner wall")?;
-            emit_paths(
-                &mut out,
-                &layer.inner_walls,
-                true,
-                &mut e,
-                e_per_mm,
-                wall_f,
-                travel_f,
-                &mut last,
-            )?;
-        }
+        emit_wall_paths(
+            &mut out,
+            "Outer wall",
+            &layer.outer_walls,
+            true,
+            &mut e,
+            e_per_mm,
+            wall_f,
+            overhang_f,
+            travel_f,
+            support_polys.as_deref(),
+            settings.enable_overhang_speed,
+            &mut last,
+        )?;
+        emit_wall_paths(
+            &mut out,
+            "Inner wall",
+            &layer.inner_walls,
+            true,
+            &mut e,
+            e_per_mm,
+            inner_wall_f,
+            overhang_f,
+            travel_f,
+            support_polys.as_deref(),
+            settings.enable_overhang_speed,
+            &mut last,
+        )?;
         if !layer.infill.is_empty() {
             writeln!(out, "; FEATURE: Sparse infill")?;
             emit_paths(
@@ -136,7 +153,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                infill_f,
+                sparse_f,
                 travel_f,
                 &mut last,
             )?;
@@ -149,7 +166,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                solid_f,
+                solid_layer_f,
                 travel_f,
                 &mut last,
             )?;
@@ -233,23 +250,118 @@ fn emit_paths(
     last: &mut Option<(f64, f64)>,
 ) -> Result<(), GcodeError> {
     for path in paths {
+        emit_one_path(out, path, closed, e, e_per_mm, print_f, travel_f, last)?;
+    }
+    Ok(())
+}
+
+fn overhang_support(
+    settings: &SliceSettings,
+    lower: Option<&bambu_slicer::Layer>,
+) -> Option<Vec<Polygon>> {
+    if !settings.detect_overhang_wall {
+        return None;
+    }
+    let lower = lower?;
+    if lower.contours.is_empty() {
+        return None;
+    }
+    let grown = offset_polygons(&lower.contours, settings.nozzle_diameter_mm * 0.5);
+    if grown.is_empty() {
+        Some(lower.contours.clone())
+    } else {
+        Some(grown)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_wall_paths(
+    out: &mut String,
+    supported_feature: &str,
+    paths: &[Polyline],
+    closed: bool,
+    e: &mut f64,
+    e_per_mm: f64,
+    print_f: f64,
+    overhang_f: f64,
+    travel_f: f64,
+    support: Option<&[Polygon]>,
+    slow_overhang: bool,
+    last: &mut Option<(f64, f64)>,
+) -> Result<(), GcodeError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut current_feature: Option<&str> = None;
+    for path in paths {
         if path.len() < 2 {
             continue;
         }
-        let pts: Vec<(f64, f64)> = path.iter().copied().map(xy).collect();
-        let start = pts[0];
-        writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", start.0, start.1, travel_f)?;
-        *last = Some(start);
-        let n = pts.len();
-        let end = if closed { n } else { n - 1 };
-        for i in 0..end {
-            let a = pts[i];
-            let b = pts[(i + 1) % n];
-            let dist = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-            *e += dist * e_per_mm;
-            writeln!(out, "G1 X{:.3} Y{:.3} E{:.5} F{:.0}", b.0, b.1, *e, print_f)?;
-            *last = Some(b);
+        let runs = match support {
+            Some(polys) if !polys.is_empty() => classify_polyline(path, polys, closed),
+            _ => vec![bambu_slicer::ClassifiedPath {
+                path: path.clone(),
+                inside: true,
+            }],
+        };
+        let single = runs.len() == 1;
+        for run in &runs {
+            if run.path.len() < 2 {
+                continue;
+            }
+            let overhang = !run.inside && slow_overhang;
+            let feature = if overhang {
+                "Overhang wall"
+            } else {
+                supported_feature
+            };
+            if current_feature != Some(feature) {
+                writeln!(out, "; FEATURE: {feature}")?;
+                current_feature = Some(feature);
+            }
+            let feed = if overhang { overhang_f } else { print_f };
+            emit_one_path(
+                out,
+                &run.path,
+                closed && single,
+                e,
+                e_per_mm,
+                feed,
+                travel_f,
+                last,
+            )?;
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_one_path(
+    out: &mut String,
+    path: &[Point],
+    closed: bool,
+    e: &mut f64,
+    e_per_mm: f64,
+    print_f: f64,
+    travel_f: f64,
+    last: &mut Option<(f64, f64)>,
+) -> Result<(), GcodeError> {
+    if path.len() < 2 {
+        return Ok(());
+    }
+    let pts: Vec<(f64, f64)> = path.iter().copied().map(xy).collect();
+    let start = pts[0];
+    writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", start.0, start.1, travel_f)?;
+    *last = Some(start);
+    let n = pts.len();
+    let end = if closed { n } else { n - 1 };
+    for i in 0..end {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        let dist = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        *e += dist * e_per_mm;
+        writeln!(out, "G1 X{:.3} Y{:.3} E{:.5} F{:.0}", b.0, b.1, *e, print_f)?;
+        *last = Some(b);
     }
     Ok(())
 }
@@ -633,5 +745,48 @@ mod tests {
         assert!(gcode.contains("; FEATURE: Ironing"));
         let report = parse_gcode(&gcode);
         assert!(report.features.contains("Ironing"));
+    }
+
+    #[test]
+    fn cube_has_no_overhang_wall_feature() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(!gcode.contains("; FEATURE: Overhang wall"));
+    }
+
+    #[test]
+    fn overhang_table_slows_unsupported_walls() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.overhang_speed_mm_s = 25.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Overhang wall"));
+        assert!(gcode.contains(" F1500\n") || gcode.contains(" F1500"));
+        let report = parse_gcode(&gcode);
+        assert!(report.features.contains("Overhang wall"));
+    }
+
+    #[test]
+    fn bbl_inner_walls_faster_than_outer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::bbl_0_20();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains(" F12000"), "outer walls should use 200 mm/s");
+        assert!(gcode.contains(" F18000"), "inner walls should use 300 mm/s");
+    }
+
+    #[test]
+    fn first_layer_uses_initial_speed() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.first_layer_speed_mm_s = 20.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains(" F1200"), "first layer 20 mm/s");
+        assert!(gcode.contains(" F3000"), "later walls 50 mm/s");
     }
 }

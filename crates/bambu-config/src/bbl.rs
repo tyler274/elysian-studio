@@ -206,6 +206,36 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "inner_wall_speed",
+        num_str(settings.inner_wall_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "initial_layer_speed",
+        num_str(settings.first_layer_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "initial_layer_infill_speed",
+        num_str(settings.first_layer_infill_speed_mm_s),
+    );
+    insert_bool(
+        &mut map,
+        "detect_overhang_wall",
+        settings.detect_overhang_wall,
+    );
+    insert_bool(
+        &mut map,
+        "enable_overhang_speed",
+        settings.enable_overhang_speed,
+    );
+    insert(
+        &mut map,
+        "overhang_totally_speed",
+        num_str(settings.overhang_speed_mm_s),
+    );
+    insert(
+        &mut map,
         "sparse_infill_speed",
         num_str(settings.infill_speed_mm_s),
     );
@@ -345,6 +375,11 @@ pub fn is_region_key(key: &str) -> bool {
             | "top_surface_pattern"
             | "bottom_surface_pattern"
             | "outer_wall_speed"
+            | "inner_wall_speed"
+            | "detect_overhang_wall"
+            | "enable_overhang_speed"
+            | "overhang_totally_speed"
+            | "overhang_4_4_speed"
             | "sparse_infill_speed"
             | "internal_solid_infill_speed"
             | "ironing_type"
@@ -533,6 +568,24 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "outer_wall_speed") {
         s.print_speed_mm_s = v;
+    }
+    if let Some(v) = num(map, "inner_wall_speed") {
+        s.inner_wall_speed_mm_s = v;
+    }
+    if let Some(v) = num(map, "initial_layer_speed") {
+        s.first_layer_speed_mm_s = v;
+    }
+    if let Some(v) = num(map, "initial_layer_infill_speed") {
+        s.first_layer_infill_speed_mm_s = v;
+    }
+    if let Some(v) = bool_val(map, "detect_overhang_wall") {
+        s.detect_overhang_wall = v;
+    }
+    if let Some(v) = bool_val(map, "enable_overhang_speed") {
+        s.enable_overhang_speed = v;
+    }
+    if let Some(v) = num(map, "overhang_totally_speed").or_else(|| num(map, "overhang_4_4_speed")) {
+        s.overhang_speed_mm_s = v.max(0.0);
     }
     if let Some(v) = num(map, "sparse_infill_speed") {
         s.infill_speed_mm_s = v;
