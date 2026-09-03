@@ -516,10 +516,9 @@ pub fn slice_file(
     }
     let plate_idx = (plate - 1) as usize;
     let volumes = model.world_volumes_for_plate(plate_idx);
-    if volumes
-        .iter()
-        .any(|v| v.volume_type.is_negative() || v.volume_type.is_support_modifier())
-    {
+    if volumes.iter().any(|v| {
+        v.volume_type.is_negative() || v.volume_type.is_support_modifier() || v.has_support_paint()
+    }) {
         if !volumes.iter().any(|v| v.volume_type.is_model_part()) {
             return Err(CliError::Message(format!(
                 "plate {plate} has no printable volumes ({} plate(s))",

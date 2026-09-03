@@ -4,14 +4,14 @@
 //! `Metadata/model_settings.config` is present, object names, plates, part
 //! subtype, and volume matrices are applied. `Metadata/project_settings.config`
 //! carries process settings. Writers emit both files so plates, parts, and
-//! settings round-trip. Paint and AMS stay ignored.
+//! settings round-trip. `paint_supports` on triangles is applied; AMS stays ignored.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use bambu_geom::TriangleMesh;
-use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate};
+use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
 use glam::{Mat4, Vec3, Vec4};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -44,6 +44,7 @@ struct ObjectRec {
     name: String,
     vertices: Vec<Vec3>,
     triangles: Vec<[u32; 3]>,
+    triangle_support: Vec<TrianglePaint>,
     components: Vec<(u32, Mat4)>,
 }
 
@@ -218,12 +219,14 @@ fn model_from_xml(xml: &str) -> Result<Model, IoError> {
                             attr_u32(&e, b"v2"),
                             attr_u32(&e, b"v3"),
                         ];
-                        parsed
-                            .objects
-                            .get_mut(&id)
-                            .ok_or_else(|| IoError::Message("3MF triangle object missing".into()))?
-                            .triangles
-                            .push(tri);
+                        let paint = TrianglePaint::from_support_hex(
+                            attr(&e, b"paint_supports").as_deref().unwrap_or(""),
+                        );
+                        let rec = parsed.objects.get_mut(&id).ok_or_else(|| {
+                            IoError::Message("3MF triangle object missing".into())
+                        })?;
+                        rec.triangles.push(tri);
+                        rec.triangle_support.push(paint);
                     }
                     b"component" => {
                         let id = parsed.current_id.ok_or_else(|| {
@@ -289,7 +292,11 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
         let volumes: Vec<ModelVolume> = leaves
             .into_iter()
             .filter(|leaf| !leaf.mesh.indices.is_empty())
-            .map(|leaf| ModelVolume::model_part(leaf.name, leaf.mesh, leaf.part_id))
+            .map(|leaf| {
+                let mut vol = ModelVolume::model_part(leaf.name, leaf.mesh, leaf.part_id);
+                vol.triangle_support = leaf.triangle_support;
+                vol
+            })
             .collect();
         if volumes.is_empty() {
             continue;
@@ -330,6 +337,7 @@ struct LeafMesh {
     part_id: u32,
     name: String,
     mesh: TriangleMesh,
+    triangle_support: Vec<TrianglePaint>,
 }
 
 fn flatten_object(
@@ -358,6 +366,7 @@ fn flatten_object(
                 vertices,
                 indices: obj.triangles.clone(),
             },
+            triangle_support: obj.triangle_support.clone(),
         });
     }
     for (child, child_xf) in &obj.components {
@@ -440,7 +449,15 @@ fn model_xml_from_model(model: &Model) -> Result<ModelXml, IoError> {
             next += 1;
             ids[i] = id;
             volume_ids[i] = vec![id];
-            push_mesh_object(&mut resources, id, name, &mesh);
+            push_mesh_object(
+                &mut resources,
+                id,
+                name,
+                &mesh,
+                vols.first()
+                    .map(|v| v.triangle_support.as_slice())
+                    .unwrap_or(&[]),
+            );
             build.push_str(&format!("    <item objectid=\"{id}\"/>\n"));
             continue;
         }
@@ -453,7 +470,7 @@ fn model_xml_from_model(model: &Model) -> Result<ModelXml, IoError> {
             let id = next;
             next += 1;
             child_ids.push(id);
-            push_mesh_object(&mut resources, id, &vol.name, mesh);
+            push_mesh_object(&mut resources, id, &vol.name, mesh, &vol.triangle_support);
         }
         let parent = next;
         next += 1;
@@ -486,7 +503,13 @@ fn model_xml_from_model(model: &Model) -> Result<ModelXml, IoError> {
     })
 }
 
-fn push_mesh_object(resources: &mut String, id: u32, name: &str, mesh: &TriangleMesh) {
+fn push_mesh_object(
+    resources: &mut String,
+    id: u32,
+    name: &str,
+    mesh: &TriangleMesh,
+    paint: &[TrianglePaint],
+) {
     resources.push_str(&format!(
         "    <object id=\"{id}\" type=\"model\" name=\"{}\">\n      <mesh>\n        <vertices>\n",
         xml_escape(name)
@@ -498,11 +521,15 @@ fn push_mesh_object(resources: &mut String, id: u32, name: &str, mesh: &Triangle
         ));
     }
     resources.push_str("        </vertices>\n        <triangles>\n");
-    for idx in &mesh.indices {
+    for (i, idx) in mesh.indices.iter().enumerate() {
         resources.push_str(&format!(
-            "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+            "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"",
             idx[0], idx[1], idx[2]
         ));
+        if let Some(hex) = paint.get(i).and_then(|p| p.as_support_hex()) {
+            resources.push_str(&format!(" paint_supports=\"{hex}\""));
+        }
+        resources.push_str("/>\n");
     }
     resources.push_str("        </triangles>\n      </mesh>\n    </object>\n");
 }
@@ -1136,5 +1163,33 @@ mod tests {
         );
         let aabb = model.merged_mesh().unwrap().aabb().unwrap();
         assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
+    }
+
+    #[test]
+    fn paint_supports_load_and_roundtrip() {
+        let mut xml = cube_xml("millimeter", "");
+        xml = xml.replacen(
+            r#"<triangle v1="0" v2="1" v3="2"/>"#,
+            r#"<triangle v1="0" v2="1" v3="2" paint_supports="4"/>"#,
+            1,
+        );
+        let model = load_3mf_bytes(&pack_xml(&xml)).unwrap();
+        assert_eq!(
+            model.objects[0].volumes[0].triangle_support[0],
+            TrianglePaint::Enforcer
+        );
+        let bytes = write_model_3mf_bytes(&model).unwrap();
+        {
+            let mut zip = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            let mut file = zip.by_name(MODEL_PATH).unwrap();
+            let mut body = String::new();
+            file.read_to_string(&mut body).unwrap();
+            assert!(body.contains("paint_supports=\"4\""), "{body}");
+        }
+        let loaded = load_3mf_bytes(&bytes).unwrap();
+        assert!(loaded.objects[0].volumes[0]
+            .triangle_support
+            .iter()
+            .any(|p| *p == TrianglePaint::Enforcer));
     }
 }

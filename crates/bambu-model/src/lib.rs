@@ -66,6 +66,92 @@ impl VolumeType {
     }
 }
 
+/// Per-triangle `paint_supports` (C++ `EnforcerBlockerType` on `supported_facets`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrianglePaint {
+    #[default]
+    None,
+    Enforcer,
+    Blocker,
+}
+
+impl TrianglePaint {
+    /// Decode Bambu/Prusa `paint_supports` hex (`TriangleSelector::serialize`).
+    pub fn from_support_hex(s: &str) -> Self {
+        if s.is_empty() {
+            return Self::None;
+        }
+        let bits = hex_to_bits(s);
+        let mut i = 0;
+        decode_paint_node(&bits, &mut i)
+    }
+
+    pub fn as_support_hex(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Enforcer => Some("4"),
+            Self::Blocker => Some("8"),
+        }
+    }
+
+    fn or_paint(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Enforcer, _) | (_, Self::Enforcer) => Self::Enforcer,
+            (Self::Blocker, _) | (_, Self::Blocker) => Self::Blocker,
+            _ => Self::None,
+        }
+    }
+}
+
+fn hex_to_bits(s: &str) -> Vec<bool> {
+    let mut bits = Vec::with_capacity(s.len() * 4);
+    for ch in s.chars().rev() {
+        let dec = match ch {
+            '0'..='9' => ch as u32 - '0' as u32,
+            'A'..='F' => 10 + ch as u32 - 'A' as u32,
+            'a'..='f' => 10 + ch as u32 - 'a' as u32,
+            _ => continue,
+        };
+        for i in 0..4 {
+            bits.push((dec & (1 << i)) != 0);
+        }
+    }
+    bits
+}
+
+fn decode_paint_node(bits: &[bool], i: &mut usize) -> TrianglePaint {
+    if *i + 4 > bits.len() {
+        return TrianglePaint::None;
+    }
+    let split = u8::from(bits[*i]) | (u8::from(bits[*i + 1]) << 1);
+    *i += 2;
+    if split == 0 {
+        if *i + 2 > bits.len() {
+            return TrianglePaint::None;
+        }
+        let n = u8::from(bits[*i]) | (u8::from(bits[*i + 1]) << 1);
+        *i += 2;
+        if n == 3 {
+            while *i + 4 <= bits.len() {
+                *i += 4;
+            }
+            return TrianglePaint::None;
+        }
+        return match n {
+            1 => TrianglePaint::Enforcer,
+            2 => TrianglePaint::Blocker,
+            _ => TrianglePaint::None,
+        };
+    }
+    *i += 2;
+    let children = usize::from(split) + 1;
+    let mut acc = TrianglePaint::None;
+    for _ in 0..children {
+        acc = acc.or_paint(decode_paint_node(bits, i));
+    }
+    acc
+}
+
 /// One mesh of a [`ModelObject`] (C++ `ModelVolume`).
 #[derive(Debug, Clone)]
 pub struct ModelVolume {
@@ -76,6 +162,8 @@ pub struct ModelVolume {
     pub part_id: u32,
     /// Extra 4×4 from `metadata key="matrix"` (identity if none).
     pub matrix: Mat4,
+    /// `paint_supports` on each triangle (`indices` order). Empty means none.
+    pub triangle_support: Vec<TrianglePaint>,
 }
 
 impl ModelVolume {
@@ -86,7 +174,14 @@ impl ModelVolume {
             volume_type: VolumeType::ModelPart,
             part_id,
             matrix: Mat4::IDENTITY,
+            triangle_support: Vec::new(),
         }
+    }
+
+    pub fn has_support_paint(&self) -> bool {
+        self.triangle_support
+            .iter()
+            .any(|p| *p != TrianglePaint::None)
     }
 }
 
@@ -252,4 +347,21 @@ impl Model {
 
 pub fn default_settings() -> SliceSettings {
     SliceSettings::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paint_supports_hex_unsplit() {
+        assert_eq!(TrianglePaint::from_support_hex(""), TrianglePaint::None);
+        assert_eq!(
+            TrianglePaint::from_support_hex("4"),
+            TrianglePaint::Enforcer
+        );
+        assert_eq!(TrianglePaint::from_support_hex("8"), TrianglePaint::Blocker);
+        assert_eq!(TrianglePaint::Enforcer.as_support_hex(), Some("4"));
+        assert_eq!(TrianglePaint::Blocker.as_support_hex(), Some("8"));
+    }
 }

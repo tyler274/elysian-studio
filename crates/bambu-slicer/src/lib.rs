@@ -32,7 +32,7 @@ use bambu_config::SliceSettings;
 use bambu_geom::{
     difference_polygons, offset_polygons, union_polygons, Point, Polygon, Polyline, TriangleMesh,
 };
-use bambu_model::ModelVolume;
+use bambu_model::{ModelVolume, TrianglePaint};
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -144,7 +144,12 @@ pub fn slice_volumes(
     if parts.is_empty() {
         return Err(SlicerError::EmptyMesh);
     }
-    if negatives.is_empty() && parts.len() == 1 && enforcers.is_empty() && blockers.is_empty() {
+    if negatives.is_empty()
+        && parts.len() == 1
+        && enforcers.is_empty()
+        && blockers.is_empty()
+        && !volumes.iter().any(ModelVolume::has_support_paint)
+    {
         return slice_mesh(parts[0], settings);
     }
     let mut merged = TriangleMesh::default();
@@ -166,8 +171,14 @@ pub fn slice_volumes(
             PreparedContours {
                 spec,
                 contours,
-                enforcers: union_slices(&enforcers, z),
-                blockers: union_slices(&blockers, z),
+                enforcers: merge_support(
+                    union_slices(&enforcers, z),
+                    paint_polygons(volumes, spec, TrianglePaint::Enforcer),
+                ),
+                blockers: merge_support(
+                    union_slices(&blockers, z),
+                    paint_polygons(volumes, spec, TrianglePaint::Blocker),
+                ),
             }
         })
         .collect();
@@ -181,6 +192,50 @@ fn union_slices(meshes: &[&TriangleMesh], z: f32) -> Vec<Polygon> {
     let mut acc = Vec::new();
     for mesh in meshes {
         acc.extend(slice_at_z(mesh, z));
+    }
+    union_polygons(&acc)
+}
+
+fn merge_support(mut a: Vec<Polygon>, b: Vec<Polygon>) -> Vec<Polygon> {
+    if b.is_empty() {
+        return a;
+    }
+    a.extend(b);
+    union_polygons(&a)
+}
+
+/// Project painted triangles onto the slice plane by Z range (C++ `slice_mesh_slabs`
+/// on `supported_facets` — unsplit faces only need the original triangle).
+fn paint_polygons(volumes: &[ModelVolume], spec: LayerSpec, want: TrianglePaint) -> Vec<Polygon> {
+    if want == TrianglePaint::None {
+        return Vec::new();
+    }
+    let mut acc = Vec::new();
+    const EPS: f32 = 1e-3;
+    let z = spec.slice_z_mm as f32;
+    let height = spec.height_mm as f32;
+    for vol in volumes {
+        if !vol.volume_type.is_model_part() || vol.triangle_support.is_empty() {
+            continue;
+        }
+        for (i, idx) in vol.mesh.indices.iter().enumerate() {
+            if vol.triangle_support.get(i).copied().unwrap_or_default() != want {
+                continue;
+            }
+            let [a, b, c] = vol.mesh.triangle(*idx);
+            let zmin = a.z.min(b.z).min(c.z);
+            let zmax = a.z.max(b.z).max(c.z);
+            // Horizontal faces rarely hit mid-slab `slice_z`. Project them onto
+            // the slab above (C++ `slice_mesh_slabs` on painted facets).
+            if z + EPS < zmin || z > zmax + height + EPS {
+                continue;
+            }
+            acc.push(vec![
+                point_from_xy_mm(f64::from(a.x), f64::from(a.y)),
+                point_from_xy_mm(f64::from(b.x), f64::from(b.y)),
+                point_from_xy_mm(f64::from(c.x), f64::from(c.y)),
+            ]);
+        }
     }
     union_polygons(&acc)
 }
@@ -1178,6 +1233,58 @@ mod tests {
         assert!(
             n >= 10,
             "enforcer should restore support under the slab, got {n}"
+        );
+    }
+
+    fn paint_at_z(
+        mesh: &TriangleMesh,
+        z: f32,
+        paint: bambu_model::TrianglePaint,
+    ) -> Vec<bambu_model::TrianglePaint> {
+        mesh.indices
+            .iter()
+            .map(|&idx| {
+                let [a, b, c] = mesh.triangle(idx);
+                if (a.z - z).abs() < 1e-3 && (b.z - z).abs() < 1e-3 && (c.z - z).abs() < 1e-3 {
+                    paint
+                } else {
+                    bambu_model::TrianglePaint::None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn painted_support_enforcer_forces_steep_overhang() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.support_threshold_angle_deg = 89.0;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let mut part = bambu_model::ModelVolume::model_part("table", mesh.clone(), 1);
+        part.triangle_support = paint_at_z(&mesh, 8.0, bambu_model::TrianglePaint::Enforcer);
+        assert!(part.has_support_paint());
+        let forced = slice_volumes(&[part], &settings).unwrap();
+        let n = support_fill_layers(&forced);
+        assert!(n >= 10, "painted underside should restore support, got {n}");
+    }
+
+    #[test]
+    fn painted_support_blocker_clears_table_overhang() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let open_n = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        let mut part = bambu_model::ModelVolume::model_part("table", mesh.clone(), 1);
+        part.triangle_support = paint_at_z(&mesh, 8.0, bambu_model::TrianglePaint::Blocker);
+        let blocked = slice_volumes(&[part], &settings).unwrap();
+        let blocked_n = support_fill_layers(&blocked);
+        assert!(
+            blocked_n < open_n / 2,
+            "painted blocker should drop support: open={open_n} blocked={blocked_n}"
         );
     }
 }

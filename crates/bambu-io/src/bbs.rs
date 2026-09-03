@@ -1,6 +1,6 @@
 //! Bambu `Metadata/model_settings.config` (plates, object names, parts).
 //!
-//! Triangle paint, AMS mapping, and assemble-view transforms stay ignored.
+//! Triangle AMS mapping and assemble-view transforms stay ignored.
 
 use std::collections::BTreeMap;
 
