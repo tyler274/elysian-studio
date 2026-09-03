@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod processor;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -7,6 +9,8 @@ use bambu_config::{Flow, SliceSettings};
 use bambu_geom::{unscale, Point, Polyline};
 use bambu_slicer::SliceResult;
 use thiserror::Error;
+
+pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
 
 #[derive(Debug, Error)]
 pub enum GcodeError {
@@ -212,6 +216,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M140 S0")?;
     writeln!(out, "G28 X0 Y0")?;
     writeln!(out, "M84")?;
+    let stats = process_gcode(&out, settings);
+    out.push_str(&stats.footer_lines());
     Ok(out)
 }
 
@@ -277,6 +283,8 @@ pub struct GcodeReport {
     pub max_e: f64,
     pub total_layer_number: Option<u32>,
     pub features: BTreeSet<String>,
+    pub estimated_seconds: Option<f64>,
+    pub filament_g: Option<f64>,
 }
 
 pub fn parse_gcode(gcode: &str) -> GcodeReport {
@@ -289,6 +297,8 @@ pub fn parse_gcode(gcode: &str) -> GcodeReport {
     let mut features = BTreeSet::new();
     let mut total_layer_number = None;
     let mut max_z_height = None;
+    let mut estimated_seconds = None;
+    let mut filament_g = None;
     for line in gcode.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("; CHANGE_LAYER") || trimmed == ";CHANGE_LAYER" {
@@ -313,6 +323,17 @@ pub fn parse_gcode(gcode: &str) -> GcodeReport {
         if let Some(rest) = trimmed.strip_prefix("; max_z_height:") {
             if let Ok(z) = rest.trim().parse::<f64>() {
                 max_z_height = Some(z);
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("; model printing time:") {
+            if let Some((clock, _)) = rest.split_once(';') {
+                estimated_seconds = parse_time_dhms(clock.trim());
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("; total filament weight [g]") {
+            let value = rest.trim().trim_start_matches(':').trim();
+            if let Ok(g) = value.split(',').next().unwrap_or("").trim().parse::<f64>() {
+                filament_g = Some(g);
             }
         }
         if let Some(rest) = trimmed
@@ -355,6 +376,8 @@ pub fn parse_gcode(gcode: &str) -> GcodeReport {
         max_e,
         total_layer_number,
         features,
+        estimated_seconds,
+        filament_g,
     }
 }
 
@@ -463,6 +486,27 @@ fn parse_g1_z(line: &str) -> Option<f64> {
     parse_axis_g1(line, b'Z')
 }
 
+fn parse_time_dhms(text: &str) -> Option<f64> {
+    let mut total = 0.0_f64;
+    let mut found = false;
+    for token in text.split_whitespace() {
+        if let Some(n) = token.strip_suffix('d') {
+            total += n.parse::<f64>().ok()? * 86400.0;
+            found = true;
+        } else if let Some(n) = token.strip_suffix('h') {
+            total += n.parse::<f64>().ok()? * 3600.0;
+            found = true;
+        } else if let Some(n) = token.strip_suffix('m') {
+            total += n.parse::<f64>().ok()? * 60.0;
+            found = true;
+        } else if let Some(n) = token.strip_suffix('s') {
+            total += n.parse::<f64>().ok()?;
+            found = true;
+        }
+    }
+    found.then_some(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +533,31 @@ mod tests {
         let report = parse_gcode(&gcode);
         assert_eq!(report.layer_changes, stats.layer_comments);
         assert!(report.features.contains("Outer wall"));
+    }
+
+    #[test]
+    fn cube_gcode_has_time_and_filament_estimate() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; model printing time:"));
+        assert!(gcode.contains("; total filament weight [g] :"));
+        assert!(gcode.contains("; total filament length [mm] :"));
+        let report = parse_gcode(&gcode);
+        let seconds = report.estimated_seconds.expect("estimated time");
+        assert!(
+            (60.0..7200.0).contains(&seconds),
+            "20 mm cube estimate out of range: {seconds}s"
+        );
+        let grams = report.filament_g.expect("filament g");
+        assert!(
+            (1.0..40.0).contains(&grams),
+            "20 mm cube filament out of range: {grams}g"
+        );
+        let processed = process_gcode(&gcode, &settings);
+        assert!(processed.move_count > 100);
+        assert!((processed.filament_g - grams).abs() < 0.02);
     }
 
     #[test]

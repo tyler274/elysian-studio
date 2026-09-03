@@ -399,6 +399,16 @@ pub struct SliceSettings {
     /// Inset from the ironed contour. `0` means half the nozzle diameter.
     pub ironing_inset_mm: f64,
     pub ironing_speed_mm_s: f64,
+    /// C++ `default_acceleration` (mm/s²). Used by the G-code time estimator.
+    pub default_acceleration_mm_s2: f64,
+    /// C++ `travel_acceleration` (mm/s²).
+    pub travel_acceleration_mm_s2: f64,
+    /// C++ `filament_density` (g/cm³). Generic PLA is 1.24.
+    pub filament_density_g_cm3: f64,
+    /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
+    pub xy_jerk_mm_s: f64,
+    /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
+    pub z_jerk_mm_s: f64,
 }
 
 impl Default for SliceSettings {
@@ -462,6 +472,11 @@ impl Default for SliceSettings {
             ironing_spacing_mm: 0.15,
             ironing_inset_mm: 0.21,
             ironing_speed_mm_s: 30.0,
+            default_acceleration_mm_s2: 10000.0,
+            travel_acceleration_mm_s2: 10000.0,
+            filament_density_g_cm3: 1.24,
+            xy_jerk_mm_s: 9.0,
+            z_jerk_mm_s: 3.0,
         }
     }
 }

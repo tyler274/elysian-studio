@@ -246,6 +246,36 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "ironing_speed",
         num_str(settings.ironing_speed_mm_s),
     );
+    insert(
+        &mut map,
+        "default_acceleration",
+        num_str(settings.default_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "travel_acceleration",
+        num_str(settings.travel_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "filament_density",
+        num_str(settings.filament_density_g_cm3),
+    );
+    insert(
+        &mut map,
+        "machine_max_jerk_x",
+        num_str(settings.xy_jerk_mm_s),
+    );
+    insert(
+        &mut map,
+        "machine_max_jerk_y",
+        num_str(settings.xy_jerk_mm_s),
+    );
+    insert(
+        &mut map,
+        "machine_max_jerk_z",
+        num_str(settings.z_jerk_mm_s),
+    );
     Ok(serde_json::to_string_pretty(&Value::Object(map))?)
 }
 
@@ -538,6 +568,21 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "ironing_speed") {
         s.ironing_speed_mm_s = v;
     }
+    if let Some(v) = num(map, "default_acceleration") {
+        s.default_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "travel_acceleration") {
+        s.travel_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_density") {
+        s.filament_density_g_cm3 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "machine_max_jerk_x").or_else(|| num(map, "machine_max_jerk_y")) {
+        s.xy_jerk_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "machine_max_jerk_z") {
+        s.z_jerk_mm_s = v.max(0.0);
+    }
 }
 
 fn text(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -766,6 +811,7 @@ mod tests {
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
+        assert!((s.default_acceleration_mm_s2 - 10000.0).abs() < 1.0);
     }
 
     #[test]
@@ -786,6 +832,8 @@ mod tests {
         assert!(loaded.enable_support);
         assert_eq!(loaded.support_type, crate::SupportType::Tree);
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
+        assert!((loaded.default_acceleration_mm_s2 - 10000.0).abs() < 1e-9);
+        assert!((loaded.filament_density_g_cm3 - 1.24).abs() < 1e-9);
     }
 
     #[test]
