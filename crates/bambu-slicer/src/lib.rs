@@ -459,4 +459,59 @@ mod tests {
         let mid = &result.layers[result.layers.len() / 2];
         assert!(!mid.infill.is_empty());
     }
+
+    fn polyline_len_mm(paths: &[Polyline]) -> f64 {
+        paths
+            .iter()
+            .flat_map(|pl| pl.windows(2))
+            .map(|w| w[0].distance_mm(w[1]))
+            .sum()
+    }
+
+    #[test]
+    fn lightning_supports_top_shells() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Lightning;
+        settings.infill_density = 0.15;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let sparse_layers: Vec<_> = result
+            .layers
+            .iter()
+            .filter(|l| !l.infill.is_empty())
+            .collect();
+        assert!(
+            sparse_layers.len() >= 3,
+            "lightning trees should run through internal layers, got {}",
+            sparse_layers.len()
+        );
+        let top_internal = sparse_layers.last().unwrap();
+        assert!(
+            !top_internal.infill.is_empty(),
+            "trees should support the underside of the top shells"
+        );
+    }
+
+    #[test]
+    fn lightning_uses_less_filament_than_grid() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut lightning = SliceSettings::default();
+        lightning.infill_pattern = InfillPattern::Lightning;
+        lightning.infill_density = 0.15;
+        let mut grid = lightning.clone();
+        grid.infill_pattern = InfillPattern::Grid;
+        let a = slice_mesh(&mesh, &lightning).unwrap();
+        let b = slice_mesh(&mesh, &grid).unwrap();
+        let mid = a.layers.len() / 2;
+        let lightning_len = polyline_len_mm(&a.layers[mid].infill);
+        let grid_len = polyline_len_mm(&b.layers[mid].infill);
+        assert!(
+            lightning_len > 1.0,
+            "middle layer still has supporting trees ({lightning_len})"
+        );
+        assert!(
+            lightning_len < grid_len * 0.75,
+            "lightning {lightning_len} should be sparser than grid {grid_len}"
+        );
+    }
 }

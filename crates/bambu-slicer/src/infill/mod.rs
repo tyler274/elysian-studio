@@ -1,4 +1,4 @@
-//! Sparse infill patterns (classic Slic3r / Bambu set, minus Lightning/Adaptive).
+//! Sparse infill patterns (classic Slic3r / Bambu set, minus Adaptive cubic).
 
 use bambu_config::{InfillPattern, SliceSettings};
 use bambu_geom::{offset_polygons, scale, Point, Polygon, Polyline};
@@ -8,6 +8,9 @@ use crate::clip::clip_polylines;
 mod gyroid;
 mod honeycomb;
 mod honeycomb3d;
+mod lightning;
+
+pub(crate) use lightning::generate_layers as generate_lightning;
 
 pub fn generate(
     region: &[Polygon],
@@ -32,6 +35,8 @@ pub fn generate(
         InfillPattern::Honeycomb3D => {
             honeycomb3d::fill(region, spacing, settings.infill_density, z_mm)
         }
+        // Trees need every sparse layer; `prepare_infill` calls `generate_lightning`.
+        InfillPattern::Lightning => Vec::new(),
     }
 }
 

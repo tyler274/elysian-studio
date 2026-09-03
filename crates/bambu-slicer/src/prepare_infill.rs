@@ -3,7 +3,7 @@
 //! Simplified `detect_surfaces_type` + `discover_horizontal_shells`. Neighbor
 //! contours are grown slightly so clipper slivers are not treated as shells.
 
-use bambu_config::SliceSettings;
+use bambu_config::{InfillPattern, SliceSettings};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
 };
@@ -66,9 +66,9 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     }
 
     let spacing = settings.line_width_mm;
+    let mut sparse_all = Vec::with_capacity(n);
     for i in 0..n {
-        let sparse = difference_polygons(&regions[i], &solid[i]);
-        layers[i].infill = infill::generate(&sparse, settings, i, layers[i].z_mm);
+        sparse_all.push(difference_polygons(&regions[i], &solid[i]));
 
         let mut rest = difference_polygons(&solid[i], &top[i]);
         rest = difference_polygons(&rest, &bottom[i]);
@@ -82,6 +82,23 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
             layers[i].bridge = bottom_paths;
         }
         layers[i].solid_infill = infill::solid(&rest, spacing, i);
+    }
+
+    assign_sparse_infill(layers, &sparse_all, settings);
+}
+
+fn assign_sparse_infill(layers: &mut [Layer], sparse: &[Vec<Polygon>], settings: &SliceSettings) {
+    if settings.infill_pattern == InfillPattern::Lightning {
+        for (layer, paths) in layers
+            .iter_mut()
+            .zip(infill::generate_lightning(sparse, settings))
+        {
+            layer.infill = paths;
+        }
+        return;
+    }
+    for (i, layer) in layers.iter_mut().enumerate() {
+        layer.infill = infill::generate(&sparse[i], settings, i, layer.z_mm);
     }
 }
 

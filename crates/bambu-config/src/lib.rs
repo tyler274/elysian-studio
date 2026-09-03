@@ -19,6 +19,8 @@ pub enum InfillPattern {
     Honeycomb,
     /// Slic3r / Bambu `ip3DHoneycomb` (truncated octahedron slices).
     Honeycomb3D,
+    /// CuraEngine / Bambu `ipLightning` (overhang trees, sparse below skins).
+    Lightning,
 }
 
 impl InfillPattern {
@@ -30,6 +32,7 @@ impl InfillPattern {
             "gyroid" => Self::Gyroid,
             "honeycomb" | "hexagon" => Self::Honeycomb,
             "3dhoneycomb" | "3d honeycomb" | "3d_honeycomb" => Self::Honeycomb3D,
+            "lightning" | "lightninginfill" | "lightning_infill" => Self::Lightning,
             "zigzag" | "zig-zag" => Self::Rectilinear,
             _ => return None,
         })
@@ -43,6 +46,7 @@ impl InfillPattern {
             Self::Gyroid => "gyroid",
             Self::Honeycomb => "honeycomb",
             Self::Honeycomb3D => "3dhoneycomb",
+            Self::Lightning => "lightning",
         }
     }
 }

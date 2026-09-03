@@ -33,7 +33,7 @@ pub enum CliError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(
-        "unknown infill pattern '{0}' (rectilinear|grid|concentric|gyroid|honeycomb|3dhoneycomb)"
+        "unknown infill pattern '{0}' (rectilinear|grid|concentric|gyroid|honeycomb|3dhoneycomb|lightning)"
     )]
     InfillPattern(String),
     #[error("unknown seam '{0}' (aligned|rear|nearest|random)")]
