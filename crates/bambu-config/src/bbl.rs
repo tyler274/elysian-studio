@@ -112,9 +112,15 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
         }
     }
     if let Some(name) = text(map, "wall_generator") {
-        if name.eq_ignore_ascii_case("classic") {
-            s.wall_generator = WallGenerator::Classic;
+        if let Some(g) = WallGenerator::from_name(&name) {
+            s.wall_generator = g;
         }
+    }
+    if let Some(v) = percent(map, "min_feature_size") {
+        s.min_feature_size = v.max(0.0);
+    }
+    if let Some(v) = percent(map, "min_bead_width") {
+        s.min_bead_width = v.max(0.0);
     }
     if let Some(name) = text(map, "fuzzy_skin") {
         if let Some(t) = FuzzySkinType::from_name(&name) {
@@ -367,7 +373,10 @@ mod tests {
             r#"{
                 "inherits": "base",
                 "top_shell_layers": "5",
-                "sparse_infill_pattern": "gyroid"
+                "sparse_infill_pattern": "gyroid",
+                "wall_generator": "arachne",
+                "min_feature_size": "25%",
+                "min_bead_width": "85%"
             }"#,
         )
         .unwrap();
@@ -377,6 +386,9 @@ mod tests {
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Gyroid);
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
+        assert_eq!(s.wall_generator, crate::WallGenerator::Arachne);
+        assert!((s.min_feature_size - 0.25).abs() < 1e-9);
+        assert!((s.min_bead_width - 0.85).abs() < 1e-9);
     }
 
     #[test]
@@ -408,6 +420,9 @@ mod tests {
         assert_eq!(s.raft_layers, 0);
         assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
         assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
+        assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
+        assert!((s.min_feature_size - 0.25).abs() < 1e-9);
+        assert!((s.min_bead_width - 0.85).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bambu_config::{
     bbl_oracle_paths, load_bbl_process, ConfigError, FuzzySkinType, InfillPattern, IroningType,
-    SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType,
+    SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -40,6 +40,8 @@ pub enum CliError {
     Seam(String),
     #[error("unknown ironing '{0}' (off|top|topmost|solid)")]
     Ironing(String),
+    #[error("unknown wall generator '{0}' (classic|arachne)")]
+    WallGenerator(String),
     #[error("unknown support type '{0}' (classic|tree)")]
     SupportType(String),
     #[error("unknown surface pattern '{0}' (rectilinear|monotonic|monotonicline|concentric)")]
@@ -116,6 +118,9 @@ enum Commands {
         /// Ironing: off, top, topmost, or solid.
         #[arg(long)]
         ironing: Option<String>,
+        /// Wall generator: classic offset loops or arachne leftover centerlines.
+        #[arg(long)]
+        wall_generator: Option<String>,
         /// First-layer inward offset in millimetres (`elefant_foot_compensation`).
         #[arg(long)]
         elephant_foot: Option<f64>,
@@ -279,6 +284,7 @@ fn run() -> Result<(), CliError> {
             bottom,
             top,
             ironing,
+            wall_generator,
             elephant_foot,
             xy_contour,
             xy_hole,
@@ -349,6 +355,10 @@ fn run() -> Result<(), CliError> {
             if let Some(name) = ironing {
                 slice_settings.ironing_type =
                     IroningType::from_name(&name).ok_or(CliError::Ironing(name))?;
+            }
+            if let Some(name) = wall_generator {
+                slice_settings.wall_generator =
+                    WallGenerator::from_name(&name).ok_or(CliError::WallGenerator(name))?;
             }
             if let Some(mm) = elephant_foot {
                 slice_settings.elephant_foot_mm = mm.max(0.0);

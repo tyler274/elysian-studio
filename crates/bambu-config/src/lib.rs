@@ -82,11 +82,31 @@ impl SeamPosition {
     }
 }
 
-/// Classic offset walls. Arachne is not implemented yet.
+/// C++ `wall_generator` (`classic` offset onions vs `arachne`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WallGenerator {
+    /// Constant-width offset loops (`PerimeterGenerator::process_classic`).
     #[default]
     Classic,
+    /// Classic full-width loops plus a centerline in leftover thinner than one wall.
+    Arachne,
+}
+
+impl WallGenerator {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "classic" | "classicwall" | "classic wall" => Self::Classic,
+            "arachne" | "arachne-lite" | "variable" => Self::Arachne,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Arachne => "arachne",
+        }
+    }
 }
 
 /// C++ `support_type` (`normal(auto)` vs `tree(auto)`).
@@ -288,6 +308,10 @@ pub struct SliceSettings {
     pub infill_pattern: InfillPattern,
     pub seam: SeamPosition,
     pub wall_generator: WallGenerator,
+    /// C++ `min_feature_size` as a fraction of nozzle diameter (default 25%).
+    pub min_feature_size: f64,
+    /// C++ `min_bead_width` as a fraction of nozzle diameter (default 85%).
+    pub min_bead_width: f64,
     /// C++ `fuzzy_skin` (BBL default is `none`).
     pub fuzzy_skin: FuzzySkinType,
     pub fuzzy_skin_thickness_mm: f64,
@@ -369,6 +393,8 @@ impl Default for SliceSettings {
             infill_pattern: InfillPattern::Gyroid,
             seam: SeamPosition::Aligned,
             wall_generator: WallGenerator::Classic,
+            min_feature_size: 0.25,
+            min_bead_width: 0.85,
             fuzzy_skin: FuzzySkinType::None,
             fuzzy_skin_thickness_mm: 0.3,
             fuzzy_skin_point_distance_mm: 0.8,
@@ -447,6 +473,26 @@ impl SliceSettings {
         } else {
             (self.line_width_mm / self.support_density).max(self.line_width_mm)
         }
+    }
+
+    /// Features thinner than this are skipped (`min_feature_size` × nozzle).
+    pub fn min_feature_size_mm(&self) -> f64 {
+        let frac = if self.min_feature_size > 0.0 {
+            self.min_feature_size
+        } else {
+            0.25
+        };
+        frac * self.nozzle_diameter_mm
+    }
+
+    /// Thin-feature extrusion floor (`min_bead_width` × nozzle).
+    pub fn min_bead_width_mm(&self) -> f64 {
+        let frac = if self.min_bead_width > 0.0 {
+            self.min_bead_width
+        } else {
+            0.85
+        };
+        frac * self.nozzle_diameter_mm
     }
 
     /// Bambu `fdm_process_single_0.20` over `fdm_process_common`.

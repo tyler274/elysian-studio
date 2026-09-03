@@ -134,7 +134,7 @@ pub fn slice_from_contours(
     let mut seam_hint = None;
     for i in 0..prepared.len() {
         let upper = prepared.get(i + 1).map(|(_, c)| c.as_slice());
-        let peri = perimeters::classic_perimeters(&prepared[i].1, settings, seam_hint, upper);
+        let peri = perimeters::generate(&prepared[i].1, settings, seam_hint, upper);
         seam_hint = peri.seam_hint;
         let (spec, contours) = prepared[i].clone();
         let mut outer_walls = peri.outer;
@@ -279,7 +279,7 @@ mod tests {
     use super::*;
     use bambu_config::{
         FuzzySkinType, InfillPattern, SeamPosition, SliceSettings, SupportType, SurfacePattern,
-        TopOneWallType,
+        TopOneWallType, WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -298,6 +298,41 @@ mod tests {
         assert!(!mid.infill.is_empty());
         assert_eq!(mid.outer_walls.len(), 1);
         assert!(!mid.inner_walls.is_empty());
+    }
+
+    #[test]
+    fn arachne_thin_wall_keeps_centerline() {
+        let mesh = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(0.7, 20.0, 10.0));
+        let mut classic = SliceSettings::default();
+        classic.infill_pattern = InfillPattern::Rectilinear;
+        classic.wall_loops = 2;
+        classic.wall_generator = WallGenerator::Classic;
+        let mut arachne = classic.clone();
+        arachne.wall_generator = WallGenerator::Arachne;
+        let a = slice_mesh(&mesh, &classic).unwrap();
+        let b = slice_mesh(&mesh, &arachne).unwrap();
+        let mid_a = &a.layers[a.layers.len() / 2];
+        let mid_b = &b.layers[b.layers.len() / 2];
+        assert_eq!(mid_a.outer_walls.len(), 1);
+        assert!(mid_a.inner_walls.is_empty());
+        assert_eq!(mid_b.outer_walls.len(), 1);
+        assert!(
+            !mid_b.inner_walls.is_empty(),
+            "arachne should keep a leftover centerline on a 0.7 mm wall"
+        );
+        let classic_len = polyline_len_mm(&mid_a.outer_walls) + polyline_len_mm(&mid_a.inner_walls);
+        let arachne_len = polyline_len_mm(&mid_b.outer_walls) + polyline_len_mm(&mid_b.inner_walls);
+        assert!(
+            arachne_len > classic_len * 1.4,
+            "thin wall arachne={arachne_len} classic={classic_len}"
+        );
+        let cube = TriangleMesh::cube(20.0);
+        let thick_a = slice_mesh(&cube, &classic).unwrap();
+        let thick_b = slice_mesh(&cube, &arachne).unwrap();
+        let t_a = &thick_a.layers[thick_a.layers.len() / 2];
+        let t_b = &thick_b.layers[thick_b.layers.len() / 2];
+        assert_eq!(t_a.outer_walls.len(), t_b.outer_walls.len());
+        assert_eq!(t_a.inner_walls.len(), t_b.inner_walls.len());
     }
 
     #[test]
