@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "FFF slice step machine: contours, perimeters, infill, skirt, brim, support"
+description = "FFF slice step machine: contours, perimeters, shells, infill, skirt, brim, support"
 
 [lints]
 workspace = true

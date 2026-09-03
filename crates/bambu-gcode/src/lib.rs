@@ -29,6 +29,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let travel_f = settings.travel_speed_mm_s * 60.0;
     let wall_f = settings.print_speed_mm_s * 60.0;
     let infill_f = settings.infill_speed_mm_s * 60.0;
+    let solid_f = settings.solid_infill_speed_mm_s * 60.0;
     let support_f = settings.support_speed_mm_s * 60.0;
 
     let mut e = 0.0_f64;
@@ -126,6 +127,58 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut e,
                 e_per_mm,
                 infill_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.solid_infill.is_empty() {
+            writeln!(out, "; FEATURE: Internal solid infill")?;
+            emit_paths(
+                &mut out,
+                &layer.solid_infill,
+                false,
+                &mut e,
+                e_per_mm,
+                solid_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.bridge.is_empty() {
+            writeln!(out, "; FEATURE: Bridge")?;
+            emit_paths(
+                &mut out,
+                &layer.bridge,
+                false,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.bottom_surface.is_empty() {
+            writeln!(out, "; FEATURE: Bottom surface")?;
+            emit_paths(
+                &mut out,
+                &layer.bottom_surface,
+                false,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.top_surface.is_empty() {
+            writeln!(out, "; FEATURE: Top surface")?;
+            emit_paths(
+                &mut out,
+                &layer.top_surface,
+                false,
+                &mut e,
+                e_per_mm,
+                wall_f,
                 travel_f,
                 &mut last,
             )?;
@@ -252,6 +305,9 @@ mod tests {
         assert!(gcode.contains("; FEATURE: Outer wall"));
         assert!(gcode.contains("; FEATURE: Sparse infill"));
         assert!(gcode.contains("; FEATURE: Skirt"));
+        assert!(gcode.contains("; FEATURE: Bottom surface"));
+        assert!(gcode.contains("; FEATURE: Top surface"));
+        assert!(gcode.contains("; FEATURE: Internal solid infill"));
     }
 
     #[test]

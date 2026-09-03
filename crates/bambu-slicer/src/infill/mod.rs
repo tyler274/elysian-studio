@@ -35,6 +35,11 @@ pub fn rectilinear(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) ->
     scanlines(polygons, spacing_mm, layer_index, false)
 }
 
+/// 100% rectilinear fill, direction alternating each layer.
+pub fn solid(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
+    scanlines(polygons, spacing_mm, 0, layer_index.is_multiple_of(2))
+}
+
 fn vertical(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
     scanlines(polygons, spacing_mm, layer_index, true)
 }

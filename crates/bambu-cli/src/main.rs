@@ -67,6 +67,12 @@ enum Commands {
         /// Overhang threshold from vertical, degrees.
         #[arg(long, default_value_t = 30.0)]
         support_angle: f64,
+        /// Solid bottom shell layers.
+        #[arg(long, default_value_t = 3)]
+        bottom: u32,
+        /// Solid top shell layers.
+        #[arg(long, default_value_t = 3)]
+        top: u32,
         /// Force CPU triangle–plane intersection.
         #[arg(long, conflicts_with = "gpu")]
         cpu: bool,
@@ -106,6 +112,8 @@ fn run() -> Result<(), CliError> {
             brim,
             support,
             support_angle,
+            bottom,
+            top,
             cpu,
             gpu,
         } => {
@@ -124,6 +132,8 @@ fn run() -> Result<(), CliError> {
                 brim,
                 support,
                 support_angle,
+                bottom,
+                top,
                 cpu,
                 gpu,
             )?;
@@ -147,6 +157,8 @@ pub fn slice_file(
     brim: f64,
     enable_support: bool,
     support_angle: f64,
+    bottom: u32,
+    top: u32,
     force_cpu: bool,
     force_gpu: bool,
 ) -> Result<String, CliError> {
@@ -162,6 +174,8 @@ pub fn slice_file(
         brim_width_mm: brim.max(0.0),
         enable_support,
         support_threshold_angle_deg: support_angle.clamp(0.0, 89.0),
+        bottom_shell_layers: bottom,
+        top_shell_layers: top,
         ..Default::default()
     };
 

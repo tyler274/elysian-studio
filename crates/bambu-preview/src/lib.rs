@@ -9,6 +9,10 @@ pub enum ExtrusionRole {
     OuterWall,
     InnerWall,
     Infill,
+    SolidInfill,
+    TopSurface,
+    BottomSurface,
+    Bridge,
     Skirt,
     Brim,
     Support,
@@ -44,6 +48,28 @@ impl ToolpathBuffer {
             emit_paths(&mut vertices, &layer.outer_walls, z, ExtrusionRole::OuterWall, true);
             emit_paths(&mut vertices, &layer.inner_walls, z, ExtrusionRole::InnerWall, true);
             emit_paths(&mut vertices, &layer.infill, z, ExtrusionRole::Infill, false);
+            emit_paths(
+                &mut vertices,
+                &layer.solid_infill,
+                z,
+                ExtrusionRole::SolidInfill,
+                false,
+            );
+            emit_paths(&mut vertices, &layer.bridge, z, ExtrusionRole::Bridge, false);
+            emit_paths(
+                &mut vertices,
+                &layer.bottom_surface,
+                z,
+                ExtrusionRole::BottomSurface,
+                false,
+            );
+            emit_paths(
+                &mut vertices,
+                &layer.top_surface,
+                z,
+                ExtrusionRole::TopSurface,
+                false,
+            );
         }
         Self { vertices }
     }

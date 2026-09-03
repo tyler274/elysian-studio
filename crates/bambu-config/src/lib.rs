@@ -96,6 +96,11 @@ pub struct SliceSettings {
     pub support_xy_distance_mm: f64,
     pub support_top_z_distance_mm: f64,
     pub support_interface_layers: u32,
+    /// Solid layers at the bottom of the part (0 disables).
+    pub bottom_shell_layers: u32,
+    /// Solid layers at the top of the part (0 disables).
+    pub top_shell_layers: u32,
+    pub solid_infill_speed_mm_s: f64,
 }
 
 impl Default for SliceSettings {
@@ -127,6 +132,9 @@ impl Default for SliceSettings {
             support_xy_distance_mm: 0.35,
             support_top_z_distance_mm: 0.2,
             support_interface_layers: 2,
+            bottom_shell_layers: 3,
+            top_shell_layers: 3,
+            solid_infill_speed_mm_s: 80.0,
         }
     }
 }

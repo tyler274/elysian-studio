@@ -3,6 +3,7 @@
 mod clip;
 mod infill;
 mod perimeters;
+mod prepare_infill;
 mod seams;
 mod skirt_brim;
 mod slice_plane;
@@ -31,7 +32,12 @@ pub struct Layer {
     pub contours: Vec<Polygon>,
     pub outer_walls: Vec<Polyline>,
     pub inner_walls: Vec<Polyline>,
+    pub infill_region: Vec<Polygon>,
     pub infill: Vec<Polyline>,
+    pub solid_infill: Vec<Polyline>,
+    pub top_surface: Vec<Polyline>,
+    pub bottom_surface: Vec<Polyline>,
+    pub bridge: Vec<Polyline>,
     pub support: Vec<Polyline>,
     pub support_interface: Vec<Polyline>,
     pub support_region: Vec<Polygon>,
@@ -93,14 +99,18 @@ pub fn slice_from_contours(
         }
         let peri = perimeters::classic_perimeters(&contours, settings, seam_hint);
         seam_hint = peri.seam_hint;
-        let infill = infill::generate(&peri.infill_region, settings, index, z);
         out.push(Layer {
             z_mm: z,
             index,
             contours,
             outer_walls: peri.outer,
             inner_walls: peri.inner,
-            infill,
+            infill_region: peri.infill_region,
+            infill: Vec::new(),
+            solid_infill: Vec::new(),
+            top_surface: Vec::new(),
+            bottom_surface: Vec::new(),
+            bridge: Vec::new(),
             support: Vec::new(),
             support_interface: Vec::new(),
             support_region: Vec::new(),
@@ -110,6 +120,7 @@ pub fn slice_from_contours(
         index += 1;
     }
 
+    prepare_infill::apply(&mut out, settings);
     support::apply_classic(&mut out, settings);
     if let Some(first) = out.first() {
         let brim = skirt_brim::brim(&first.contours, settings);
@@ -233,5 +244,55 @@ mod tests {
         );
         let cube = slice_mesh(&TriangleMesh::cube(20.0), &settings).unwrap();
         assert!(cube.layers.iter().all(|l| l.support.is_empty() && l.support_interface.is_empty()));
+    }
+
+    #[test]
+    fn cube_top_and_bottom_shells() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result.layers.len();
+        let bottom_n = settings.bottom_shell_layers as usize;
+        let top_n = settings.top_shell_layers as usize;
+        assert!(!result.layers[0].bottom_surface.is_empty());
+        assert!(result.layers[0].infill.is_empty());
+        assert!(!result.layers[n - 1].top_surface.is_empty());
+        for layer in result.layers.iter().take(bottom_n).skip(1) {
+            assert!(
+                !layer.solid_infill.is_empty() || !layer.bottom_surface.is_empty(),
+                "expected solid bottom shell on layer {}",
+                layer.index
+            );
+        }
+        for layer in result.layers.iter().skip(n - top_n).take(top_n - 1) {
+            assert!(
+                !layer.solid_infill.is_empty() || !layer.top_surface.is_empty(),
+                "expected solid top shell on layer {}",
+                layer.index
+            );
+        }
+        let mid = &result.layers[n / 2];
+        assert!(mid.top_surface.is_empty());
+        assert!(mid.bottom_surface.is_empty());
+        assert!(mid.solid_infill.is_empty());
+        assert!(!mid.infill.is_empty());
+    }
+
+    #[test]
+    fn table_overhang_is_bridged() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let bridges = result
+            .layers
+            .iter()
+            .filter(|l| !l.bridge.is_empty())
+            .count();
+        assert!(
+            bridges >= 1,
+            "expected bridge fill on the slab overhang, got {bridges}"
+        );
     }
 }
