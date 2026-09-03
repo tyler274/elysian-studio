@@ -279,6 +279,16 @@ mod tests {
     }
 
     #[test]
+    fn bbl_0_20_cube_has_brim_not_skirt() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::bbl_0_20();
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert!(result.layers[0].skirt.is_empty());
+        assert!(!result.layers[0].brim.is_empty());
+        assert!((90..=105).contains(&result.layers.len()));
+    }
+
+    #[test]
     fn table_overhang_is_bridged() {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
         let mut settings = SliceSettings::default();

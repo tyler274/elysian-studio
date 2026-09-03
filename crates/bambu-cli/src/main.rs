@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use bambu_config::{InfillPattern, SeamPosition, SliceSettings};
+use bambu_config::{
+    bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, SeamPosition, SliceSettings,
+};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
 use bambu_io::load_stl;
@@ -22,6 +24,8 @@ pub enum CliError {
     Gpu(#[from] bambu_gpu::GpuError),
     #[error(transparent)]
     StdIo(#[from] std::io::Error),
+    #[error(transparent)]
+    Config(#[from] ConfigError),
     #[error("unknown infill pattern '{0}' (rectilinear|grid|concentric|gyroid|honeycomb)")]
     InfillPattern(String),
     #[error("unknown seam '{0}' (aligned|rear|nearest|random)")]
@@ -42,37 +46,43 @@ enum Commands {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        #[arg(long, default_value_t = 0.2)]
-        layer_height: f64,
-        #[arg(long, default_value_t = 0.20)]
-        infill: f64,
-        #[arg(long, default_value_t = 2)]
-        walls: u32,
-        #[arg(long, default_value = "gyroid")]
-        infill_pattern: String,
-        #[arg(long, default_value = "aligned")]
-        seam: String,
+        /// Bambu process JSON (follows `inherits` in the same directory).
+        #[arg(long)]
+        settings: Option<PathBuf>,
+        /// Load upstream `0.20mm Standard @BBL X1C` (15% grid, brim 5, 5 top shells).
+        #[arg(long)]
+        bbl_0_20: bool,
+        #[arg(long)]
+        layer_height: Option<f64>,
+        #[arg(long)]
+        infill: Option<f64>,
+        #[arg(long)]
+        walls: Option<u32>,
+        #[arg(long)]
+        infill_pattern: Option<String>,
+        #[arg(long)]
+        seam: Option<String>,
         /// Skirt loops around the first layer (0 disables).
-        #[arg(long, default_value_t = 2)]
-        skirt: u32,
+        #[arg(long)]
+        skirt: Option<u32>,
         /// Gap from object/brim to the innermost skirt loop, millimeters.
-        #[arg(long, default_value_t = 2.0)]
-        skirt_distance: f64,
+        #[arg(long)]
+        skirt_distance: Option<f64>,
         /// Outer brim width in millimeters (0 disables).
-        #[arg(long, default_value_t = 0.0)]
-        brim: f64,
+        #[arg(long)]
+        brim: Option<f64>,
         /// Generate classic grid supports under overhangs.
-        #[arg(long, default_value_t = false)]
+        #[arg(long)]
         support: bool,
         /// Overhang threshold from vertical, degrees.
-        #[arg(long, default_value_t = 30.0)]
-        support_angle: f64,
+        #[arg(long)]
+        support_angle: Option<f64>,
         /// Solid bottom shell layers.
-        #[arg(long, default_value_t = 3)]
-        bottom: u32,
+        #[arg(long)]
+        bottom: Option<u32>,
         /// Solid top shell layers.
-        #[arg(long, default_value_t = 3)]
-        top: u32,
+        #[arg(long)]
+        top: Option<u32>,
         /// Force CPU triangle–plane intersection.
         #[arg(long, conflicts_with = "gpu")]
         cpu: bool,
@@ -102,6 +112,8 @@ fn run() -> Result<(), CliError> {
         Commands::Slice {
             input,
             output,
+            settings,
+            bbl_0_20,
             layer_height,
             infill,
             walls,
@@ -117,26 +129,55 @@ fn run() -> Result<(), CliError> {
             cpu,
             gpu,
         } => {
-            let pattern = InfillPattern::from_name(&infill_pattern)
-                .ok_or(CliError::InfillPattern(infill_pattern))?;
-            let seam = SeamPosition::from_name(&seam).ok_or(CliError::Seam(seam))?;
-            let gcode = slice_file(
-                &input,
-                layer_height,
-                infill,
-                walls,
-                pattern,
-                seam,
-                skirt,
-                skirt_distance,
-                brim,
-                support,
-                support_angle,
-                bottom,
-                top,
-                cpu,
-                gpu,
-            )?;
+            let mut slice_settings = if let Some(path) = settings {
+                load_bbl_process(path)?
+            } else if bbl_0_20 {
+                if let Some(paths) = bbl_oracle_paths() {
+                    load_bbl_process(&paths.process)?
+                } else {
+                    SliceSettings::bbl_0_20()
+                }
+            } else {
+                SliceSettings::default()
+            };
+            if let Some(h) = layer_height {
+                slice_settings.layer_height_mm = h;
+            }
+            if let Some(i) = infill {
+                slice_settings.infill_density = i;
+            }
+            if let Some(w) = walls {
+                slice_settings.wall_loops = w.max(1);
+            }
+            if let Some(name) = infill_pattern {
+                slice_settings.infill_pattern =
+                    InfillPattern::from_name(&name).ok_or(CliError::InfillPattern(name))?;
+            }
+            if let Some(name) = seam {
+                slice_settings.seam = SeamPosition::from_name(&name).ok_or(CliError::Seam(name))?;
+            }
+            if let Some(s) = skirt {
+                slice_settings.skirt_loops = s;
+            }
+            if let Some(d) = skirt_distance {
+                slice_settings.skirt_distance_mm = d;
+            }
+            if let Some(b) = brim {
+                slice_settings.brim_width_mm = b.max(0.0);
+            }
+            if support {
+                slice_settings.enable_support = true;
+            }
+            if let Some(a) = support_angle {
+                slice_settings.support_threshold_angle_deg = a.clamp(0.0, 89.0);
+            }
+            if let Some(n) = bottom {
+                slice_settings.bottom_shell_layers = n;
+            }
+            if let Some(n) = top {
+                slice_settings.top_shell_layers = n;
+            }
+            let gcode = slice_file(&input, &slice_settings, cpu, gpu)?;
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
         }
@@ -144,48 +185,23 @@ fn run() -> Result<(), CliError> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn slice_file(
     input: &std::path::Path,
-    layer_height: f64,
-    infill: f64,
-    walls: u32,
-    infill_pattern: InfillPattern,
-    seam: SeamPosition,
-    skirt: u32,
-    skirt_distance: f64,
-    brim: f64,
-    enable_support: bool,
-    support_angle: f64,
-    bottom: u32,
-    top: u32,
+    settings: &SliceSettings,
     force_cpu: bool,
     force_gpu: bool,
 ) -> Result<String, CliError> {
     let mesh = load_stl(input)?;
-    let settings = SliceSettings {
-        layer_height_mm: layer_height,
-        infill_density: infill,
-        wall_loops: walls.max(1),
-        infill_pattern,
-        seam,
-        skirt_loops: skirt,
-        skirt_distance_mm: skirt_distance,
-        brim_width_mm: brim.max(0.0),
-        enable_support,
-        support_threshold_angle_deg: support_angle.clamp(0.0, 89.0),
-        bottom_shell_layers: bottom,
-        top_shell_layers: top,
-        ..Default::default()
-    };
-
     let (sliced, backend) = if force_cpu {
-        (slice_mesh(&mesh, &settings)?, SliceBackend::Cpu)
+        (slice_mesh(&mesh, settings)?, SliceBackend::Cpu)
     } else if force_gpu {
-        (slice_on_vulkan(&mesh, &settings)?, SliceBackend::VulkanCompute)
+        (
+            slice_on_vulkan(&mesh, settings)?,
+            SliceBackend::VulkanCompute,
+        )
     } else {
-        slice_with_gpu_or_cpu(&mesh, &settings)?
+        slice_with_gpu_or_cpu(&mesh, settings)?
     };
     tracing::info!("sliced {} layers ({backend})", sliced.layers.len());
-    Ok(write_gcode(&settings, &sliced)?)
+    Ok(write_gcode(settings, &sliced)?)
 }

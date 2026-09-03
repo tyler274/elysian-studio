@@ -44,6 +44,16 @@ cargo run -p bambu-ui
 
 The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. Drag to orbit, scroll to zoom, Open STL, Slice.
 
+Load the same Bambu process JSON the C++ app uses (`inherits` is followed in-directory):
+
+```bash
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --bbl-0-20
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode \
+  --settings /home/luluco/code/BambuStudio/resources/profiles/BBL/process/0.20mm\ Standard\ @BBL\ X1C.json
+```
+
+`cargo test -p bambu-cli --test golden_cube` slices the 20 mm cube with that profile in Rust **and** with the upstream `bambu-studio --slice=0` CLI, then compares `CHANGE_LAYER` count, `FEATURE` roles, and the C++ `; CONFIG_BLOCK` values. The C++ binary is taken from `BAMBU_STUDIO` or `PATH`. Profiles come from `BAMBU_STUDIO_RESOURCES` or `../BambuStudio/resources`. Set `BAMBU_STUDIO_REQUIRE_ORACLE=1` to fail if the C++ CLI is missing.
+
 Nix:
 
 ```bash

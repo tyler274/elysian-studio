@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 
+mod bbl;
+
 use serde::{Deserialize, Serialize};
+
+pub use bbl::{
+    bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, load_bbl_process,
+    write_flattened_bbl_profile, BblOraclePaths, ConfigError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InfillPattern {
@@ -20,6 +27,7 @@ impl InfillPattern {
             "concentric" => Self::Concentric,
             "gyroid" => Self::Gyroid,
             "honeycomb" | "hexagon" => Self::Honeycomb,
+            "zigzag" | "zig-zag" => Self::Rectilinear,
             _ => return None,
         })
     }
@@ -161,6 +169,23 @@ impl SliceSettings {
             f64::INFINITY
         } else {
             (self.line_width_mm / self.support_density).max(self.line_width_mm)
+        }
+    }
+
+    /// Bambu `fdm_process_single_0.20` over `fdm_process_common`.
+    pub fn bbl_0_20() -> Self {
+        Self {
+            infill_density: 0.15,
+            infill_pattern: InfillPattern::Grid,
+            skirt_loops: 0,
+            brim_width_mm: 5.0,
+            top_shell_layers: 5,
+            travel_speed_mm_s: 400.0,
+            print_speed_mm_s: 200.0,
+            infill_speed_mm_s: 270.0,
+            solid_infill_speed_mm_s: 250.0,
+            support_speed_mm_s: 80.0,
+            ..Self::default()
         }
     }
 }

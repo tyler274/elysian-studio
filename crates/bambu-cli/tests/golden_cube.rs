@@ -1,11 +1,14 @@
-//! Golden cube: our G-code layer count vs optional C++ Bambu Studio CLI.
+//! Golden cube: rewrite G-code vs upstream C++ Bambu Studio CLI.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
-use bambu_config::SliceSettings;
-use bambu_gcode::{layer_stats, write_gcode};
+use bambu_config::{
+    bbl_oracle_paths, load_bbl_process, write_flattened_bbl_profile, SliceSettings,
+};
+use bambu_gcode::{
+    assert_matches_cpp, layer_stats, parse_config_comments, parse_gcode, write_gcode,
+};
 use bambu_geom::TriangleMesh;
 use bambu_io::write_stl;
 use bambu_slicer::slice_mesh;
@@ -23,77 +26,119 @@ fn cube_gcode_layer_count() {
         &gcode[..gcode.len().min(800)]
     );
     assert!(gcode.contains("G1 X"), "missing extrusion moves");
+    assert!(gcode.contains("; CHANGE_LAYER"));
 }
 
 #[test]
-fn cube_matches_cpp_bambu_studio_when_available() {
+fn cube_matches_cpp_bambu_studio() {
     let Some(bin) = find_bambu_studio() else {
-        eprintln!("skipping C++ oracle: bambu-studio not on PATH");
+        if require_oracle() {
+            panic!(
+                "BAMBU_STUDIO_REQUIRE_ORACLE=1 but no C++ bambu-studio CLI was found. Set BAMBU_STUDIO or install Bambu Studio."
+            );
+        }
+        eprintln!("skipping C++ oracle: bambu-studio not on PATH (set BAMBU_STUDIO_REQUIRE_ORACLE=1 to fail)");
         return;
     };
 
-    let dir = std::env::temp_dir().join("bambu-studio-rs-golden");
-    let _ = std::fs::create_dir_all(&dir);
-    let generated_stl = dir.join("cube_20mm.stl");
-    let ours = dir.join("cube_rs.gcode");
+    let profiles = bbl_oracle_paths().unwrap_or_else(|| {
+        panic!(
+            "upstream BambuStudio profiles not found; set BAMBU_STUDIO_RESOURCES or keep ../BambuStudio checked out"
+        );
+    });
+
+    let dir = std::env::temp_dir().join("bambu-studio-rs-oracle");
     let cpp_dir = dir.join("cpp_out");
+    let cpp_data = dir.join("cpp_data");
+    let flat_dir = dir.join("flat");
     let _ = std::fs::create_dir_all(&cpp_dir);
+    let _ = std::fs::create_dir_all(&cpp_data);
+    let _ = std::fs::create_dir_all(&flat_dir);
 
-    write_stl(&generated_stl, &TriangleMesh::cube(20.0)).expect("write stl");
+    let stl = dir.join("cube_20mm.stl");
+    write_stl(&stl, &TriangleMesh::cube(20.0)).expect("write stl");
 
-    let mesh = TriangleMesh::cube(20.0);
-    let settings = SliceSettings::default();
-    let sliced = slice_mesh(&mesh, &settings).unwrap();
-    std::fs::write(&ours, write_gcode(&settings, &sliced).unwrap()).unwrap();
+    let process_flat = flat_dir.join("process.json");
+    let machine_flat = flat_dir.join("machine.json");
+    let filament_flat = flat_dir.join("filament.json");
+    write_flattened_bbl_profile(&profiles.process, &process_flat).expect("flatten process");
+    write_flattened_bbl_profile(&profiles.machine, &machine_flat).expect("flatten machine");
+    write_flattened_bbl_profile(&profiles.filament, &filament_flat).expect("flatten filament");
 
-    let repo_stl = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/golden/cube_20mm.stl");
+    let settings = load_bbl_process(&profiles.process).expect("load BBL process");
+    assert_eq!(settings.wall_loops, 2);
+    assert!((settings.infill_density - 0.15).abs() < 1e-9);
+    let sliced = slice_mesh(&TriangleMesh::cube(20.0), &settings).expect("rust slice");
+    let ours_gcode = write_gcode(&settings, &sliced).expect("rust gcode");
+    std::fs::write(dir.join("cube_rs.gcode"), &ours_gcode).unwrap();
 
-    let mut inputs = vec![generated_stl];
-    if repo_stl.is_file() {
-        inputs.push(repo_stl);
-    }
+    let cpp_gcode = run_cpp_slice(
+        &bin,
+        &cpp_dir,
+        &cpp_data,
+        &stl,
+        &machine_flat,
+        &process_flat,
+        &filament_flat,
+    )
+    .unwrap_or_else(|err| panic!("C++ Bambu Studio oracle failed using {}:\n{err}", bin.display()));
 
-    // Bambu Studio CLI (from --help / BambuStudio.cpp cli_actions):
-    //   --slice=0       slice all plates (also accepted as `--slice 0`)
-    //   --debug 0       fatal-only logging
-    //   --outputdir DIR writes plate_N.gcode into DIR
-    // There is no `--export-gcode`.
-    let flag_sets: [&[&str]; 2] = [
-        &["--slice=0", "--debug", "0", "--outputdir"],
-        &["--slice", "0", "--debug", "0", "--outputdir"],
-    ];
+    let ours = parse_gcode(&ours_gcode);
+    let cpp = parse_gcode(&cpp_gcode);
+    let cpp_cfg = parse_config_comments(&cpp_gcode);
 
-    let mut last_skip = String::new();
-    for input in &inputs {
-        for flags in flag_sets {
-            match run_cpp_slice(&bin, flags, &cpp_dir, input) {
-                Ok(cpp_gcode) => {
-                    let ours_gcode = std::fs::read_to_string(&ours).unwrap();
-                    let ours_stats = layer_stats(&ours_gcode);
-                    let cpp_stats = layer_stats(&cpp_gcode);
-                    let cpp_layers = cpp_stats.layer_comments.max(cpp_stats.unique_z);
-                    let ours_layers = ours_stats.layer_comments;
-                    let delta = (ours_layers as i32 - cpp_layers as i32).unsigned_abs() as usize;
-                    assert!(
-                        delta <= 10,
-                        "layer count diverged: rust={ours_layers} cpp={cpp_layers} ({cpp_stats:?})"
-                    );
-                    return;
-                }
-                Err(msg) => last_skip = msg,
-            }
-        }
-    }
+    assert_eq!(
+        cpp_cfg.get("layer_height").map(String::as_str),
+        Some("0.2"),
+        "C++ did not apply flattened BBL process (layer_height): {cpp_cfg:?}"
+    );
+    assert_eq!(
+        cpp_cfg.get("wall_loops").map(String::as_str),
+        Some("2"),
+        "C++ wall_loops: {cpp_cfg:?}"
+    );
+    let density = cpp_cfg
+        .get("sparse_infill_density")
+        .map(String::as_str)
+        .unwrap_or("");
+    assert!(
+        density.contains("15"),
+        "C++ sparse_infill_density should be 15% after flatten, got {density:?}"
+    );
+    assert_eq!(
+        cpp_cfg.get("top_shell_layers").map(String::as_str),
+        Some("5"),
+        "C++ top_shell_layers: {cpp_cfg:?}"
+    );
+    assert_eq!(
+        cpp_cfg.get("skirt_loops").map(String::as_str),
+        Some("0"),
+        "C++ skirt_loops: {cpp_cfg:?}"
+    );
 
-    eprintln!("skipping C++ oracle: {last_skip}");
+    assert_matches_cpp(&ours, &cpp);
+    assert!(
+        ours.features.contains("Brim"),
+        "rewrite missing Brim under BBL 0.20: {:?}",
+        ours.features
+    );
+}
+
+fn require_oracle() -> bool {
+    matches!(
+        std::env::var("BAMBU_STUDIO_REQUIRE_ORACLE").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes")
+    )
 }
 
 fn run_cpp_slice(
     bin: &Path,
-    flags: &[&str],
     outdir: &Path,
+    datadir: &Path,
     input: &Path,
+    machine: &Path,
+    process: &Path,
+    filament: &Path,
 ) -> Result<String, String> {
     let _ = std::fs::create_dir_all(outdir);
     if let Ok(entries) = std::fs::read_dir(outdir) {
@@ -105,9 +150,18 @@ fn run_cpp_slice(
         }
     }
 
+    let load_settings = format!("{};{}", machine.display(), process.display());
     let output = Command::new(bin)
-        .args(flags)
-        .arg(outdir)
+        .arg(format!("--datadir={}", datadir.display()))
+        .arg("--debug=0")
+        .arg("--slice=0")
+        .arg(format!("--outputdir={}", outdir.display()))
+        .arg("--load-settings")
+        .arg(&load_settings)
+        .arg("--load-filaments")
+        .arg(filament.as_os_str())
+        .arg("--ensure-on-bed")
+        .arg("--no-check")
         .arg(input)
         .output()
         .map_err(|err| format!("failed to spawn {}: {err}", bin.display()))?;
@@ -121,17 +175,14 @@ fn run_cpp_slice(
 
     if !output.status.success() {
         return Err(format!(
-            "{} {:?} {} {} failed: {captured}",
-            bin.display(),
-            flags,
-            outdir.display(),
-            input.display()
+            "{} --slice=0 failed: {captured}",
+            bin.display()
         ));
     }
 
     let gcode_path = find_gcode(outdir).ok_or_else(|| {
         format!(
-            "{} succeeded but no .gcode under {} (STL-only CLI may need a 3MF/profile). {captured}",
+            "{} succeeded but no .gcode under {}. {captured}",
             bin.display(),
             outdir.display()
         )
@@ -158,6 +209,12 @@ fn find_gcode(outdir: &Path) -> Option<PathBuf> {
 }
 
 fn find_bambu_studio() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("BAMBU_STUDIO") {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
     for name in ["bambu-studio", "BambuStudio", "bambu-studio-bin"] {
         if let Ok(out) = Command::new("which").arg(name).output() {
             if out.status.success() {
@@ -168,6 +225,16 @@ fn find_bambu_studio() -> Option<PathBuf> {
             }
         }
     }
-    let _ = Duration::from_secs(1);
+    let home = PathBuf::from("/home/luluco/code/BambuStudio");
+    for rel in [
+        "build/src/bambu-studio",
+        "build/src/BambuStudio",
+        "build-release/src/bambu-studio",
+    ] {
+        let candidate = home.join(rel);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
     None
 }
