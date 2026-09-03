@@ -17,6 +17,7 @@ pub enum ExtrusionRole {
     Brim,
     Support,
     SupportInterface,
+    Ironing,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +38,13 @@ impl ToolpathBuffer {
             let z = layer.z_mm as f32;
             emit_paths(&mut vertices, &layer.skirt, z, ExtrusionRole::Skirt, true);
             emit_paths(&mut vertices, &layer.brim, z, ExtrusionRole::Brim, true);
-            emit_paths(&mut vertices, &layer.support, z, ExtrusionRole::Support, false);
+            emit_paths(
+                &mut vertices,
+                &layer.support,
+                z,
+                ExtrusionRole::Support,
+                false,
+            );
             emit_paths(
                 &mut vertices,
                 &layer.support_interface,
@@ -45,9 +52,27 @@ impl ToolpathBuffer {
                 ExtrusionRole::SupportInterface,
                 false,
             );
-            emit_paths(&mut vertices, &layer.outer_walls, z, ExtrusionRole::OuterWall, true);
-            emit_paths(&mut vertices, &layer.inner_walls, z, ExtrusionRole::InnerWall, true);
-            emit_paths(&mut vertices, &layer.infill, z, ExtrusionRole::Infill, false);
+            emit_paths(
+                &mut vertices,
+                &layer.outer_walls,
+                z,
+                ExtrusionRole::OuterWall,
+                true,
+            );
+            emit_paths(
+                &mut vertices,
+                &layer.inner_walls,
+                z,
+                ExtrusionRole::InnerWall,
+                true,
+            );
+            emit_paths(
+                &mut vertices,
+                &layer.infill,
+                z,
+                ExtrusionRole::Infill,
+                false,
+            );
             emit_paths(
                 &mut vertices,
                 &layer.solid_infill,
@@ -55,7 +80,13 @@ impl ToolpathBuffer {
                 ExtrusionRole::SolidInfill,
                 false,
             );
-            emit_paths(&mut vertices, &layer.bridge, z, ExtrusionRole::Bridge, false);
+            emit_paths(
+                &mut vertices,
+                &layer.bridge,
+                z,
+                ExtrusionRole::Bridge,
+                false,
+            );
             emit_paths(
                 &mut vertices,
                 &layer.bottom_surface,
@@ -69,6 +100,13 @@ impl ToolpathBuffer {
                 z,
                 ExtrusionRole::TopSurface,
                 false,
+            );
+            emit_paths(
+                &mut vertices,
+                &layer.ironing,
+                z,
+                ExtrusionRole::Ironing,
+                layer.ironing.iter().any(|p| p.len() > 2),
             );
         }
         Self { vertices }

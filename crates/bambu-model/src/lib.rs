@@ -25,9 +25,7 @@ pub struct Instance {
 
 impl Default for Instance {
     fn default() -> Self {
-        Self {
-            offset: Vec3::ZERO,
-        }
+        Self { offset: Vec3::ZERO }
     }
 }
 

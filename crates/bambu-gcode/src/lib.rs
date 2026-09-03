@@ -193,6 +193,24 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut last,
             )?;
         }
+        if !layer.ironing.is_empty() {
+            writeln!(out, "; FEATURE: Ironing")?;
+            let iron_height =
+                settings.layer_height_at(layer.index) * settings.ironing_flow.max(0.0);
+            let iron_e = Flow::from_settings(settings, iron_height).e_per_mm();
+            let iron_f = settings.ironing_speed_mm_s * 60.0;
+            let iron_closed = layer.ironing.iter().any(|p| p.len() > 2);
+            emit_paths(
+                &mut out,
+                &layer.ironing,
+                iron_closed,
+                &mut e,
+                iron_e,
+                iron_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
     }
 
     writeln!(out, "M104 S0")?;
@@ -228,11 +246,7 @@ fn emit_paths(
             let b = pts[(i + 1) % n];
             let dist = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
             *e += dist * e_per_mm;
-            writeln!(
-                out,
-                "G1 X{:.3} Y{:.3} E{:.5} F{:.0}",
-                b.0, b.1, *e, print_f
-            )?;
+            writeln!(out, "G1 X{:.3} Y{:.3} E{:.5} F{:.0}", b.0, b.1, *e, print_f)?;
             *last = Some(b);
         }
     }
@@ -336,9 +350,8 @@ pub fn parse_gcode(gcode: &str) -> GcodeReport {
         layer_colon
     };
     let z_min = layer_z.iter().copied().fold(f64::INFINITY, f64::min);
-    let z_max = max_z_height.unwrap_or_else(|| {
-        layer_z.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-    });
+    let z_max =
+        max_z_height.unwrap_or_else(|| layer_z.iter().copied().fold(f64::NEG_INFINITY, f64::max));
     GcodeReport {
         layer_changes,
         unique_z: layer_z.len(),
@@ -417,8 +430,7 @@ pub fn assert_matches_cpp(ours: &GcodeReport, cpp: &GcodeReport) {
         ours.max_e
     );
     assert!(
-        cpp.max_e > 0.0
-            || cpp.features.iter().any(|f| f != "Custom" && f != "Travel"),
+        cpp.max_e > 0.0 || cpp.features.iter().any(|f| f != "Custom" && f != "Travel"),
         "C++ G-code has no extrusion (max E={}, features={:?})",
         cpp.max_e,
         cpp.features
@@ -477,6 +489,7 @@ mod tests {
         assert!(gcode.contains("; FEATURE: Bottom surface"));
         assert!(gcode.contains("; FEATURE: Top surface"));
         assert!(gcode.contains("; FEATURE: Internal solid infill"));
+        assert!(!gcode.contains("; FEATURE: Ironing"));
         assert!(gcode.contains("; CHANGE_LAYER"));
         let report = parse_gcode(&gcode);
         assert_eq!(report.layer_changes, stats.layer_comments);
@@ -501,10 +514,7 @@ mod tests {
         assert!(gcode.contains("; FEATURE: Brim"));
         assert!(!gcode.contains("; FEATURE: Skirt"));
         let stats = layer_stats(&gcode);
-        assert!(
-            (90..=105).contains(&stats.layer_comments),
-            "{stats:?}"
-        );
+        assert!((90..=105).contains(&stats.layer_comments), "{stats:?}");
     }
 
     #[test]
@@ -514,6 +524,20 @@ mod tests {
         settings.enable_support = true;
         let sliced = slice_mesh(&mesh, &settings).unwrap();
         let gcode = write_gcode(&settings, &sliced).unwrap();
-        assert!(gcode.contains("; FEATURE: Support") || gcode.contains("; FEATURE: Support interface"));
+        assert!(
+            gcode.contains("; FEATURE: Support") || gcode.contains("; FEATURE: Support interface")
+        );
+    }
+
+    #[test]
+    fn cube_ironing_gcode_feature() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Ironing"));
+        let report = parse_gcode(&gcode);
+        assert!(report.features.contains("Ironing"));
     }
 }

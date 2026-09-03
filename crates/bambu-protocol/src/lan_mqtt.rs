@@ -12,7 +12,7 @@ use crate::mqtt::{
     parse_ams, parse_push_status, pushall, report_topic, request_topic, LAN_MQTT_PORT,
     LAN_MQTT_USER,
 };
-use crate::signing::maybe_sign;
+use crate::signing::maybe_sign_ex;
 use crate::tls::{lan_client_config, peek_peer_cn, TlsError};
 use bambu_device::{AmsState, MachineState};
 
@@ -120,18 +120,22 @@ pub async fn fetch_status(
         .map(|st| (st, ams))
 }
 
-pub async fn publish_signed(
-    host: &str,
-    access_code: &str,
-    serial: &str,
-    payload: &str,
-    creds: &SlicerCredentials,
-    wait_report: Duration,
-) -> Result<Option<String>, MqttSessionError> {
-    let serial = resolve_serial(host, serial)?;
-    let signed = maybe_sign(payload, creds)?;
+pub struct PublishRequest<'a> {
+    pub host: &'a str,
+    pub access_code: &'a str,
+    pub serial: &'a str,
+    pub payload: &'a str,
+    pub creds: &'a SlicerCredentials,
+    pub device_cert_pem: Option<&'a str>,
+    pub secured: bool,
+    pub wait_report: Duration,
+}
+
+pub async fn publish_signed(req: PublishRequest<'_>) -> Result<Option<String>, MqttSessionError> {
+    let serial = resolve_serial(req.host, req.serial)?;
+    let signed = maybe_sign_ex(req.payload, req.creds, req.device_cert_pem, req.secured)?;
     let config = lan_client_config()?;
-    let opts = mqtt_options(host, access_code, config)?;
+    let opts = mqtt_options(req.host, req.access_code, config)?;
     let (client, mut eventloop) = AsyncClient::new(opts, 32);
     client
         .subscribe(report_topic(&serial), QoS::AtMostOnce)
@@ -147,7 +151,7 @@ pub async fn publish_signed(
         .await
         .map_err(|err| MqttSessionError::Message(err.to_string()))?;
 
-    let deadline = Instant::now() + wait_report;
+    let deadline = Instant::now() + req.wait_report;
     let mut last = None;
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -161,7 +165,7 @@ pub async fn publish_signed(
                 }
             }
             Ok(Ok(Event::Incoming(Incoming::PubAck(_)))) => {
-                if wait_report.is_zero() {
+                if req.wait_report.is_zero() {
                     break;
                 }
             }

@@ -22,11 +22,7 @@ impl OrbitCamera {
 
     pub fn eye(self) -> Vec3 {
         let cp = self.pitch.cos();
-        let dir = Vec3::new(
-            self.yaw.cos() * cp,
-            self.yaw.sin() * cp,
-            self.pitch.sin(),
-        );
+        let dir = Vec3::new(self.yaw.cos() * cp, self.yaw.sin() * cp, self.pitch.sin());
         self.target + dir * self.distance
     }
 

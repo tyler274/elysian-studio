@@ -96,6 +96,8 @@ enum Message {
     Serial(String),
     Send,
     Sent(Result<(), String>),
+    Chamber,
+    ChamberShot(Result<String, String>),
 }
 
 impl From<ViewportEvent> for Message {
@@ -264,6 +266,38 @@ impl App {
             Message::Sent(Err(err)) => {
                 self.status = format!("send failed: {err}");
             }
+            Message::Chamber => {
+                if self.host.is_empty() || self.access_code.is_empty() {
+                    self.status = "printer IP and LAN access code required".into();
+                    return Task::none();
+                }
+                let host = self.host.clone();
+                let code = self.access_code.clone();
+                self.status = format!("camera TLS :6000 {host}…");
+                return Task::perform(
+                    async move {
+                        std::thread::spawn(move || {
+                            let jpeg = bambu_protocol::snapshot_jpeg(&host, &code)
+                                .map_err(|err| err.to_string())?;
+                            let frame = bambu_protocol::jpeg_to_frame(&jpeg)
+                                .map_err(|err| err.to_string())?;
+                            Ok(format!(
+                                "chamber {}×{} ({} JPEG bytes)",
+                                frame.width,
+                                frame.height,
+                                jpeg.len()
+                            ))
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("camera thread panicked".into()))
+                    },
+                    Message::ChamberShot,
+                );
+            }
+            Message::ChamberShot(Ok(msg)) => self.status = msg,
+            Message::ChamberShot(Err(err)) => {
+                self.status = format!("camera failed: {err}");
+            }
         }
         Task::none()
     }
@@ -284,6 +318,7 @@ impl App {
                 .on_input(Message::AccessCode),
             text_input("serial (optional)", &self.serial).on_input(Message::Serial),
             button("Send last slice").on_press(Message::Send),
+            button("Chamber snapshot").on_press(Message::Chamber),
             text(&self.status).size(13),
             text("Drag: orbit · Scroll: zoom").size(12),
         ]

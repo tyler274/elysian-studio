@@ -1,8 +1,6 @@
 //! Clipper2 (pure Rust) boolean and offset helpers.
 
-use clipper2_rust::clipper::{
-    difference_64, inflate_paths_64, intersect_64, union_subjects_64,
-};
+use clipper2_rust::clipper::{difference_64, inflate_paths_64, intersect_64, union_subjects_64};
 use clipper2_rust::core::{FillRule, Path64, Paths64, Point64};
 use clipper2_rust::offset::{EndType, JoinType};
 

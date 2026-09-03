@@ -27,7 +27,13 @@ pub fn load_stl(path: impl AsRef<Path>) -> Result<TriangleMesh, IoError> {
     let indices = indexed
         .faces
         .iter()
-        .map(|f| [f.vertices[0] as u32, f.vertices[1] as u32, f.vertices[2] as u32])
+        .map(|f| {
+            [
+                f.vertices[0] as u32,
+                f.vertices[1] as u32,
+                f.vertices[2] as u32,
+            ]
+        })
         .collect();
     Ok(TriangleMesh { vertices, indices })
 }

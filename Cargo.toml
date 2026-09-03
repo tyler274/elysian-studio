@@ -32,7 +32,9 @@ clap = { version = "4", features = ["derive"] }
 clipper2-rust = "1"
 glam = "0.29"
 iced = { version = "0.14", features = ["tokio", "wgpu"] }
+jpeg-decoder = { version = "0.3", default-features = false }
 pollster = "0.4"
+rand = "0.8"
 rfd = "0.15"
 rsa = { version = "0.9", features = ["pem", "std"] }
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"] }

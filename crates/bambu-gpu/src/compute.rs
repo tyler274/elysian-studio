@@ -71,13 +71,12 @@ impl VulkanSliceAccel {
             backends: wgpu::Backends::VULKAN,
             ..Default::default()
         });
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            }))
-            .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
 
         let desc = wgpu::DeviceDescriptor {
             label: Some("bambu-compute"),
@@ -169,21 +168,25 @@ impl VulkanSliceAccel {
         if verts.is_empty() {
             return Err(GpuError::Request("mesh has no vertices".into()));
         }
-        let vertex_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("slice-verts"),
-            contents: bytemuck::cast_slice(&verts),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let vertex_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("slice-verts"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let tri_bytes = if tris.is_empty() {
             &[0u8; 16][..]
         } else {
             bytemuck::cast_slice(&tris)
         };
-        let tri_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("slice-tris"),
-            contents: tri_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let tri_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("slice-tris"),
+                contents: tri_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         Ok(UploadedMesh {
             vertex_buf,
             tri_buf,

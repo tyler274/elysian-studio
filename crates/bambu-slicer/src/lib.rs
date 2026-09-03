@@ -2,6 +2,7 @@
 
 mod clip;
 mod infill;
+mod ironing;
 mod perimeters;
 mod prepare_infill;
 mod seams;
@@ -43,6 +44,9 @@ pub struct Layer {
     pub support_region: Vec<Polygon>,
     pub skirt: Vec<Polyline>,
     pub brim: Vec<Polyline>,
+    pub ironing: Vec<Polyline>,
+    /// Top-shell polygons (before infill fill), used by ironing.
+    pub top_region: Vec<Polygon>,
 }
 
 impl Layer {
@@ -57,7 +61,10 @@ pub struct SliceResult {
 }
 
 /// Z samples used for a mesh (mid-layer, matching the CPU/GPU contour pass).
-pub fn layer_z_values(mesh: &TriangleMesh, settings: &SliceSettings) -> Result<Vec<f64>, SlicerError> {
+pub fn layer_z_values(
+    mesh: &TriangleMesh,
+    settings: &SliceSettings,
+) -> Result<Vec<f64>, SlicerError> {
     let aabb = mesh.aabb().ok_or(SlicerError::EmptyBounds)?;
     if mesh.indices.is_empty() {
         return Err(SlicerError::EmptyMesh);
@@ -74,7 +81,10 @@ pub fn layer_z_values(mesh: &TriangleMesh, settings: &SliceSettings) -> Result<V
     Ok(zs)
 }
 
-pub fn slice_mesh(mesh: &TriangleMesh, settings: &SliceSettings) -> Result<SliceResult, SlicerError> {
+pub fn slice_mesh(
+    mesh: &TriangleMesh,
+    settings: &SliceSettings,
+) -> Result<SliceResult, SlicerError> {
     let zs = layer_z_values(mesh, settings)?;
     let contours = zs
         .iter()
@@ -116,11 +126,14 @@ pub fn slice_from_contours(
             support_region: Vec::new(),
             skirt: Vec::new(),
             brim: Vec::new(),
+            ironing: Vec::new(),
+            top_region: Vec::new(),
         });
         index += 1;
     }
 
     prepare_infill::apply(&mut out, settings);
+    ironing::apply(&mut out, settings);
     support::apply_classic(&mut out, settings);
     if let Some(first) = out.first() {
         let brim = skirt_brim::brim(&first.contours, settings);
@@ -202,7 +215,10 @@ mod tests {
             .iter()
             .map(|p| p.to_mm().1)
             .fold(f64::MIN, f64::max);
-        assert!((start_y - max_y).abs() < 0.05, "start_y={start_y} max_y={max_y}");
+        assert!(
+            (start_y - max_y).abs() < 0.05,
+            "start_y={start_y} max_y={max_y}"
+        );
     }
 
     #[test]
@@ -243,7 +259,10 @@ mod tests {
             "expected support under the slab, got {support_layers} layers"
         );
         let cube = slice_mesh(&TriangleMesh::cube(20.0), &settings).unwrap();
-        assert!(cube.layers.iter().all(|l| l.support.is_empty() && l.support_interface.is_empty()));
+        assert!(cube
+            .layers
+            .iter()
+            .all(|l| l.support.is_empty() && l.support_interface.is_empty()));
     }
 
     #[test]
@@ -304,5 +323,68 @@ mod tests {
             bridges >= 1,
             "expected bridge fill on the slab overhang, got {bridges}"
         );
+    }
+
+    #[test]
+    fn cube_top_surfaces_get_ironing() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result.layers.len();
+        assert!(
+            !result.layers[n - 1].ironing.is_empty(),
+            "expected ironing on the topmost layer"
+        );
+        let ironed = result
+            .layers
+            .iter()
+            .filter(|l| !l.ironing.is_empty())
+            .count();
+        // C++ `top` irons `stTop` only (exposed tops), not every top-shell layer.
+        assert_eq!(ironed, 1);
+        let mid = &result.layers[n / 2];
+        assert!(mid.ironing.is_empty());
+        assert!(mid.top_region.is_empty());
+    }
+
+    #[test]
+    fn all_solid_irons_shells_without_sparse() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::AllSolid;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let ironed = result
+            .layers
+            .iter()
+            .filter(|l| !l.ironing.is_empty())
+            .count();
+        assert!(
+            ironed > 1,
+            "AllSolid should iron more than the exposed top, got {ironed}"
+        );
+        let mid = result.layers.len() / 2;
+        assert!(
+            result.layers[mid].ironing.is_empty(),
+            "sparse gyroid middle should not be ironed"
+        );
+    }
+
+    #[test]
+    fn topmost_only_irons_last_layer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::TopmostOnly;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result.layers.len();
+        assert!(!result.layers[n - 1].ironing.is_empty());
+        assert!(result.layers[..n - 1].iter().all(|l| l.ironing.is_empty()));
+    }
+
+    #[test]
+    fn default_settings_skip_ironing() {
+        let mesh = TriangleMesh::cube(20.0);
+        let result = slice_mesh(&mesh, &SliceSettings::default()).unwrap();
+        assert!(result.layers.iter().all(|l| l.ironing.is_empty()));
     }
 }

@@ -72,7 +72,11 @@ fn scanlines(
         return Vec::new();
     }
 
-    let stagger = if layer_index.is_multiple_of(2) { 0 } else { spacing / 2 };
+    let stagger = if layer_index.is_multiple_of(2) {
+        0
+    } else {
+        spacing / 2
+    };
     let mut lines = Vec::new();
     let mut v = min_v + stagger;
     while v <= max_v {
@@ -135,7 +139,7 @@ fn collect_scanline_us(polygons: &[Polygon], v: i64, vertical: bool) -> Vec<i64>
     us
 }
 
-fn concentric(polygons: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
+pub(crate) fn concentric(polygons: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
     let mut out = Vec::new();
     let mut current = polygons.to_vec();
     for _ in 0..64 {

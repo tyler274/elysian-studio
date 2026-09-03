@@ -125,6 +125,39 @@ pub fn write_to_dir(
     Ok(dir.to_path_buf())
 }
 
+pub fn device_cert_path(dir: impl AsRef<Path>, serial: &str) -> PathBuf {
+    let safe: String = serial
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    dir.as_ref().join(format!("device_{safe}.pem"))
+}
+
+pub fn load_device_cert(
+    dir: impl AsRef<Path>,
+    serial: &str,
+) -> Result<Option<String>, CredentialError> {
+    read_optional(device_cert_path(dir, serial))
+}
+
+pub fn save_device_cert(
+    dir: impl AsRef<Path>,
+    serial: &str,
+    pem: &str,
+) -> Result<PathBuf, CredentialError> {
+    let dir = dir.as_ref();
+    std::fs::create_dir_all(dir)?;
+    let path = device_cert_path(dir, serial);
+    std::fs::write(&path, pem)?;
+    Ok(path)
+}
+
 fn read_optional(path: PathBuf) -> Result<Option<String>, CredentialError> {
     match std::fs::read_to_string(&path) {
         Ok(s) if s.contains("BEGIN") => Ok(Some(s)),

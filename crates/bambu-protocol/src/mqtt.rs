@@ -56,8 +56,8 @@ pub fn pushall(sequence_id: u64) -> String {
     .to_string()
 }
 
-/// LAN `project_file` after an FTPS upload. Developer Mode accepts cleartext `url`;
-/// non-DM firmware wants `url_enc` (device-cert RSA) which is not wired yet.
+/// LAN `project_file` after an FTPS upload. Developer Mode requires cleartext `url`;
+/// secured firmware (`fun` bit 29) gets `url_enc` in [`crate::signing::maybe_sign_ex`].
 pub fn project_file(sequence_id: u64, filename: &str, subtask_name: &str, plate: u32) -> String {
     serde_json::json!({
         "print": {
@@ -89,6 +89,53 @@ pub fn project_file(sequence_id: u64, filename: &str, subtask_name: &str, plate:
     .to_string()
 }
 
+/// `print.fun` bit 29 set ⇒ Developer Mode **off** (field encryption required).
+pub const FUN_BIT_SECURED: u32 = 29;
+
+pub fn parse_fun(v: &Value) -> u64 {
+    if let Some(n) = v.as_u64() {
+        return n;
+    }
+    if let Some(s) = v.as_str() {
+        let s = s.trim();
+        if let Ok(n) = u64::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        {
+            return n;
+        }
+        if let Ok(n) = s.parse::<u64>() {
+            return n;
+        }
+    }
+    0
+}
+
+pub fn developer_mode_from_fun(fun: u64) -> bool {
+    (fun & (1u64 << FUN_BIT_SECURED)) == 0
+}
+
+pub fn app_cert_install(sequence_id: u64, app_cert_pem: &str, crl_pem: &str) -> String {
+    serde_json::json!({
+        "security": {
+            "command": "app_cert_install",
+            "sequence_id": sequence_id.to_string(),
+            "app_cert": app_cert_pem,
+            "crl": crl_pem
+        }
+    })
+    .to_string()
+}
+
+pub fn parse_printer_cert(payload: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(payload).ok()?;
+    let sec = v.get("security")?;
+    let cert = sec.get("printer_cert")?.as_str()?;
+    if cert.contains("BEGIN CERTIFICATE") {
+        Some(cert.to_string())
+    } else {
+        None
+    }
+}
+
 pub fn parse_push_status(payload: &str) -> Option<MachineState> {
     let v: Value = serde_json::from_str(payload).ok()?;
     let print = v.get("print").or(Some(&v))?;
@@ -96,6 +143,7 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
     if command.is_some() && command != Some("push_status") {
         return None;
     }
+    let fun = print.get("fun").map(parse_fun).unwrap_or(0);
     Some(MachineState {
         serial: print
             .get("dev_id")
@@ -111,6 +159,8 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
         online: true,
         nozzle_temp_c: number(print, "nozzle_temper"),
         bed_temp_c: number(print, "bed_temper"),
+        fun,
+        developer_mode: developer_mode_from_fun(fun),
     })
 }
 
@@ -167,5 +217,24 @@ mod tests {
         assert_eq!(v["print"]["param"], "Metadata/plate_1.gcode");
         assert_eq!(v["print"]["md5"], "from_sd_card");
         assert_eq!(v["print"]["sequence_id"], "20042");
+    }
+
+    #[test]
+    fn fun_bit_29_is_developer_mode() {
+        // ClusterM P2S toggle: …193FF9CB7 (DM on) ↔ …1B3FF9CB7 (secured).
+        assert!(developer_mode_from_fun(0x193F_F9CB7));
+        assert!(!developer_mode_from_fun(0x1B3F_F9CB7));
+        assert_eq!(parse_fun(&Value::String("1B3FF9CB7".into())), 0x1B3F_F9CB7);
+        let json = r#"{
+            "print": {
+                "command": "push_status",
+                "fun": "1B3FF9CB7",
+                "nozzle_temper": 0,
+                "bed_temper": 0
+            }
+        }"#;
+        let st = parse_push_status(json).unwrap();
+        assert!(!st.developer_mode);
+        assert_eq!(st.fun, 0x1B3F_F9CB7);
     }
 }

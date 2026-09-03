@@ -6,11 +6,13 @@
 use base64::Engine;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::DecodePrivateKey;
-use rsa::RsaPrivateKey;
+use rsa::traits::PublicKeyParts;
+use rsa::{BigUint, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use x509_parser::prelude::*;
+use x509_parser::public_key::PublicKey;
 
 use crate::credentials::SlicerCredentials;
 
@@ -89,8 +91,61 @@ pub fn rsa_sha256_sign_b64(key: &RsaPrivateKey, data: &[u8]) -> Result<String, S
     Ok(base64::engine::general_purpose::STANDARD.encode(sig))
 }
 
+pub fn public_key_from_cert_pem(pem: &str) -> Result<RsaPublicKey, SigningError> {
+    let mut rest = pem.as_bytes();
+    while !rest.is_empty() {
+        let (remaining, pem) = parse_x509_pem(rest)
+            .map_err(|err| SigningError::Message(format!("cert pem: {err}")))?;
+        rest = remaining;
+        if !pem.label.contains("CERTIFICATE") {
+            continue;
+        }
+        let (_, cert) = parse_x509_certificate(&pem.contents)
+            .map_err(|err| SigningError::Message(format!("x509: {err}")))?;
+        match cert.public_key().parsed() {
+            Ok(PublicKey::RSA(rsa)) => {
+                let n = BigUint::from_bytes_be(rsa.modulus);
+                let e = BigUint::from_bytes_be(rsa.exponent);
+                return RsaPublicKey::new(n, e).map_err(|err| SigningError::Rsa(err.to_string()));
+            }
+            Ok(_) => continue,
+            Err(err) => return Err(SigningError::Message(format!("public key: {err}"))),
+        }
+    }
+    Err(SigningError::Message(
+        "no RSA certificate in device cert PEM".into(),
+    ))
+}
+
+/// ClusterM `EncryptField`: PKCS#1 v1.5 blocks of `key_len - 11` bytes, concatenated, Base64.
+pub fn encrypt_field(pub_key: &RsaPublicKey, plaintext: &[u8]) -> Result<String, SigningError> {
+    let max_pt = pub_key.size().saturating_sub(11);
+    if max_pt == 0 {
+        return Err(SigningError::Rsa("RSA key too small".into()));
+    }
+    let mut rng = rand::rngs::OsRng;
+    let mut out = Vec::new();
+    for chunk in plaintext.chunks(max_pt) {
+        let block = pub_key
+            .encrypt(&mut rng, Pkcs1v15Encrypt, chunk)
+            .map_err(|err| SigningError::Rsa(err.to_string()))?;
+        out.extend_from_slice(&block);
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(out))
+}
+
 /// Sign a `{"print":...}` payload. Other JSON is returned unchanged.
 pub fn maybe_sign(payload_json: &str, creds: &SlicerCredentials) -> Result<String, SigningError> {
+    maybe_sign_ex(payload_json, creds, None, false)
+}
+
+/// `secured` is `fun` bit 29 set (Developer Mode **off**). Then `url`/`param` become `*_enc`.
+pub fn maybe_sign_ex(
+    payload_json: &str,
+    creds: &SlicerCredentials,
+    device_cert_pem: Option<&str>,
+    secured: bool,
+) -> Result<String, SigningError> {
     if !is_print_payload(payload_json) {
         return Ok(payload_json.to_string());
     }
@@ -103,7 +158,7 @@ pub fn maybe_sign(payload_json: &str, creds: &SlicerCredentials) -> Result<Strin
         return Ok(payload_json.to_string());
     };
     if let Some(obj) = print.as_object_mut() {
-        encrypt_print_fields(obj);
+        encrypt_print_fields(obj, device_cert_pem, secured)?;
     }
     let print_dump = serde_json::to_string(print)?;
     let to_sign = format!("{{\"print\":{print_dump}}}");
@@ -122,9 +177,35 @@ pub fn maybe_sign(payload_json: &str, creds: &SlicerCredentials) -> Result<Strin
     ))
 }
 
-fn encrypt_print_fields(_obj: &mut Map<String, Value>) {
-    // url_enc / param_enc need the printer's device cert (app_cert_install).
-    // Developer Mode firmware still reads cleartext `url` / `param`.
+fn encrypt_print_fields(
+    obj: &mut Map<String, Value>,
+    device_cert_pem: Option<&str>,
+    secured: bool,
+) -> Result<(), SigningError> {
+    if !secured {
+        return Ok(());
+    }
+    let Some(pem) = device_cert_pem else {
+        return Ok(());
+    };
+    let pub_key = public_key_from_cert_pem(pem)?;
+    let command = obj.get("command").and_then(Value::as_str).unwrap_or("");
+    match command {
+        "gcode_line" => {
+            if let Some(Value::String(param)) = obj.remove("param") {
+                let enc = encrypt_field(&pub_key, param.as_bytes())?;
+                obj.insert("param_enc".into(), Value::String(enc));
+            }
+        }
+        "project_file" => {
+            if let Some(Value::String(url)) = obj.remove("url") {
+                let enc = encrypt_field(&pub_key, url.as_bytes())?;
+                obj.insert("url_enc".into(), Value::String(enc));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn is_print_payload(payload: &str) -> bool {
@@ -196,5 +277,49 @@ mod tests {
         let json = r#"{"info":{"command":"get_version"}}"#;
         let out = maybe_sign(json, &test_creds()).unwrap();
         assert_eq!(out, json);
+    }
+
+    #[test]
+    fn encrypt_field_roundtrip_with_test_key() {
+        let key = load_private_key(test_creds().key_pem.as_deref().unwrap()).unwrap();
+        let pub_key = RsaPublicKey::from(&key);
+        let plain = b"ftp://cube.gcode.3mf";
+        let b64 = encrypt_field(&pub_key, plain).unwrap();
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        assert_eq!(raw.len(), pub_key.size());
+        let dec = key.decrypt(Pkcs1v15Encrypt, &raw).unwrap();
+        assert_eq!(dec, plain);
+    }
+
+    #[test]
+    fn secured_gcode_line_drops_cleartext_param() {
+        let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let signed = maybe_sign_ex(
+            r#"{"print":{"command":"gcode_line","param":"G28","sequence_id":"1"}}"#,
+            &test_creds(),
+            Some(cert),
+            true,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&signed).unwrap();
+        assert!(v["print"].get("param").is_none());
+        assert!(v["print"]["param_enc"].as_str().unwrap().len() > 80);
+    }
+
+    #[test]
+    fn secured_project_file_drops_cleartext_url() {
+        let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let signed = maybe_sign_ex(
+            r#"{"print":{"command":"project_file","url":"ftp://cube.gcode.3mf","sequence_id":"1"}}"#,
+            &test_creds(),
+            Some(cert),
+            true,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&signed).unwrap();
+        assert!(v["print"].get("url").is_none());
+        assert!(v["print"]["url_enc"].as_str().unwrap().len() > 80);
     }
 }

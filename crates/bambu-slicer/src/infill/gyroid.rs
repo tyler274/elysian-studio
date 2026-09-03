@@ -26,7 +26,11 @@ pub fn fill(region: &[Polygon], spacing_mm: f64, density: f64, z_mm: f64) -> Vec
     let vertical = z_sin.abs() <= z_cos.abs();
 
     let mut waves = Vec::new();
-    let (w, h) = if vertical { (height, width) } else { (width, height) };
+    let (w, h) = if vertical {
+        (height, width)
+    } else {
+        (width, height)
+    };
     let mut y0 = if vertical { -std::f64::consts::PI } else { 0.0 };
     let upper = if vertical { w } else { h };
     let mut flip = !vertical;
@@ -42,19 +46,29 @@ pub fn fill(region: &[Polygon], spacing_mm: f64, density: f64, z_mm: f64) -> Vec
 
 fn wave_y(x: f64, z_sin: f64, z_cos: f64, vertical: bool, flip: bool) -> f64 {
     if vertical {
-        let phase = if z_cos < 0.0 { std::f64::consts::PI } else { 0.0 } + std::f64::consts::PI;
+        let phase = if z_cos < 0.0 {
+            std::f64::consts::PI
+        } else {
+            0.0
+        } + std::f64::consts::PI;
         let a = (x + phase).sin();
         let b = -z_cos;
         let res = z_sin * (x + phase + if flip { std::f64::consts::PI } else { 0.0 }).cos();
         let r = (a * a + b * b).sqrt().max(1e-9);
         a.atan2(r) + (res / r).clamp(-1.0, 1.0).asin() + std::f64::consts::PI
     } else {
-        let phase = if z_sin < 0.0 { std::f64::consts::PI } else { 0.0 };
+        let phase = if z_sin < 0.0 {
+            std::f64::consts::PI
+        } else {
+            0.0
+        };
         let a = (x + phase).cos();
         let b = -z_sin;
         let res = z_cos * (x + phase + if flip { 0.0 } else { std::f64::consts::PI }).sin();
         let r = (a * a + b * b).sqrt().max(1e-9);
-        (a / r).clamp(-1.0, 1.0).asin() + (res / r).clamp(-1.0, 1.0).asin() + 0.5 * std::f64::consts::PI
+        (a / r).clamp(-1.0, 1.0).asin()
+            + (res / r).clamp(-1.0, 1.0).asin()
+            + 0.5 * std::f64::consts::PI
     }
 }
 

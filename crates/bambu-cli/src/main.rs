@@ -3,13 +3,16 @@
 use std::path::PathBuf;
 
 use bambu_config::{
-    bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, SeamPosition, SliceSettings,
+    bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, IroningType, SeamPosition,
+    SliceSettings,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
 use bambu_io::load_stl;
-use bambu_protocol::{default_config_dir, load_from_dir, send_gcode_line, LanBackend};
+use bambu_protocol::{
+    default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
+};
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
 use thiserror::Error;
@@ -32,6 +35,8 @@ pub enum CliError {
     InfillPattern(String),
     #[error("unknown seam '{0}' (aligned|rear|nearest|random)")]
     Seam(String),
+    #[error("unknown ironing '{0}' (off|top|topmost|solid)")]
+    Ironing(String),
     #[error("{0}")]
     Message(String),
 }
@@ -90,6 +95,9 @@ enum Commands {
         /// Solid top shell layers.
         #[arg(long)]
         top: Option<u32>,
+        /// Ironing: off, top, topmost, or solid.
+        #[arg(long)]
+        ironing: Option<String>,
         /// Force CPU triangle–plane intersection.
         #[arg(long, conflicts_with = "gpu")]
         cpu: bool,
@@ -169,6 +177,24 @@ enum DeviceCommand {
         #[arg(long)]
         line: String,
     },
+    /// MQTT `security.app_cert_install` (needs slicer_cert.pem + slicer_crl.pem).
+    InstallCert {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// Grab one P1/A1 chamber JPEG (TLS :6000). X1/H2 use RTSPS :322 instead.
+    Camera {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 fn main() {
@@ -205,6 +231,7 @@ fn run() -> Result<(), CliError> {
             support_angle,
             bottom,
             top,
+            ironing,
             cpu,
             gpu,
         } => {
@@ -256,6 +283,10 @@ fn run() -> Result<(), CliError> {
             if let Some(n) = top {
                 slice_settings.top_shell_layers = n;
             }
+            if let Some(name) = ironing {
+                slice_settings.ironing_type =
+                    IroningType::from_name(&name).ok_or(CliError::Ironing(name))?;
+            }
             let gcode = slice_file(&input, &slice_settings, cpu, gpu)?;
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
@@ -301,8 +332,13 @@ fn run() -> Result<(), CliError> {
                 let backend = lan_backend(host, code, serial)?;
                 let st = block_on(backend.status())?;
                 println!(
-                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}",
-                    st.serial, st.name, st.nozzle_temp_c, st.bed_temp_c, st.online
+                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}  developer_mode={}",
+                    st.serial,
+                    st.name,
+                    st.nozzle_temp_c,
+                    st.bed_temp_c,
+                    st.online,
+                    st.developer_mode
                 );
             }
             DeviceCommand::Send {
@@ -337,6 +373,22 @@ fn run() -> Result<(), CliError> {
                     Some(body) => println!("{body}"),
                     None => println!("gcode_line published (no report within 5s)"),
                 }
+            }
+            DeviceCommand::InstallCert { host, code, serial } => {
+                let backend = lan_backend(host, code, serial)?;
+                let report = tokio::runtime::Runtime::new()?
+                    .block_on(install_app_cert(&backend))
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                match report {
+                    Some(body) => println!("{body}"),
+                    None => println!("app_cert_install published (no report within 8s)"),
+                }
+            }
+            DeviceCommand::Camera { host, code, output } => {
+                let jpeg = snapshot_jpeg(&host, &code)
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                std::fs::write(&output, &jpeg)?;
+                println!("wrote {} ({} bytes)", output.display(), jpeg.len());
             }
         },
     }

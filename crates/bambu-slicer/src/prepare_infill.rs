@@ -4,7 +4,9 @@
 //! contours are grown slightly so clipper slivers are not treated as shells.
 
 use bambu_config::SliceSettings;
-use bambu_geom::{difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon};
+use bambu_geom::{
+    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
+};
 
 use crate::infill;
 use crate::Layer;
@@ -71,6 +73,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         let mut rest = difference_polygons(&solid[i], &top[i]);
         rest = difference_polygons(&rest, &bottom[i]);
 
+        layers[i].top_region = top[i].clone();
         layers[i].top_surface = infill::solid(&top[i], spacing, i);
         let bottom_paths = infill::solid(&bottom[i], spacing, i.wrapping_add(1));
         if i == 0 {

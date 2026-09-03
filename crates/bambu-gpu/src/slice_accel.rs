@@ -56,10 +56,7 @@ pub fn slice_with_gpu_or_cpu(
     if let Some(accel) = shared_accel() {
         match accel.contours_for_layers(mesh, &zs) {
             Ok(layers) => {
-                tracing::info!(
-                    "sliced {} contour layers on Vulkan compute",
-                    layers.len()
-                );
+                tracing::info!("sliced {} contour layers on Vulkan compute", layers.len());
                 return Ok((
                     slice_from_contours(layers, settings),
                     SliceBackend::VulkanCompute,
@@ -109,6 +106,9 @@ mod tests {
             cpu.layers.len()
         );
         assert!(!gpu.layers.is_empty());
-        assert!(gpu.layers[gpu.layers.len() / 2].perimeters().next().is_some());
+        assert!(gpu.layers[gpu.layers.len() / 2]
+            .perimeters()
+            .next()
+            .is_some());
     }
 }

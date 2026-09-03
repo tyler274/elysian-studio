@@ -71,6 +71,46 @@ pub enum WallGenerator {
     Classic,
 }
 
+/// C++ `IroningType` (`ironing_type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum IroningType {
+    #[default]
+    NoIroning,
+    TopSurfaces,
+    TopmostOnly,
+    AllSolid,
+}
+
+impl IroningType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "no ironing" | "none" | "off" | "no" => Self::NoIroning,
+            "top" | "top surfaces" | "top_surfaces" => Self::TopSurfaces,
+            "topmost" | "topmost surface" | "topmost_only" => Self::TopmostOnly,
+            "solid" | "all solid" | "all_solid" | "all solid layer" => Self::AllSolid,
+            _ => return None,
+        })
+    }
+}
+
+/// C++ ironing fill (`ironing_pattern`: concentric / zig-zag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum IroningPattern {
+    #[default]
+    Rectilinear,
+    Concentric,
+}
+
+impl IroningPattern {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "concentric" => Self::Concentric,
+            "zig-zag" | "zigzag" | "rectilinear" | "line" => Self::Rectilinear,
+            _ => return None,
+        })
+    }
+}
+
 /// FFF settings used by the slice pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SliceSettings {
@@ -109,6 +149,14 @@ pub struct SliceSettings {
     /// Solid layers at the top of the part (0 disables).
     pub top_shell_layers: u32,
     pub solid_infill_speed_mm_s: f64,
+    pub ironing_type: IroningType,
+    pub ironing_pattern: IroningPattern,
+    /// Fraction of normal layer height (C++ `ironing_flow` percent).
+    pub ironing_flow: f64,
+    pub ironing_spacing_mm: f64,
+    /// Inset from the ironed contour. `0` means half the nozzle diameter.
+    pub ironing_inset_mm: f64,
+    pub ironing_speed_mm_s: f64,
 }
 
 impl Default for SliceSettings {
@@ -143,6 +191,12 @@ impl Default for SliceSettings {
             bottom_shell_layers: 3,
             top_shell_layers: 3,
             solid_infill_speed_mm_s: 80.0,
+            ironing_type: IroningType::NoIroning,
+            ironing_pattern: IroningPattern::Rectilinear,
+            ironing_flow: 0.10,
+            ironing_spacing_mm: 0.15,
+            ironing_inset_mm: 0.21,
+            ironing_speed_mm_s: 30.0,
         }
     }
 }
@@ -214,8 +268,7 @@ impl Flow {
     }
 
     pub fn e_per_mm(self) -> f64 {
-        let filament_area =
-            std::f64::consts::PI * (self.filament_diameter_mm * 0.5).powi(2);
+        let filament_area = std::f64::consts::PI * (self.filament_diameter_mm * 0.5).powi(2);
         if filament_area <= 0.0 {
             0.0
         } else {

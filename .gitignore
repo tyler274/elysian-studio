@@ -33,6 +33,7 @@ plate_*.jpg
 plate_*.jpeg
 
 # Option B slicer credentials (never commit)
+device_*.pem
 slicer_cert.pem
 slicer_key.pem
 slicer_crl.pem

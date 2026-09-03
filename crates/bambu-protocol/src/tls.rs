@@ -7,6 +7,7 @@ use std::net::TcpStream;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
+use base64::Engine;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -105,6 +106,17 @@ pub fn server_name(host: &str) -> Result<ServerName<'static>, TlsError> {
 
 /// Handshake MQTT/FTPS and return the leaf certificate CN (usually the serial).
 pub fn peek_peer_cn(host: &str, port: u16) -> Result<String, TlsError> {
+    Ok(peek_peer_leaf(host, port)?.cn)
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerLeaf {
+    pub cn: String,
+    pub pem: String,
+}
+
+/// TLS TOFU: leaf PEM used for `url_enc` / `param_enc` (device-cert public key).
+pub fn peek_peer_leaf(host: &str, port: u16) -> Result<PeerLeaf, TlsError> {
     let config = lan_client_config()?;
     let name = server_name(host)?;
     let mut tcp = TcpStream::connect((host, port))?;
@@ -120,7 +132,22 @@ pub fn peek_peer_cn(host: &str, port: u16) -> Result<String, TlsError> {
         .peer_certificates()
         .and_then(|certs| certs.first())
         .ok_or_else(|| TlsError::Message("no peer certificate".into()))?;
-    cert_common_name(der.as_ref())
+    let cn = cert_common_name(der.as_ref())?;
+    Ok(PeerLeaf {
+        cn,
+        pem: der_to_pem(der.as_ref()),
+    })
+}
+
+pub fn der_to_pem(der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
 }
 
 pub fn cert_common_name(der: &[u8]) -> Result<String, TlsError> {

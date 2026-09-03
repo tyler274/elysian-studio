@@ -13,13 +13,31 @@ pub enum DeviceError {
     NotImplemented,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineState {
     pub serial: String,
     pub name: String,
     pub online: bool,
     pub nozzle_temp_c: f32,
     pub bed_temp_c: f32,
+    /// Raw `print.fun` capability mask from `push_status`.
+    pub fun: u64,
+    /// Printer Developer Mode is **on** when `fun` bit 29 is clear.
+    pub developer_mode: bool,
+}
+
+impl Default for MachineState {
+    fn default() -> Self {
+        Self {
+            serial: String::new(),
+            name: String::new(),
+            online: false,
+            nozzle_temp_c: 0.0,
+            bed_temp_c: 0.0,
+            fun: 0,
+            developer_mode: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

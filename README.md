@@ -14,7 +14,7 @@ Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are neve
 | `bambu-config` | Slice / print settings |
 | `bambu-model` | Objects, instances, plates |
 | `bambu-io` | STL (3MF later) |
-| `bambu-slicer` | Layer slice → walls → top/bottom shells → infill → skirt/brim → classic supports |
+| `bambu-slicer` | Layer slice → walls → top/bottom shells → infill → ironing → skirt/brim → classic supports |
 | `bambu-gcode` | G-code writer |
 | `bambu-preview` | CPU toolpath buffers for the GPU |
 | `bambu-gpu` | wgpu Vulkan viewport + compute contours |
@@ -25,7 +25,7 @@ Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are neve
 
 First-party crates set `unsafe_code = "forbid"`. GPU work uses wgpu with the
 Vulkan backend on Linux: the plater viewport, G-code preview overlay, and the
-triangle–plane contour pass. Clipper union, walls, infill, top/bottom shells, skirt, brim, and
+triangle–plane contour pass. Clipper union, walls, infill, top/bottom shells, ironing, skirt, brim, and
 classic supports stay on the CPU for integer determinism. `bambu-cli slice` and the UI **Slice** button use
 Vulkan compute when an adapter is present and fall back to CPU otherwise
 (`--cpu` / `--gpu` to force).
@@ -39,6 +39,7 @@ cargo test --workspace
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --gpu
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --brim 5 --skirt 2 --top 4 --bottom 3
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --ironing top
 # table-like overhangs:
 # cargo run -p bambu-cli -- slice overhang.stl -o /tmp/overhang.gcode --support
 cargo run -p bambu-ui
@@ -69,7 +70,14 @@ cargo run -p bambu-cli -- device send cube.gcode --host 192.168.1.42 --code 1234
 cargo run -p bambu-cli -- device gcode --host 192.168.1.42 --code 12345678 --line G28
 ```
 
-`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Developer Mode accepts a cleartext `url`; without it, extract `slicer_*.pem` for Option B signing (`url_enc` is still TODO). Serial can be omitted: the MQTT certificate CN is used.
+`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Serial can be omitted: the MQTT certificate CN is used. `push_status.fun` bit 29 selects Developer Mode vs secured: secured printers get `url_enc`/`param_enc` (device-cert RSA) and optional `app_cert_install` when `slicer_cert.pem` + `slicer_crl.pem` are present.
+
+```bash
+cargo run -p bambu-cli -- device camera --host 192.168.1.42 --code 12345678 --output /tmp/chamber.jpg
+cargo run -p bambu-cli -- device install-cert --host 192.168.1.42 --code 12345678
+```
+
+P1/A1 chamber JPEG is TLS `:6000`. X1/H2 use RTSPS `:322` (not this snapshot path). The UI **Chamber snapshot** button reports frame size after the same JPEG grab.
 
 The UI **Extract keys** / **Discover printers** / **Send last slice** buttons run the same paths. C++ CLI leftovers such as `result.json` are gitignored.
 

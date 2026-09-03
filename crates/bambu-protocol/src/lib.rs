@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod camera;
 mod credentials;
 mod extract;
 mod ftps;
@@ -15,24 +16,26 @@ use std::time::Duration;
 use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
 use thiserror::Error;
 
+pub use camera::{auth_packet, jpeg_to_frame, snapshot_jpeg, LAN_CAMERA_PORT};
 pub use credentials::{
-    candidate_import_dirs, default_config_dir, import_from_known_locations, load_from_dir,
-    write_to_dir, CredentialError, SlicerCredentials,
+    candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
+    load_from_dir, save_device_cert, write_to_dir, CredentialError, SlicerCredentials,
 };
 pub use extract::{
     extract_pems_from_bytes, extract_to_config_dir, find_stock_plugin, ExtractReport,
 };
 pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
 pub use mqtt::{
-    gcode_line, next_sequence_id, parse_ams, parse_push_status, project_file, pushall,
-    report_topic, request_topic, LAN_MQTT_PORT, LAN_MQTT_USER,
+    app_cert_install, gcode_line, next_sequence_id, parse_ams, parse_printer_cert,
+    parse_push_status, project_file, pushall, report_topic, request_topic, LAN_MQTT_PORT,
+    LAN_MQTT_USER,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
-pub use signing::{maybe_sign, slicer_cert_id, SigningError};
+pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
 pub use ssdp::{
     discover, parse_ssdp, printer_from_headers, DiscoveredPrinter, SsdpError, SSDP_PORT,
 };
-pub use tls::{peek_peer_cn, TlsError};
+pub use tls::{peek_peer_cn, peek_peer_leaf, TlsError};
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -52,6 +55,8 @@ pub enum ProtocolError {
     Pack(#[from] pack::PackError),
     #[error(transparent)]
     Mqtt(#[from] lan_mqtt::MqttSessionError),
+    #[error(transparent)]
+    Camera(#[from] camera::CameraError),
 }
 
 /// LAN MQTT/FTPS backend (OpenBambuAPI + open-bamboo-networking).
@@ -86,10 +91,71 @@ impl LanBackend {
     fn map_err(err: impl std::fmt::Display) -> DeviceError {
         DeviceError::Message(err.to_string())
     }
+
+    fn resolved_serial(&self) -> String {
+        if !self.serial.is_empty() {
+            return self.serial.clone();
+        }
+        tls::peek_peer_cn(&self.host, LAN_MQTT_PORT).unwrap_or_default()
+    }
+
+    fn device_cert_pem(&self) -> Option<String> {
+        let serial = self.resolved_serial();
+        if !serial.is_empty() {
+            if let Ok(Some(pem)) = load_device_cert(default_config_dir(), &serial) {
+                return Some(pem);
+            }
+        }
+        let leaf = peek_peer_leaf(&self.host, LAN_MQTT_PORT).ok()?;
+        let serial = if serial.is_empty() {
+            leaf.cn.clone()
+        } else {
+            serial
+        };
+        let _ = save_device_cert(default_config_dir(), &serial, &leaf.pem);
+        Some(leaf.pem)
+    }
+
+    async fn publish(
+        &self,
+        payload: &str,
+        device_cert: Option<&str>,
+        secured: bool,
+        wait: Duration,
+    ) -> Result<Option<String>, DeviceError> {
+        lan_mqtt::publish_signed(lan_mqtt::PublishRequest {
+            host: &self.host,
+            access_code: &self.access_code,
+            serial: &self.serial,
+            payload,
+            creds: &self.credentials,
+            device_cert_pem: device_cert,
+            secured,
+            wait_report: wait,
+        })
+        .await
+        .map_err(Self::map_err)
+    }
 }
 
 impl PrinterBackend for LanBackend {
     async fn status(&self) -> Result<MachineState, DeviceError> {
+        let (mut state, _) = lan_mqtt::fetch_status(
+            &self.host,
+            &self.access_code,
+            &self.serial,
+            Duration::from_secs(8),
+        )
+        .await
+        .map_err(Self::map_err)?;
+        if state.serial.is_empty() {
+            state.serial = self.resolved_serial();
+        }
+        let _ = self.device_cert_pem();
+        Ok(state)
+    }
+
+    async fn start_print(&self, job: PrintJob) -> Result<(), DeviceError> {
         let (state, _) = lan_mqtt::fetch_status(
             &self.host,
             &self.access_code,
@@ -98,15 +164,31 @@ impl PrinterBackend for LanBackend {
         )
         .await
         .map_err(Self::map_err)?;
-        Ok(state)
-    }
-
-    async fn start_print(&self, job: PrintJob) -> Result<(), DeviceError> {
+        let secured = !state.developer_mode;
+        if secured && self.credentials.can_install_app_cert() {
+            let payload = app_cert_install(
+                next_sequence_id(),
+                self.credentials.cert_pem.as_deref().unwrap_or(""),
+                self.credentials.crl_pem.as_deref().unwrap_or(""),
+            );
+            let report = self
+                .publish(&payload, None, false, Duration::from_secs(8))
+                .await?;
+            if let Some(body) = report {
+                if let Some(pem) = parse_printer_cert(&body) {
+                    let serial = self.resolved_serial();
+                    if !serial.is_empty() {
+                        let _ = save_device_cert(default_config_dir(), &serial, &pem);
+                    }
+                }
+            }
+        }
+        let device_cert = self.device_cert_pem();
         let stem = sanitize_remote_name(&job.filename);
         let remote = format!("{stem}.gcode.3mf");
         let archive = pack_gcode_3mf(&job.gcode).map_err(Self::map_err)?;
         tracing::info!(
-            "FTPS STOR {} -> {}:{} ({} bytes)",
+            "FTPS STOR {} -> {}:{} ({} bytes, secured={secured})",
             remote,
             self.host,
             ftps::LAN_FTPS_PORT,
@@ -114,16 +196,14 @@ impl PrinterBackend for LanBackend {
         );
         ftps::stor(&self.host, &self.access_code, &remote, &archive).map_err(Self::map_err)?;
         let payload = project_file(next_sequence_id(), &remote, &stem, 1);
-        let report = lan_mqtt::publish_signed(
-            &self.host,
-            &self.access_code,
-            &self.serial,
-            &payload,
-            &self.credentials,
-            Duration::from_secs(8),
-        )
-        .await
-        .map_err(Self::map_err)?;
+        let report = self
+            .publish(
+                &payload,
+                device_cert.as_deref(),
+                secured,
+                Duration::from_secs(8),
+            )
+            .await?;
         if let Some(body) = report {
             if body.contains("print_error") || body.contains("\"result\":\"fail\"") {
                 return Err(DeviceError::Message(format!(
@@ -149,7 +229,7 @@ impl PrinterBackend for LanBackend {
     }
 
     async fn camera_frame(&self) -> Result<Frame, DeviceError> {
-        Err(DeviceError::NotImplemented)
+        camera::snapshot_frame(&self.host, &self.access_code).map_err(Self::map_err)
     }
 }
 
@@ -158,14 +238,57 @@ pub async fn send_gcode_line(
     backend: &LanBackend,
     line: &str,
 ) -> Result<Option<String>, ProtocolError> {
-    let payload = gcode_line(next_sequence_id(), line);
-    Ok(lan_mqtt::publish_signed(
+    let (state, _) = lan_mqtt::fetch_status(
         &backend.host,
         &backend.access_code,
         &backend.serial,
-        &payload,
-        &backend.credentials,
-        Duration::from_secs(5),
+        Duration::from_secs(8),
     )
+    .await?;
+    let payload = gcode_line(next_sequence_id(), line);
+    let device_cert = backend.device_cert_pem();
+    Ok(lan_mqtt::publish_signed(lan_mqtt::PublishRequest {
+        host: &backend.host,
+        access_code: &backend.access_code,
+        serial: &backend.serial,
+        payload: &payload,
+        creds: &backend.credentials,
+        device_cert_pem: device_cert.as_deref(),
+        secured: !state.developer_mode,
+        wait_report: Duration::from_secs(5),
+    })
     .await?)
+}
+
+pub async fn install_app_cert(backend: &LanBackend) -> Result<Option<String>, ProtocolError> {
+    if !backend.credentials.can_install_app_cert() {
+        return Err(ProtocolError::Credential(CredentialError::Message(
+            "need slicer_cert.pem and slicer_crl.pem for app_cert_install".into(),
+        )));
+    }
+    let payload = app_cert_install(
+        next_sequence_id(),
+        backend.credentials.cert_pem.as_deref().unwrap_or(""),
+        backend.credentials.crl_pem.as_deref().unwrap_or(""),
+    );
+    let report = lan_mqtt::publish_signed(lan_mqtt::PublishRequest {
+        host: &backend.host,
+        access_code: &backend.access_code,
+        serial: &backend.serial,
+        payload: &payload,
+        creds: &backend.credentials,
+        device_cert_pem: None,
+        secured: false,
+        wait_report: Duration::from_secs(8),
+    })
+    .await?;
+    if let Some(body) = &report {
+        if let Some(pem) = parse_printer_cert(body) {
+            let serial = backend.resolved_serial();
+            if !serial.is_empty() {
+                save_device_cert(default_config_dir(), &serial, &pem)?;
+            }
+        }
+    }
+    Ok(report)
 }

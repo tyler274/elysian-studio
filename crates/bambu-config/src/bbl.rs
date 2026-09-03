@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{InfillPattern, SeamPosition, SliceSettings, WallGenerator};
+use crate::{
+    InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings, WallGenerator,
+};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -128,6 +130,28 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     if let Some(v) = num(map, "internal_solid_infill_speed") {
         s.solid_infill_speed_mm_s = v;
     }
+    if let Some(name) = text(map, "ironing_type") {
+        if let Some(t) = IroningType::from_name(&name) {
+            s.ironing_type = t;
+        }
+    }
+    if let Some(name) = text(map, "ironing_pattern") {
+        if let Some(p) = IroningPattern::from_name(&name) {
+            s.ironing_pattern = p;
+        }
+    }
+    if let Some(v) = percent(map, "ironing_flow") {
+        s.ironing_flow = v;
+    }
+    if let Some(v) = num(map, "ironing_spacing") {
+        s.ironing_spacing_mm = v;
+    }
+    if let Some(v) = num(map, "ironing_inset") {
+        s.ironing_inset_mm = v;
+    }
+    if let Some(v) = num(map, "ironing_speed") {
+        s.ironing_speed_mm_s = v;
+    }
     s
 }
 
@@ -156,13 +180,10 @@ fn percent(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
     if let Some(p) = trimmed.strip_suffix('%') {
         return p.trim().parse::<f64>().ok().map(|v| v / 100.0);
     }
-    trimmed.parse::<f64>().ok().map(|v| {
-        if v > 1.0 {
-            v / 100.0
-        } else {
-            v
-        }
-    })
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .map(|v| if v > 1.0 { v / 100.0 } else { v })
 }
 
 fn u32_val(map: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
@@ -296,6 +317,8 @@ mod tests {
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert!(!s.enable_support);
+        assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
+        assert!((s.ironing_flow - 0.10).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
@@ -325,7 +348,10 @@ mod tests {
             value_text(obj.get("skirt_loops").unwrap()).as_deref(),
             Some("0")
         );
-        assert_eq!(value_text(obj.get("brim_width").unwrap()).as_deref(), Some("5"));
+        assert_eq!(
+            value_text(obj.get("brim_width").unwrap()).as_deref(),
+            Some("5")
+        );
         assert!(!obj.contains_key("inherits"));
         let s = load_bbl_process(&paths.process).unwrap();
         assert!((s.infill_density - 0.15).abs() < 1e-9);

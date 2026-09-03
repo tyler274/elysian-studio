@@ -5,8 +5,8 @@ pub use crate::camera::OrbitCamera;
 use bambu_geom::TriangleMesh;
 use bambu_preview::{ExtrusionRole, ToolpathBuffer};
 use iced::mouse;
-use iced::widget::shader::{self, Viewport};
 use iced::wgpu;
+use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
 
 pub const BED_MM: f32 = 256.0;
@@ -24,6 +24,7 @@ const SKIRT: [f32; 3] = [0.62, 0.48, 0.88];
 const BRIM: [f32; 3] = [0.72, 0.74, 0.78];
 const SUPPORT: [f32; 3] = [0.18, 0.82, 0.42];
 const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
+const IRONING: [f32; 3] = [0.92, 0.88, 0.98];
 
 #[derive(Debug, Clone)]
 pub struct ViewportScene {
@@ -109,12 +110,7 @@ where
                 let last = state.last.replace(pos)?;
                 let dx = pos.x - last.x;
                 let dy = pos.y - last.y;
-                Some(
-                    shader::Action::publish(
-                        ViewportEvent::Orbit { dx, dy }.into(),
-                    )
-                    .and_capture(),
-                )
+                Some(shader::Action::publish(ViewportEvent::Orbit { dx, dy }.into()).and_capture())
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 cursor.position_over(bounds)?;
@@ -404,7 +400,8 @@ impl shader::Primitive for ScenePrimitive {
         let size = viewport.physical_size();
         pipeline.ensure_depth(device, size.width, size.height);
 
-        let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, self.aspect, 1.0, 4000.0);
+        let proj =
+            glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, self.aspect, 1.0, 4000.0);
         let view = self.camera.view_matrix();
         let model = glam::Mat4::IDENTITY;
         let mvp = proj * view * model;
@@ -559,12 +556,7 @@ fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {
 fn bed_quad(bed: f32) -> Vec<Vertex> {
     let z = -0.15_f32;
     let n = [0.0, 0.0, 1.0];
-    let pts = [
-        [0.0, 0.0, z],
-        [bed, 0.0, z],
-        [bed, bed, z],
-        [0.0, bed, z],
-    ];
+    let pts = [[0.0, 0.0, z], [bed, 0.0, z], [bed, bed, z], [0.0, bed, z]];
     let tris = [[0, 1, 2], [0, 2, 3]];
     let mut out = Vec::with_capacity(6);
     for t in tris {
@@ -616,18 +608,13 @@ fn toolpath_vertices(buf: &ToolpathBuffer) -> Vec<Vertex> {
                 ExtrusionRole::Brim => BRIM,
                 ExtrusionRole::Support => SUPPORT,
                 ExtrusionRole::SupportInterface => SUPPORT_INTERFACE,
+                ExtrusionRole::Ironing => IRONING,
             },
         })
         .collect()
 }
 
-fn push_line(
-    out: &mut Vec<Vertex>,
-    a: [f32; 3],
-    b: [f32; 3],
-    normal: [f32; 3],
-    color: [f32; 3],
-) {
+fn push_line(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], normal: [f32; 3], color: [f32; 3]) {
     out.push(Vertex {
         position: a,
         normal,
