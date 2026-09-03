@@ -1,0 +1,16 @@
+[package]
+name = "bambu-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Printable model graph: objects, volumes, instances, plates"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+bambu-geom.workspace = true
+glam.workspace = true
+serde.workspace = true

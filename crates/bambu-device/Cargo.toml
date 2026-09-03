@@ -1,0 +1,15 @@
+[package]
+name = "bambu-device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Printer, AMS, camera, and HMS traits (no I/O)"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+serde.workspace = true
+thiserror.workspace = true

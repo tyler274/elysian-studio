@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../BambuStudio"
+		},
+		{
+			"path": "../nixos"
+		},
+		{
+			"path": "../wild"
+		},
+		{
+			"path": "../mimalloc"
+		}
+	]
+}

@@ -1,0 +1,13 @@
+[package]
+name = "bambu-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Print and slice settings (no I/O)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true

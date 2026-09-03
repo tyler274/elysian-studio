@@ -1,0 +1,9 @@
+/target
+/result
+/result-*
+.direnv
+.envrc
+*.swp
+*.swo
+.idea/
+.vscode/

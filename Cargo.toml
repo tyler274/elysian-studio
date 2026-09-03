@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = ["crates/bambu-cli", "crates/bambu-ui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+rust-version = "1.90"
+repository = "https://github.com/bambulab/BambuStudio"
+authors = ["Bambu Studio Rust rewrite contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+bambu-geom = { path = "crates/bambu-geom" }
+bambu-config = { path = "crates/bambu-config" }
+bambu-model = { path = "crates/bambu-model" }
+bambu-io = { path = "crates/bambu-io" }
+bambu-slicer = { path = "crates/bambu-slicer" }
+bambu-gcode = { path = "crates/bambu-gcode" }
+bambu-preview = { path = "crates/bambu-preview" }
+bambu-gpu = { path = "crates/bambu-gpu" }
+bambu-device = { path = "crates/bambu-device" }
+bambu-protocol = { path = "crates/bambu-protocol" }
+
+bytemuck = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+clipper2-rust = "1"
+glam = "0.29"
+iced = { version = "0.14", features = ["tokio", "wgpu"] }
+pollster = "0.4"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+stl_io = "0.8"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wgpu = "27"

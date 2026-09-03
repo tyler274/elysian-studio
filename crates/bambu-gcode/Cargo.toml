@@ -1,0 +1,16 @@
+[package]
+name = "bambu-gcode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "G-code writer and processor"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+bambu-geom.workspace = true
+bambu-slicer.workspace = true
+thiserror.workspace = true

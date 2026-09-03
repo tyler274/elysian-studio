@@ -1,0 +1,25 @@
+[package]
+name = "bambu-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Headless Bambu Studio slicer"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+bambu-gcode.workspace = true
+bambu-geom.workspace = true
+bambu-io.workspace = true
+bambu-model.workspace = true
+bambu-slicer.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+bambu-geom.workspace = true

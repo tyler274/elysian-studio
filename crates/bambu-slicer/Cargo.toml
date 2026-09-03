@@ -1,0 +1,18 @@
+[package]
+name = "bambu-slicer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FFF slice step machine: contours, perimeters, infill"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+bambu-geom.workspace = true
+bambu-model.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

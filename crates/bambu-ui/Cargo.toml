@@ -1,0 +1,24 @@
+[package]
+name = "bambu-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "iced GUI for Bambu Studio"
+
+[lints]
+workspace = true
+
+[dependencies]
+bambu-config.workspace = true
+bambu-device.workspace = true
+bambu-gcode.workspace = true
+bambu-gpu.workspace = true
+bambu-io.workspace = true
+bambu-model.workspace = true
+bambu-protocol.workspace = true
+bambu-slicer.workspace = true
+iced.workspace = true
+rfd.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

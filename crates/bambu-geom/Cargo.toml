@@ -1,0 +1,15 @@
+[package]
+name = "bambu-geom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Scaled integer geometry, clipper, and triangle meshes"
+
+[lints]
+workspace = true
+
+[dependencies]
+clipper2-rust.workspace = true
+glam.workspace = true
+thiserror.workspace = true
