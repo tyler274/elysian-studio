@@ -5,7 +5,7 @@
 
 use bambu_config::{InfillPattern, SliceSettings};
 use bambu_geom::{
-    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
+    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon, TriangleMesh,
 };
 
 use crate::infill;
@@ -13,7 +13,7 @@ use crate::Layer;
 
 const COVER_MM: f64 = 0.15;
 
-pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
+pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&TriangleMesh>) {
     if layers.is_empty() {
         return;
     }
@@ -84,21 +84,41 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         layers[i].solid_infill = infill::solid(&rest, spacing, i);
     }
 
-    assign_sparse_infill(layers, &sparse_all, settings);
+    assign_sparse_infill(layers, &sparse_all, settings, mesh);
 }
 
-fn assign_sparse_infill(layers: &mut [Layer], sparse: &[Vec<Polygon>], settings: &SliceSettings) {
-    if settings.infill_pattern == InfillPattern::Lightning {
-        for (layer, paths) in layers
-            .iter_mut()
-            .zip(infill::generate_lightning(sparse, settings))
-        {
-            layer.infill = paths;
+fn assign_sparse_infill(
+    layers: &mut [Layer],
+    sparse: &[Vec<Polygon>],
+    settings: &SliceSettings,
+    mesh: Option<&TriangleMesh>,
+) {
+    match settings.infill_pattern {
+        InfillPattern::Lightning => {
+            for (layer, paths) in layers
+                .iter_mut()
+                .zip(infill::generate_lightning(sparse, settings))
+            {
+                layer.infill = paths;
+            }
         }
-        return;
-    }
-    for (i, layer) in layers.iter_mut().enumerate() {
-        layer.infill = infill::generate(&sparse[i], settings, i, layer.z_mm);
+        InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => {
+            let support_only = settings.infill_pattern == InfillPattern::SupportCubic;
+            let spacing = infill::adaptive::line_spacing_mm(settings);
+            let octree =
+                mesh.and_then(|mesh| infill::adaptive::Octree::build(mesh, spacing, support_only));
+            for (i, layer) in layers.iter_mut().enumerate() {
+                layer.infill = octree
+                    .as_ref()
+                    .map(|octree| infill::adaptive::fill(&sparse[i], octree, layer.z_mm))
+                    .unwrap_or_default();
+            }
+        }
+        _ => {
+            for (i, layer) in layers.iter_mut().enumerate() {
+                layer.infill = infill::generate(&sparse[i], settings, i, layer.z_mm);
+            }
+        }
     }
 }
 

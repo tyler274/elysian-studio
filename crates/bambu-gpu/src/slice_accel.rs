@@ -61,7 +61,7 @@ pub fn slice_with_gpu_or_cpu(
             Ok(layers) => {
                 tracing::info!("sliced {} contour layers on Vulkan compute", layers.len());
                 return Ok((
-                    slice_from_contours(zip_plan_contours(&plan, layers), settings),
+                    slice_from_contours(zip_plan_contours(&plan, layers), settings, Some(mesh)),
                     SliceBackend::VulkanCompute,
                 ));
             }
@@ -85,6 +85,7 @@ pub fn slice_on_vulkan(
     Ok(slice_from_contours(
         zip_plan_contours(&plan, layers),
         settings,
+        Some(mesh),
     ))
 }
 
@@ -105,7 +106,7 @@ mod tests {
         let plan = bambu_slicer::layer_plan(&mesh, &settings).unwrap();
         let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
         let gpu_layers = accel.contours_for_layers(&mesh, &zs).unwrap();
-        let gpu = slice_from_contours(zip_plan_contours(&plan, gpu_layers), &settings);
+        let gpu = slice_from_contours(zip_plan_contours(&plan, gpu_layers), &settings, Some(&mesh));
         let cpu = slice_mesh(&mesh, &settings).unwrap();
         let delta = gpu.layers.len().abs_diff(cpu.layers.len());
         assert!(

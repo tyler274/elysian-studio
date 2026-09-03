@@ -1,10 +1,11 @@
-//! Sparse infill patterns (classic Slic3r / Bambu set, minus Adaptive cubic).
+//! Sparse infill patterns (classic Slic3r / Bambu set).
 
 use bambu_config::{InfillPattern, SliceSettings};
 use bambu_geom::{offset_polygons, scale, Point, Polygon, Polyline};
 
 use crate::clip::clip_polylines;
 
+pub(crate) mod adaptive;
 mod gyroid;
 mod honeycomb;
 mod honeycomb3d;
@@ -37,6 +38,8 @@ pub fn generate(
         }
         // Trees need every sparse layer; `prepare_infill` calls `generate_lightning`.
         InfillPattern::Lightning => Vec::new(),
+        // Octree is built from the mesh in `prepare_infill`.
+        InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => Vec::new(),
     }
 }
 

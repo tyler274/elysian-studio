@@ -21,6 +21,10 @@ pub enum InfillPattern {
     Honeycomb3D,
     /// CuraEngine / Bambu `ipLightning` (overhang trees, sparse below skins).
     Lightning,
+    /// Bambu / PrusaSlicer `ipAdaptiveCubic` (octree densified at the mesh).
+    AdaptiveCubic,
+    /// Bambu / PrusaSlicer `ipSupportCubic` (octree densified under overhangs).
+    SupportCubic,
 }
 
 impl InfillPattern {
@@ -33,6 +37,10 @@ impl InfillPattern {
             "honeycomb" | "hexagon" => Self::Honeycomb,
             "3dhoneycomb" | "3d honeycomb" | "3d_honeycomb" => Self::Honeycomb3D,
             "lightning" | "lightninginfill" | "lightning_infill" => Self::Lightning,
+            "adaptivecubic" | "adaptive" | "adaptive_cubic" | "adaptive cubic" => {
+                Self::AdaptiveCubic
+            }
+            "supportcubic" | "support_cubic" | "support cubic" => Self::SupportCubic,
             "zigzag" | "zig-zag" => Self::Rectilinear,
             _ => return None,
         })
@@ -47,6 +55,8 @@ impl InfillPattern {
             Self::Honeycomb => "honeycomb",
             Self::Honeycomb3D => "3dhoneycomb",
             Self::Lightning => "lightning",
+            Self::AdaptiveCubic => "adaptivecubic",
+            Self::SupportCubic => "supportcubic",
         }
     }
 }

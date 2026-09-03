@@ -81,7 +81,7 @@ pub fn slice_mesh(
             )
         })
         .collect();
-    Ok(slice_from_contours(contours, settings))
+    Ok(slice_from_contours(contours, settings, Some(mesh)))
 }
 
 /// Pair GPU/CPU contour samples with the [`LayerSpec`] plan (same order as `slice_z`).
@@ -100,6 +100,7 @@ pub fn zip_plan_contours(
 pub fn slice_from_contours(
     layers: Vec<(LayerSpec, Vec<Polygon>)>,
     settings: &SliceSettings,
+    mesh: Option<&TriangleMesh>,
 ) -> SliceResult {
     let mut out = Vec::new();
     let mut seam_hint = None;
@@ -142,7 +143,7 @@ pub fn slice_from_contours(
         index += 1;
     }
 
-    prepare_infill::apply(&mut out, settings);
+    prepare_infill::apply(&mut out, settings, mesh);
     ironing::apply(&mut out, settings);
     support::apply_classic(&mut out, settings);
     if let Some(first) = out.first() {
@@ -512,6 +513,40 @@ mod tests {
         assert!(
             lightning_len < grid_len * 0.75,
             "lightning {lightning_len} should be sparser than grid {grid_len}"
+        );
+    }
+
+    #[test]
+    fn adaptive_cubic_fills_sparse_region() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::AdaptiveCubic;
+        settings.infill_density = 0.15;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let mid = &result.layers[result.layers.len() / 2];
+        assert!(!mid.infill.is_empty());
+    }
+
+    #[test]
+    fn support_cubic_sparser_than_adaptive() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut adaptive = SliceSettings::default();
+        adaptive.infill_pattern = InfillPattern::AdaptiveCubic;
+        adaptive.infill_density = 0.15;
+        let mut support = adaptive.clone();
+        support.infill_pattern = InfillPattern::SupportCubic;
+        let a = slice_mesh(&mesh, &adaptive).unwrap();
+        let b = slice_mesh(&mesh, &support).unwrap();
+        let mid = a.layers.len() / 2;
+        let adaptive_len = polyline_len_mm(&a.layers[mid].infill);
+        let support_len = polyline_len_mm(&b.layers[mid].infill);
+        assert!(
+            adaptive_len > 1.0,
+            "adaptive cubic should fill the cube ({adaptive_len})"
+        );
+        assert!(
+            support_len < adaptive_len,
+            "support cubic {support_len} should be sparser than adaptive {adaptive_len}"
         );
     }
 }
