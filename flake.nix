@@ -9,11 +9,13 @@
     };
     # Path inputs copy gitignored rust/target; git+file does not.
     mimalloc-rs = {
-      url = "git+file:///home/luluco/code/mimalloc";
+      url = "git+file:///home/luluco/code/mimalloc?ref=rust3write";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     wild = {
-      url = "git+file:///home/luluco/code/wild";
+      # Local Wild checkout. Pin the working branch; unadorned git+file follows
+      # origin/main, which does not have the plugin-compile fix.
+      url = "git+file:///home/luluco/code/wild?ref=kernel-lto-incremental";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

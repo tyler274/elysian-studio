@@ -23,25 +23,27 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "dirtyRev": "7081e692d5031e2a96fc32408ee805884fa024fc-dirty",
-        "dirtyShortRev": "7081e69-dirty",
-        "lastModified": 1788404817,
-        "narHash": "sha256-BRwuH1GtLEKzjA0f4wvri4QjZbGb/cbfVbUKPDzMI3g=",
+        "lastModified": 1788467328,
+        "narHash": "sha256-KUvA356AauDVey8ZztPDgOIbqHXGr24/d+TbFj9QR/A=",
+        "ref": "rust3write",
+        "rev": "cb5ba10e7c91e00af0b87ead03bf23bc219be54c",
+        "revCount": 4452,
         "type": "git",
         "url": "file:///home/luluco/code/mimalloc"
       },
       "original": {
+        "ref": "rust3write",
         "type": "git",
         "url": "file:///home/luluco/code/mimalloc"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1788179007,
-        "narHash": "sha256-hn1oU2rue2SYK8dAr8+WNZWtbsz1S2W5mnHlSEuh3bo=",
+        "lastModified": 1788316716,
+        "narHash": "sha256-bc7rSpXIdn9QWGNqfWcPZWOhEVF8NoeAZkWq0XWnf/k=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "34ab99075ac4f7e40cf037eef32cb1c360bb85e9",
+        "rev": "3ed67ec0a4d3c7ab4ae1f04f8ee8df07bfa506a2",
         "type": "github"
       },
       "original": {
@@ -87,11 +89,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1788332415,
-        "narHash": "sha256-BTFrmyh0oaVDsvA9NNw0YpbbeppTwU0t70iVx672Ew8=",
+        "lastModified": 1788456718,
+        "narHash": "sha256-TxHC0sBjV2pmsBLKAX02JTXlye/EOLt6Do+WNtGofGw=",
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "860d7c835ab91bfc8972b67092f5f2db8e9390a0",
+        "rev": "0b20a18e84d9164464739189c2b2a1b00f6f0e4b",
         "type": "github"
       },
       "original": {
@@ -108,14 +110,16 @@
         ]
       },
       "locked": {
-        "dirtyRev": "ff0396b1e7e7dad9989664f5a2ee14095f6621bd-dirty",
-        "dirtyShortRev": "ff0396b-dirty",
-        "lastModified": 1788426960,
-        "narHash": "sha256-N47SbfaeD3lJVS9CSsl+yYoFSDkFwKXxblp74+ET0jA=",
+        "lastModified": 1788475150,
+        "narHash": "sha256-4Z10E9gtJBHIeihrHCRUc4au0S5VKr0BZF00CCW84+w=",
+        "ref": "kernel-lto-incremental",
+        "rev": "de1b1e378cd779a30a1e56c11b439a45a5ab93da",
+        "revCount": 2542,
         "type": "git",
         "url": "file:///home/luluco/code/wild"
       },
       "original": {
+        "ref": "kernel-lto-incremental",
         "type": "git",
         "url": "file:///home/luluco/code/wild"
       }
