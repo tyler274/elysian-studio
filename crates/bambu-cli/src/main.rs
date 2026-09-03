@@ -10,7 +10,7 @@ use bambu_config::{
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
-use bambu_io::load_mesh;
+use bambu_io::load_model;
 use bambu_protocol::{
     default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
 };
@@ -154,6 +154,9 @@ enum Commands {
         /// Require Vulkan compute; error if the adapter is missing.
         #[arg(long, conflicts_with = "cpu")]
         gpu: bool,
+        /// 1-based plate for multi-plate Bambu 3MF (default 1).
+        #[arg(long, default_value_t = 1)]
+        plate: u32,
     },
     /// Option B slicer credentials (extract / import / status).
     Keys {
@@ -296,6 +299,7 @@ fn run() -> Result<(), CliError> {
             precise_z,
             cpu,
             gpu,
+            plate,
         } => {
             let mut slice_settings = if let Some(path) = settings {
                 load_bbl_process(path)?
@@ -391,7 +395,7 @@ fn run() -> Result<(), CliError> {
             if precise_z {
                 slice_settings.precise_z_height = true;
             }
-            let gcode = slice_file(&input, &slice_settings, cpu, gpu)?;
+            let gcode = slice_file(&input, &slice_settings, cpu, gpu, plate)?;
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
         }
@@ -504,8 +508,18 @@ pub fn slice_file(
     settings: &SliceSettings,
     force_cpu: bool,
     force_gpu: bool,
+    plate: u32,
 ) -> Result<String, CliError> {
-    let mesh = load_mesh(input)?;
+    if plate == 0 {
+        return Err(CliError::Message("plate index is 1-based (got 0)".into()));
+    }
+    let model = load_model(input)?;
+    let mesh = model.mesh_for_plate((plate - 1) as usize).ok_or_else(|| {
+        CliError::Message(format!(
+            "plate {plate} is empty or missing ({} plate(s))",
+            model.plates.len()
+        ))
+    })?;
     let (sliced, backend) = if force_cpu {
         (slice_mesh(&mesh, settings)?, SliceBackend::Cpu)
     } else if force_gpu {

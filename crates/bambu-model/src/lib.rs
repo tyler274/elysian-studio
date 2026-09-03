@@ -16,6 +16,10 @@ pub struct ModelObject {
     pub name: String,
     pub mesh: TriangleMesh,
     pub instances: Vec<Instance>,
+    /// 3MF resource id (1 for STL / single-mesh projects).
+    pub object_id: u32,
+    /// 0-based instance among build items that share [`Self::object_id`].
+    pub instance_id: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +37,7 @@ impl Default for Instance {
 pub struct PartPlate {
     pub name: String,
     pub object_indices: Vec<usize>,
+    pub locked: bool,
 }
 
 impl Model {
@@ -42,10 +47,13 @@ impl Model {
                 name: name.into(),
                 mesh,
                 instances: vec![Instance::default()],
+                object_id: 1,
+                instance_id: 0,
             }],
             plates: vec![PartPlate {
                 name: "Plate 1".into(),
                 object_indices: vec![0],
+                locked: false,
             }],
         }
     }
@@ -56,8 +64,23 @@ impl Model {
 
     /// Concatenate every object mesh after applying instance offsets.
     pub fn merged_mesh(&self) -> Option<TriangleMesh> {
+        self.merge_indices(0..self.objects.len())
+    }
+
+    /// Objects on `plate` (0-based). Missing plate falls back to [`Self::merged_mesh`].
+    pub fn mesh_for_plate(&self, plate: usize) -> Option<TriangleMesh> {
+        let Some(p) = self.plates.get(plate) else {
+            return self.merged_mesh();
+        };
+        self.merge_indices(p.object_indices.iter().copied())
+    }
+
+    fn merge_indices(&self, indices: impl IntoIterator<Item = usize>) -> Option<TriangleMesh> {
         let mut out = TriangleMesh::default();
-        for object in &self.objects {
+        for i in indices {
+            let Some(object) = self.objects.get(i) else {
+                continue;
+            };
             if object.instances.is_empty() {
                 out.append(&object.mesh);
                 continue;

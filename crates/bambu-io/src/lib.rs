@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod bbs;
 mod threemf;
 
 use std::fs::File;
@@ -59,10 +60,12 @@ pub fn load_model_stl(path: impl AsRef<Path>) -> Result<Model, IoError> {
     Ok(Model::from_mesh(name, mesh))
 }
 
-/// Load STL or 3MF by file extension (meshes only; 3MF metadata is ignored).
+/// Load STL or 3MF by file extension.
+///
+/// Multi-plate Bambu 3MF uses the first plate (`Metadata/model_settings.config`).
 pub fn load_mesh(path: impl AsRef<Path>) -> Result<TriangleMesh, IoError> {
     load_model(path)?
-        .merged_mesh()
+        .mesh_for_plate(0)
         .ok_or_else(|| IoError::Message("file contains no triangles".into()))
 }
 

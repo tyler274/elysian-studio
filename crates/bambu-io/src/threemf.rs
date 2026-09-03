@@ -1,7 +1,8 @@
-//! Core 3MF mesh import (`3D/3dmodel.model`).
+//! Core 3MF mesh import (`3D/3dmodel.model`) plus Bambu plates.
 //!
-//! Geometry, units, build-item transforms, and component assemblies. Bambu
-//! extras (`Metadata/*.config`, paint, AMS) are ignored for now.
+//! Geometry, units, build-item transforms, and component assemblies. When
+//! `Metadata/model_settings.config` is present, object names and plate
+//! grouping are applied. Paint, AMS, and volume matrices stay ignored.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
@@ -18,6 +19,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use crate::IoError;
 
 const MODEL_PATH: &str = "3D/3dmodel.model";
+const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
 const CORE_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
 
 const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -71,11 +73,28 @@ pub fn load_3mf_bytes(bytes: &[u8]) -> Result<Model, IoError> {
         })
         .map(|(orig, _)| orig.clone())
         .ok_or_else(|| IoError::Message("3MF has no 3D model part".into()))?;
-    let mut file = zip.by_name(&original)?;
+    let xml = zip_entry_text(&mut zip, &original)?;
+    let settings = entries
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(MODEL_SETTINGS_PATH))
+        .map(|(orig, _)| orig.clone());
+    let settings_xml = match settings {
+        Some(name) => Some(zip_entry_text(&mut zip, &name)?),
+        None => None,
+    };
+    drop(zip);
+    let mut model = model_from_xml(&xml)?;
+    if let Some(settings_xml) = settings_xml {
+        crate::bbs::apply(&mut model, &settings_xml)?;
+    }
+    Ok(model)
+}
+
+fn zip_entry_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<String, IoError> {
+    let mut file = zip.by_name(name)?;
     let mut xml = String::new();
     file.read_to_string(&mut xml)?;
-    drop(file);
-    model_from_xml(&xml)
+    Ok(xml)
 }
 
 /// Pack a single mesh as a core 3MF (tests and round-trips).
@@ -224,7 +243,9 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
     };
 
     let mut objects = Vec::new();
+    let mut instance_n: BTreeMap<u32, u32> = BTreeMap::new();
     for (id, xf) in roots {
+        let instance_id = *instance_n.entry(id).and_modify(|n| *n += 1).or_insert(0);
         let mut meshes = Vec::new();
         flatten_object(&parsed.objects, id, xf, 0, &mut meshes)?;
         for (name, mesh) in meshes {
@@ -235,6 +256,8 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
                 name,
                 mesh,
                 instances: vec![Instance::default()],
+                object_id: id,
+                instance_id,
             });
         }
     }
@@ -247,6 +270,7 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
         plates: vec![PartPlate {
             name: "Plate 1".into(),
             object_indices: (0..n).collect(),
+            locked: false,
         }],
     })
 }
@@ -503,5 +527,162 @@ mod tests {
         let b = mesh.aabb().unwrap().size();
         assert!((a - b).length() < 1e-4);
         assert_eq!(loaded.objects[0].name, "cube");
+    }
+
+    fn pack_files(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            for (name, body) in files {
+                zip.start_file(*name, opts).unwrap();
+                zip.write_all(body.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    fn two_cubes_xml() -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}">
+  <resources>
+    <object id="1" name="left" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="10" y="0" z="0"/>
+          <vertex x="10" y="10" z="0"/>
+          <vertex x="0" y="10" z="0"/>
+          <vertex x="0" y="0" z="10"/>
+          <vertex x="10" y="0" z="10"/>
+          <vertex x="10" y="10" z="10"/>
+          <vertex x="0" y="10" z="10"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+          <triangle v1="0" v2="2" v3="3"/>
+          <triangle v1="4" v2="6" v3="5"/>
+          <triangle v1="4" v2="7" v3="6"/>
+          <triangle v1="0" v2="4" v3="5"/>
+          <triangle v1="0" v2="5" v3="1"/>
+          <triangle v1="2" v2="6" v3="7"/>
+          <triangle v1="2" v2="7" v3="3"/>
+          <triangle v1="0" v2="3" v3="7"/>
+          <triangle v1="0" v2="7" v3="4"/>
+          <triangle v1="1" v2="5" v3="6"/>
+          <triangle v1="1" v2="6" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+    <object id="2" name="right" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="10" y="0" z="0"/>
+          <vertex x="10" y="10" z="0"/>
+          <vertex x="0" y="10" z="0"/>
+          <vertex x="0" y="0" z="10"/>
+          <vertex x="10" y="0" z="10"/>
+          <vertex x="10" y="10" z="10"/>
+          <vertex x="0" y="10" z="10"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+          <triangle v1="0" v2="2" v3="3"/>
+          <triangle v1="4" v2="6" v3="5"/>
+          <triangle v1="4" v2="7" v3="6"/>
+          <triangle v1="0" v2="4" v3="5"/>
+          <triangle v1="0" v2="5" v3="1"/>
+          <triangle v1="2" v2="6" v3="7"/>
+          <triangle v1="2" v2="7" v3="3"/>
+          <triangle v1="0" v2="3" v3="7"/>
+          <triangle v1="0" v2="7" v3="4"/>
+          <triangle v1="1" v2="5" v3="6"/>
+          <triangle v1="1" v2="6" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+    <item objectid="2" transform="1 0 0 0 1 0 0 0 1 80 0 0"/>
+  </build>
+</model>"#
+        )
+    }
+
+    fn two_plate_settings() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="1">
+    <metadata key="name" value="Left cube"/>
+  </object>
+  <object id="2">
+    <metadata key="name" value="Right cube"/>
+  </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="plater_name" value="Plate A"/>
+    <metadata key="locked" value="false"/>
+    <model_instance>
+      <metadata key="object_id" value="1"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="plater_name" value="Plate B"/>
+    <metadata key="locked" value="true"/>
+    <model_instance>
+      <metadata key="object_id" value="2"/>
+      <metadata key="instance_id" value="0"/>
+    </model_instance>
+  </plate>
+</config>"#
+    }
+
+    #[test]
+    fn model_settings_names_and_plates() {
+        let bytes = pack_files(&[
+            (MODEL_PATH, &two_cubes_xml()),
+            (MODEL_SETTINGS_PATH, two_plate_settings()),
+        ]);
+        let model = load_3mf_bytes(&bytes).unwrap();
+        assert_eq!(model.objects.len(), 2);
+        assert_eq!(model.objects[0].name, "Left cube");
+        assert_eq!(model.objects[1].name, "Right cube");
+        assert_eq!(model.plates.len(), 2);
+        assert_eq!(model.plates[0].name, "Plate A");
+        assert_eq!(model.plates[1].name, "Plate B");
+        assert!(!model.plates[0].locked);
+        assert!(model.plates[1].locked);
+        assert_eq!(model.plates[0].object_indices, vec![0]);
+        assert_eq!(model.plates[1].object_indices, vec![1]);
+
+        let a = model.mesh_for_plate(0).unwrap().aabb().unwrap();
+        let b = model.mesh_for_plate(1).unwrap().aabb().unwrap();
+        assert!(
+            a.max.x < 15.0,
+            "plate 1 should be the untranslated cube, max.x={}",
+            a.max.x
+        );
+        assert!(
+            b.min.x > 75.0,
+            "plate 2 should be the cube shifted 80 mm, min.x={}",
+            b.min.x
+        );
+        let all = model.merged_mesh().unwrap().aabb().unwrap();
+        assert!(all.max.x > 85.0);
+    }
+
+    #[test]
+    fn core_3mf_without_settings_keeps_one_plate() {
+        let model = load_3mf_bytes(&pack_xml(&two_cubes_xml())).unwrap();
+        assert_eq!(model.plates.len(), 1);
+        assert_eq!(model.plates[0].object_indices, vec![0, 1]);
+        assert_eq!(model.objects[0].name, "left");
+        assert_eq!(model.objects[1].name, "right");
     }
 }
