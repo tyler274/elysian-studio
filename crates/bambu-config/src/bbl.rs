@@ -236,6 +236,36 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "overhang_1_4_speed",
+        num_str(settings.overhang_1_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "overhang_2_4_speed",
+        num_str(settings.overhang_2_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "overhang_3_4_speed",
+        num_str(settings.overhang_3_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "overhang_4_4_speed",
+        num_str(settings.overhang_4_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "bridge_speed",
+        num_str(settings.bridge_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "top_surface_speed",
+        num_str(settings.top_surface_speed_mm_s),
+    );
+    insert(
+        &mut map,
         "sparse_infill_speed",
         num_str(settings.infill_speed_mm_s),
     );
@@ -379,7 +409,12 @@ pub fn is_region_key(key: &str) -> bool {
             | "detect_overhang_wall"
             | "enable_overhang_speed"
             | "overhang_totally_speed"
+            | "overhang_1_4_speed"
+            | "overhang_2_4_speed"
+            | "overhang_3_4_speed"
             | "overhang_4_4_speed"
+            | "bridge_speed"
+            | "top_surface_speed"
             | "sparse_infill_speed"
             | "internal_solid_infill_speed"
             | "ironing_type"
@@ -584,8 +619,26 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "enable_overhang_speed") {
         s.enable_overhang_speed = v;
     }
-    if let Some(v) = num(map, "overhang_totally_speed").or_else(|| num(map, "overhang_4_4_speed")) {
+    if let Some(v) = num(map, "overhang_totally_speed") {
         s.overhang_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "overhang_1_4_speed") {
+        s.overhang_1_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "overhang_2_4_speed") {
+        s.overhang_2_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "overhang_3_4_speed") {
+        s.overhang_3_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "overhang_4_4_speed") {
+        s.overhang_4_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "bridge_speed") {
+        s.bridge_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "top_surface_speed") {
+        s.top_surface_speed_mm_s = v.max(0.0);
     }
     if let Some(v) = num(map, "sparse_infill_speed") {
         s.infill_speed_mm_s = v;

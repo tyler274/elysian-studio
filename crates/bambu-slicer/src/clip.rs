@@ -95,11 +95,18 @@ pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
     out
 }
 
-/// Open or closed path split into supported (`inside`) vs overhang runs.
+/// Open or closed path split into overhang-degree runs (0 = supported, 5 = 100%).
 #[derive(Debug, Clone)]
 pub struct ClassifiedPath {
     pub path: Polyline,
-    pub inside: bool,
+    pub degree: u8,
+}
+
+impl ClassifiedPath {
+    /// True when the run is not a 100% overhang (`erOverhangPerimeter`).
+    pub fn inside(&self) -> bool {
+        self.degree < 5
+    }
 }
 
 /// Classify each edge by whether its midpoint lies in `polygons`.
@@ -111,14 +118,44 @@ pub fn classify_polyline(
     polygons: &[Polygon],
     closed: bool,
 ) -> Vec<ClassifiedPath> {
+    classify_by(path, closed, |mid| {
+        if polygons.is_empty() {
+            5
+        } else if point_in_polygons(mid, polygons) {
+            0
+        } else {
+            5
+        }
+    })
+}
+
+/// Classify edges against inset→grown lower-layer rings (C++ overhang degrees 0–5).
+///
+/// `rings[0]` is the most inset (degree 0 if inside); `rings.last()` is grown by
+/// half the nozzle (outside that is degree 5).
+pub fn classify_overhang(
+    path: &[Point],
+    rings: &[Vec<Polygon>],
+    closed: bool,
+) -> Vec<ClassifiedPath> {
+    if rings.is_empty() {
+        return classify_by(path, closed, |_| 0);
+    }
+    classify_by(path, closed, |mid| edge_degree(mid, rings))
+}
+
+fn edge_degree(mid: Point, rings: &[Vec<Polygon>]) -> u8 {
+    for (i, ring) in rings.iter().enumerate() {
+        if point_in_polygons(mid, ring) {
+            return u8::try_from(i).unwrap_or(4);
+        }
+    }
+    5
+}
+
+fn classify_by(path: &[Point], closed: bool, class: impl Fn(Point) -> u8) -> Vec<ClassifiedPath> {
     if path.len() < 2 {
         return Vec::new();
-    }
-    if polygons.is_empty() {
-        return vec![ClassifiedPath {
-            path: path.to_vec(),
-            inside: false,
-        }];
     }
     let n = path.len();
     let edge_count = if closed { n } else { n - 1 };
@@ -127,12 +164,12 @@ pub fn classify_polyline(
         let a = path[i];
         let b = path[(i + 1) % n];
         let mid = Point::new(a.x.midpoint(b.x), a.y.midpoint(b.y));
-        flags.push(point_in_polygons(mid, polygons));
+        flags.push(class(mid));
     }
     if flags.iter().all(|&f| f == flags[0]) {
         return vec![ClassifiedPath {
             path: path.to_vec(),
-            inside: flags[0],
+            degree: flags[0],
         }];
     }
     let mut runs: Vec<ClassifiedPath> = Vec::new();
@@ -144,7 +181,7 @@ pub fn classify_polyline(
         }
     }
     runs.push(edge_run(path, start, edge_count, flags[start]));
-    if closed && runs.len() > 1 && runs.first().map(|r| r.inside) == runs.last().map(|r| r.inside) {
+    if closed && runs.len() > 1 && runs.first().map(|r| r.degree) == runs.last().map(|r| r.degree) {
         let mut last = runs.pop().unwrap();
         let mut first = runs.remove(0);
         last.path.pop();
@@ -154,13 +191,13 @@ pub fn classify_polyline(
     runs
 }
 
-fn edge_run(path: &[Point], start: usize, end: usize, inside: bool) -> ClassifiedPath {
+fn edge_run(path: &[Point], start: usize, end: usize, degree: u8) -> ClassifiedPath {
     let n = path.len();
     let mut pts = Vec::with_capacity(end - start + 1);
     for i in start..=end {
         pts.push(path[i % n]);
     }
-    ClassifiedPath { path: pts, inside }
+    ClassifiedPath { path: pts, degree }
 }
 
 pub fn clip_polylines(paths: &[Polyline], polygons: &[Polygon]) -> Vec<Polyline> {
@@ -191,7 +228,8 @@ mod tests {
         let path = square(10.0);
         let runs = classify_polyline(&path, &[support], true);
         assert_eq!(runs.len(), 1);
-        assert!(runs[0].inside);
+        assert!(runs[0].inside());
+        assert_eq!(runs[0].degree, 0);
         assert_eq!(runs[0].path.len(), 4);
     }
 
@@ -201,7 +239,24 @@ mod tests {
         let path = square(20.0);
         let runs = classify_polyline(&path, &[support], true);
         assert_eq!(runs.len(), 1);
-        assert!(!runs[0].inside);
+        assert!(!runs[0].inside());
+        assert_eq!(runs[0].degree, 5);
         assert_eq!(runs[0].path.len(), 4);
+    }
+
+    #[test]
+    fn concentric_rings_pick_degree_2() {
+        let rings = vec![
+            vec![square(8.0)],
+            vec![square(12.0)],
+            vec![square(16.0)],
+            vec![square(20.0)],
+            vec![square(24.0)],
+        ];
+        let path = square(14.0);
+        let runs = classify_overhang(&path, &rings, true);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].degree, 2);
+        assert!(runs[0].inside());
     }
 }

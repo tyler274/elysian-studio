@@ -363,8 +363,20 @@ pub struct SliceSettings {
     pub detect_overhang_wall: bool,
     /// C++ `enable_overhang_speed`: slow unsupported wall segments.
     pub enable_overhang_speed: bool,
-    /// C++ `overhang_totally_speed` / `overhang_4_4_speed` (mm/s).
+    /// C++ `overhang_1_4_speed`. 0 means keep the wall speed.
+    pub overhang_1_4_speed_mm_s: f64,
+    /// C++ `overhang_2_4_speed`.
+    pub overhang_2_4_speed_mm_s: f64,
+    /// C++ `overhang_3_4_speed`.
+    pub overhang_3_4_speed_mm_s: f64,
+    /// C++ `overhang_4_4_speed`.
+    pub overhang_4_4_speed_mm_s: f64,
+    /// C++ `overhang_totally_speed` (100% overhang / degree 5).
     pub overhang_speed_mm_s: f64,
+    /// C++ `bridge_speed`.
+    pub bridge_speed_mm_s: f64,
+    /// C++ `top_surface_speed`.
+    pub top_surface_speed_mm_s: f64,
     /// Skirt loops around layer 0 (0 disables).
     pub skirt_loops: u32,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
@@ -461,7 +473,13 @@ impl Default for SliceSettings {
             support_speed_mm_s: 80.0,
             detect_overhang_wall: true,
             enable_overhang_speed: true,
+            overhang_1_4_speed_mm_s: 0.0,
+            overhang_2_4_speed_mm_s: 50.0,
+            overhang_3_4_speed_mm_s: 30.0,
+            overhang_4_4_speed_mm_s: 10.0,
             overhang_speed_mm_s: 10.0,
+            bridge_speed_mm_s: 25.0,
+            top_surface_speed_mm_s: 50.0,
             skirt_loops: 2,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
@@ -576,7 +594,13 @@ impl SliceSettings {
             solid_infill_speed_mm_s: 250.0,
             support_speed_mm_s: 80.0,
             enable_overhang_speed: true,
+            overhang_1_4_speed_mm_s: 0.0,
+            overhang_2_4_speed_mm_s: 50.0,
+            overhang_3_4_speed_mm_s: 30.0,
+            overhang_4_4_speed_mm_s: 10.0,
             overhang_speed_mm_s: 10.0,
+            bridge_speed_mm_s: 50.0,
+            top_surface_speed_mm_s: 200.0,
             ..Self::default()
         }
     }

@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use bambu_config::{Flow, SliceSettings};
 use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
-use bambu_slicer::{classify_polyline, SliceResult};
+use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
 
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
@@ -42,7 +42,6 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let infill_f = settings.infill_speed_mm_s * 60.0;
     let solid_f = settings.solid_infill_speed_mm_s * 60.0;
     let support_f = settings.support_speed_mm_s * 60.0;
-    let overhang_f = settings.overhang_speed_mm_s * 60.0;
 
     let mut e = 0.0_f64;
     let mut last: Option<(f64, f64)> = None;
@@ -59,10 +58,20 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         let sparse_f = if first { first_infill_f } else { infill_f };
         let solid_layer_f = if first { first_f } else { solid_f };
         let support_layer_f = if first { first_f } else { support_f };
+        let bridge_layer_f = if first {
+            first_f
+        } else {
+            settings.bridge_speed_mm_s * 60.0
+        };
+        let top_layer_f = if first {
+            first_f
+        } else {
+            settings.top_surface_speed_mm_s * 60.0
+        };
         let support_polys = if layer_i == 0 {
             None
         } else {
-            overhang_support(settings, sliced.layers.get(layer_i - 1))
+            overhang_rings(settings, sliced.layers.get(layer_i - 1))
         };
 
         if !layer.skirt.is_empty() {
@@ -125,7 +134,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             &mut e,
             e_per_mm,
             wall_f,
-            overhang_f,
+            settings,
             travel_f,
             support_polys.as_deref(),
             settings.enable_overhang_speed,
@@ -139,7 +148,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             &mut e,
             e_per_mm,
             inner_wall_f,
-            overhang_f,
+            settings,
             travel_f,
             support_polys.as_deref(),
             settings.enable_overhang_speed,
@@ -179,7 +188,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                wall_f,
+                bridge_layer_f,
                 travel_f,
                 &mut last,
             )?;
@@ -205,7 +214,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                wall_f,
+                top_layer_f,
                 travel_f,
                 &mut last,
             )?;
@@ -255,10 +264,10 @@ fn emit_paths(
     Ok(())
 }
 
-fn overhang_support(
+fn overhang_rings(
     settings: &SliceSettings,
     lower: Option<&bambu_slicer::Layer>,
-) -> Option<Vec<Polygon>> {
+) -> Option<Vec<Vec<Polygon>>> {
     if !settings.detect_overhang_wall {
         return None;
     }
@@ -266,11 +275,37 @@ fn overhang_support(
     if lower.contours.is_empty() {
         return None;
     }
-    let grown = offset_polygons(&lower.contours, settings.nozzle_diameter_mm * 0.5);
-    if grown.is_empty() {
-        Some(lower.contours.clone())
+    let start = -0.5 * settings.line_width_mm;
+    let end = 0.5 * settings.nozzle_diameter_mm;
+    let mut rings = Vec::with_capacity(5);
+    for i in 0..5 {
+        let t = f64::from(i) / 4.0;
+        let offset = start + t * (end - start);
+        let grown = offset_polygons(&lower.contours, offset);
+        rings.push(if grown.is_empty() {
+            lower.contours.clone()
+        } else {
+            grown
+        });
+    }
+    Some(rings)
+}
+
+fn overhang_feed(settings: &SliceSettings, degree: u8, print_f: f64) -> f64 {
+    if !settings.enable_overhang_speed || degree == 0 {
+        return print_f;
+    }
+    let band = match degree {
+        1 => settings.overhang_1_4_speed_mm_s,
+        2 => settings.overhang_2_4_speed_mm_s,
+        3 => settings.overhang_3_4_speed_mm_s,
+        4 => settings.overhang_4_4_speed_mm_s,
+        _ => settings.overhang_speed_mm_s,
+    };
+    if band <= 0.0 {
+        print_f
     } else {
-        Some(grown)
+        band * 60.0
     }
 }
 
@@ -283,9 +318,9 @@ fn emit_wall_paths(
     e: &mut f64,
     e_per_mm: f64,
     print_f: f64,
-    overhang_f: f64,
+    settings: &SliceSettings,
     travel_f: f64,
-    support: Option<&[Polygon]>,
+    support: Option<&[Vec<Polygon>]>,
     slow_overhang: bool,
     last: &mut Option<(f64, f64)>,
 ) -> Result<(), GcodeError> {
@@ -298,10 +333,10 @@ fn emit_wall_paths(
             continue;
         }
         let runs = match support {
-            Some(polys) if !polys.is_empty() => classify_polyline(path, polys, closed),
+            Some(rings) if !rings.is_empty() => classify_overhang(path, rings, closed),
             _ => vec![bambu_slicer::ClassifiedPath {
                 path: path.clone(),
-                inside: true,
+                degree: 0,
             }],
         };
         let single = runs.len() == 1;
@@ -309,8 +344,8 @@ fn emit_wall_paths(
             if run.path.len() < 2 {
                 continue;
             }
-            let overhang = !run.inside && slow_overhang;
-            let feature = if overhang {
+            let total = !run.inside() && slow_overhang;
+            let feature = if total {
                 "Overhang wall"
             } else {
                 supported_feature
@@ -319,7 +354,7 @@ fn emit_wall_paths(
                 writeln!(out, "; FEATURE: {feature}")?;
                 current_feature = Some(feature);
             }
-            let feed = if overhang { overhang_f } else { print_f };
+            let feed = overhang_feed(settings, run.degree, print_f);
             emit_one_path(
                 out,
                 &run.path,
@@ -788,5 +823,30 @@ mod tests {
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains(" F1200"), "first layer 20 mm/s");
         assert!(gcode.contains(" F3000"), "later walls 50 mm/s");
+    }
+
+    #[test]
+    fn bridge_uses_bridge_speed() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+        settings.bridge_speed_mm_s = 35.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(sliced.layers.iter().any(|l| !l.bridge.is_empty()));
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Bridge"));
+        assert!(gcode.contains(" F2100"), "bridge 35 mm/s");
+    }
+
+    #[test]
+    fn top_surface_uses_top_speed() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.top_surface_speed_mm_s = 40.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Top surface"));
+        assert!(gcode.contains(" F2400"), "top 40 mm/s");
     }
 }
