@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bambu_config::{
     bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, IroningType, SeamPosition,
-    SliceSettings, SurfacePattern,
+    SliceSettings, SurfacePattern, TopOneWallType,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -42,6 +42,8 @@ pub enum CliError {
     Ironing(String),
     #[error("unknown surface pattern '{0}' (rectilinear|monotonic|monotonicline|concentric)")]
     SurfacePattern(String),
+    #[error("unknown one-wall-top '{0}' (off|all|topmost)")]
+    TopOneWall(String),
     #[error("{0}")]
     Message(String),
 }
@@ -122,6 +124,9 @@ enum Commands {
         /// Bottom shell fill (`bottom_surface_pattern`).
         #[arg(long)]
         bottom_pattern: Option<String>,
+        /// Only one wall on top surfaces (`top_one_wall_type`: off|all|topmost).
+        #[arg(long)]
+        one_wall_top: Option<String>,
         /// Raft layers under the object (`raft_layers`). 0 disables.
         #[arg(long)]
         raft: Option<u32>,
@@ -268,6 +273,7 @@ fn run() -> Result<(), CliError> {
             xy_hole,
             top_pattern,
             bottom_pattern,
+            one_wall_top,
             raft,
             precise_z,
             cpu,
@@ -344,6 +350,10 @@ fn run() -> Result<(), CliError> {
             if let Some(name) = bottom_pattern {
                 slice_settings.bottom_surface_pattern =
                     SurfacePattern::from_name(&name).ok_or(CliError::SurfacePattern(name))?;
+            }
+            if let Some(name) = one_wall_top {
+                slice_settings.top_one_wall =
+                    TopOneWallType::from_name(&name).ok_or(CliError::TopOneWall(name))?;
             }
             if let Some(n) = raft {
                 slice_settings.raft_layers = n;

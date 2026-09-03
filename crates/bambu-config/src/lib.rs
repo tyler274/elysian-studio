@@ -89,6 +89,36 @@ pub enum WallGenerator {
     Classic,
 }
 
+/// C++ `TopOneWallType` (`top_one_wall_type`, legacy `only_one_wall_top`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TopOneWallType {
+    #[default]
+    None,
+    /// One wall on every region not covered by the layer above (`all top`).
+    AllTop,
+    /// One wall only on the last layer (`topmost`).
+    Topmost,
+}
+
+impl TopOneWallType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "not apply" | "none" | "off" | "0" | "false" => Self::None,
+            "all top" | "alltop" | "all" | "top" | "1" | "true" => Self::AllTop,
+            "topmost" | "topmost surface" | "topmost_only" => Self::Topmost,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "not apply",
+            Self::AllTop => "all top",
+            Self::Topmost => "topmost",
+        }
+    }
+}
+
 /// C++ `IroningType` (`ironing_type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IroningType {
@@ -186,6 +216,8 @@ pub struct SliceSettings {
     pub xy_hole_compensation_mm: f64,
     pub line_width_mm: f64,
     pub wall_loops: u32,
+    /// C++ `top_one_wall_type` (BBL default is `all top`).
+    pub top_one_wall: TopOneWallType,
     pub infill_density: f64,
     pub infill_pattern: InfillPattern,
     pub seam: SeamPosition,
@@ -254,6 +286,7 @@ impl Default for SliceSettings {
             xy_hole_compensation_mm: 0.0,
             line_width_mm: 0.42,
             wall_loops: 2,
+            top_one_wall: TopOneWallType::None,
             infill_density: 0.20,
             infill_pattern: InfillPattern::Gyroid,
             seam: SeamPosition::Aligned,
@@ -342,6 +375,7 @@ impl SliceSettings {
             top_surface_pattern: SurfacePattern::MonotonicLine,
             bottom_surface_pattern: SurfacePattern::Monotonic,
             elephant_foot_mm: 0.15,
+            top_one_wall: TopOneWallType::AllTop,
             travel_speed_mm_s: 400.0,
             print_speed_mm_s: 200.0,
             infill_speed_mm_s: 270.0,

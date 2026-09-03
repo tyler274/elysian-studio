@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::{
     InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings, SurfacePattern,
-    WallGenerator,
+    TopOneWallType, WallGenerator,
 };
 
 #[derive(Debug, Error)]
@@ -85,6 +85,18 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     }
     if let Some(v) = u32_val(map, "wall_loops") {
         s.wall_loops = v.max(1);
+    }
+    if let Some(v) = bool_val(map, "only_one_wall_top") {
+        s.top_one_wall = if v {
+            TopOneWallType::AllTop
+        } else {
+            TopOneWallType::None
+        };
+    }
+    if let Some(name) = text(map, "top_one_wall_type") {
+        if let Some(t) = TopOneWallType::from_name(&name) {
+            s.top_one_wall = t;
+        }
     }
     if let Some(v) = percent(map, "sparse_infill_density") {
         s.infill_density = v;
@@ -368,6 +380,7 @@ mod tests {
         assert_eq!(s.top_surface_pattern, crate::SurfacePattern::MonotonicLine);
         assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
         assert_eq!(s.raft_layers, 0);
+        assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
@@ -376,7 +389,8 @@ mod tests {
         assert_eq!(baked.bottom_surface_pattern, s.bottom_surface_pattern);
         assert!((baked.infill_density - s.infill_density).abs() < 1e-9);
         assert!((baked.brim_width_mm - s.brim_width_mm).abs() < 1e-9);
-        assert!((baked.elephant_foot_mm - s.elephant_foot_mm).abs() < 1e-9);
+        assert_eq!(baked.elephant_foot_mm, s.elephant_foot_mm);
+        assert_eq!(baked.top_one_wall, s.top_one_wall);
     }
 
     #[test]

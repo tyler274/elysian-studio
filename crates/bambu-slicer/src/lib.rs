@@ -105,9 +105,7 @@ pub fn slice_from_contours(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
 ) -> SliceResult {
-    let mut out = Vec::new();
-    let mut seam_hint = None;
-    let mut index = 0usize;
+    let mut prepared = Vec::new();
     for (spec, mut contours) in layers {
         contours = union_polygons(&contours);
         contours = compensate_xy(
@@ -124,11 +122,19 @@ pub fn slice_from_contours(
         if contours.is_empty() {
             continue;
         }
-        let peri = perimeters::classic_perimeters(&contours, settings, seam_hint);
+        prepared.push((spec, contours));
+    }
+
+    let mut out = Vec::new();
+    let mut seam_hint = None;
+    for i in 0..prepared.len() {
+        let upper = prepared.get(i + 1).map(|(_, c)| c.as_slice());
+        let peri = perimeters::classic_perimeters(&prepared[i].1, settings, seam_hint, upper);
         seam_hint = peri.seam_hint;
+        let (spec, contours) = prepared[i].clone();
         out.push(Layer {
             z_mm: spec.slice_z_mm,
-            index,
+            index: i,
             height_mm: spec.height_mm,
             print_z_mm: spec.print_z_mm,
             contours,
@@ -148,7 +154,6 @@ pub fn slice_from_contours(
             ironing: Vec::new(),
             top_region: Vec::new(),
         });
-        index += 1;
     }
 
     prepare_infill::apply(&mut out, settings, mesh);
@@ -238,7 +243,9 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::{InfillPattern, SeamPosition, SliceSettings, SurfacePattern};
+    use bambu_config::{
+        InfillPattern, SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
+    };
     use bambu_geom::TriangleMesh;
 
     #[test]
@@ -272,6 +279,58 @@ mod tests {
         let mid_b = &b.layers[b.layers.len() / 2];
         assert!(mid_a.inner_walls.is_empty());
         assert!(!mid_b.inner_walls.is_empty());
+    }
+
+    #[test]
+    fn one_wall_topmost_drops_last_layer_inner_walls() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.top_one_wall = TopOneWallType::Topmost;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result.layers.len();
+        let last = &result.layers[n - 1];
+        let mid = &result.layers[n / 2];
+        assert!(!last.outer_walls.is_empty());
+        assert!(last.inner_walls.is_empty());
+        assert!(!mid.inner_walls.is_empty());
+        assert!(!last.top_surface.is_empty());
+    }
+
+    #[test]
+    fn one_wall_all_top_opens_terrace() {
+        let mut mesh = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(20.0, 20.0, 10.0));
+        mesh.append(&TriangleMesh::aabb_box(
+            glam::Vec3::new(5.0, 5.0, 10.0),
+            glam::Vec3::new(15.0, 15.0, 20.0),
+        ));
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.wall_loops = 2;
+        let mut none = settings.clone();
+        none.top_one_wall = TopOneWallType::None;
+        let mut all_top = settings.clone();
+        all_top.top_one_wall = TopOneWallType::AllTop;
+        let a = slice_mesh(&mesh, &none).unwrap();
+        let b = slice_mesh(&mesh, &all_top).unwrap();
+        let terrace = a
+            .layers
+            .iter()
+            .position(|l| (l.print_z_mm - 10.0).abs() < 0.15)
+            .expect("layer at the 10 mm step");
+        assert!(
+            !a.layers[terrace].inner_walls.is_empty(),
+            "full walls on the terrace without the option"
+        );
+        let none_inner = polyline_len_mm(&a.layers[terrace].inner_walls);
+        let all_inner = polyline_len_mm(&b.layers[terrace].inner_walls);
+        assert!(
+            all_inner < none_inner * 0.7,
+            "AllTop should skip terrace inner walls: {all_inner} vs {none_inner}"
+        );
+        let last = b.layers.last().unwrap();
+        assert!(last.inner_walls.is_empty());
+        assert!(!last.outer_walls.is_empty());
     }
 
     #[test]
