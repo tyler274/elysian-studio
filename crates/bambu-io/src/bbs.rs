@@ -73,6 +73,61 @@ pub fn apply(model: &mut Model, xml: &str) -> Result<(), IoError> {
     Ok(())
 }
 
+/// Serialize plates and object names as Bambu `model_settings.config`.
+///
+/// `object_ids[i]` is the 3MF resource id for `model.objects[i]` (`0` skips).
+pub fn write(model: &Model, object_ids: &[u32]) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
+    for (i, obj) in model.objects.iter().enumerate() {
+        let Some(&id) = object_ids.get(i) else {
+            continue;
+        };
+        if id == 0 {
+            continue;
+        }
+        out.push_str(&format!(
+            "  <object id=\"{id}\">\n    <metadata key=\"name\" value=\"{}\"/>\n  </object>\n",
+            xml_escape(&obj.name)
+        ));
+    }
+    for (pi, plate) in model.plates.iter().enumerate() {
+        let idx = pi + 1;
+        out.push_str("  <plate>\n");
+        out.push_str(&format!(
+            "    <metadata key=\"plater_id\" value=\"{idx}\"/>\n"
+        ));
+        out.push_str(&format!(
+            "    <metadata key=\"plater_name\" value=\"{}\"/>\n",
+            xml_escape(&plate.name)
+        ));
+        let locked = if plate.locked { "true" } else { "false" };
+        out.push_str(&format!(
+            "    <metadata key=\"locked\" value=\"{locked}\"/>\n"
+        ));
+        for &oi in &plate.object_indices {
+            let Some(&id) = object_ids.get(oi) else {
+                continue;
+            };
+            if id == 0 {
+                continue;
+            }
+            out.push_str(&format!(
+                "    <model_instance>\n      <metadata key=\"object_id\" value=\"{id}\"/>\n      <metadata key=\"instance_id\" value=\"0\"/>\n    </model_instance>\n"
+            ));
+        }
+        out.push_str("  </plate>\n");
+    }
+    out.push_str("</config>\n");
+    out
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn parse(xml: &str) -> Result<(BTreeMap<u32, String>, Vec<PlateRec>), IoError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);

@@ -2,7 +2,8 @@
 //!
 //! Geometry, units, build-item transforms, and component assemblies. When
 //! `Metadata/model_settings.config` is present, object names and plate
-//! grouping are applied. Paint, AMS, and volume matrices stay ignored.
+//! grouping are applied. Writers emit that file so plates round-trip. Paint,
+//! AMS, and volume matrices stay ignored.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
@@ -26,6 +27,7 @@ const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Default Extension="config" ContentType="application/xml"/>
 </Types>
 "#;
 
@@ -97,9 +99,20 @@ fn zip_entry_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<Str
     Ok(xml)
 }
 
-/// Pack a single mesh as a core 3MF (tests and round-trips).
+/// Pack a single mesh as a Bambu 3MF (geometry + one plate).
 pub fn write_3mf_bytes(name: &str, mesh: &TriangleMesh) -> Result<Vec<u8>, IoError> {
-    let xml = model_xml(name, mesh);
+    write_model_3mf_bytes(&Model::from_mesh(name, mesh.clone()))
+}
+
+pub fn write_3mf(path: impl AsRef<Path>, name: &str, mesh: &TriangleMesh) -> Result<(), IoError> {
+    std::fs::write(path, write_3mf_bytes(name, mesh)?)?;
+    Ok(())
+}
+
+/// Pack a [`Model`] with `Metadata/model_settings.config` so plates round-trip.
+pub fn write_model_3mf_bytes(model: &Model) -> Result<Vec<u8>, IoError> {
+    let (xml, ids) = model_xml_from_model(model)?;
+    let settings = crate::bbs::write(model, &ids);
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
@@ -110,13 +123,15 @@ pub fn write_3mf_bytes(name: &str, mesh: &TriangleMesh) -> Result<Vec<u8>, IoErr
         zip.write_all(RELS.as_bytes())?;
         zip.start_file(MODEL_PATH, opts)?;
         zip.write_all(xml.as_bytes())?;
+        zip.start_file(MODEL_SETTINGS_PATH, opts)?;
+        zip.write_all(settings.as_bytes())?;
         zip.finish()?;
     }
     Ok(cursor.into_inner())
 }
 
-pub fn write_3mf(path: impl AsRef<Path>, name: &str, mesh: &TriangleMesh) -> Result<(), IoError> {
-    std::fs::write(path, write_3mf_bytes(name, mesh)?)?;
+pub fn write_model_3mf(path: impl AsRef<Path>, model: &Model) -> Result<(), IoError> {
+    std::fs::write(path, write_model_3mf_bytes(model)?)?;
     Ok(())
 }
 
@@ -351,34 +366,68 @@ fn attr_u32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> u32 {
     attr(e, key).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-fn model_xml(name: &str, mesh: &TriangleMesh) -> String {
-    let mut out = String::new();
-    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    out.push_str(&format!(
-        "<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">\n"
-    ));
-    out.push_str("  <resources>\n");
-    out.push_str(&format!(
-        "    <object id=\"1\" type=\"model\" name=\"{}\">\n      <mesh>\n        <vertices>\n",
-        xml_escape(name)
-    ));
-    for v in &mesh.vertices {
-        out.push_str(&format!(
-            "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
-            v.x, v.y, v.z
+fn model_xml_from_model(model: &Model) -> Result<(String, Vec<u32>), IoError> {
+    let mut ids = vec![0u32; model.objects.len()];
+    let mut next = 1u32;
+    let mut resources = String::new();
+    let mut build = String::new();
+    for (i, obj) in model.objects.iter().enumerate() {
+        let mesh = world_mesh(obj);
+        if mesh.indices.is_empty() {
+            continue;
+        }
+        let id = next;
+        next += 1;
+        ids[i] = id;
+        resources.push_str(&format!(
+            "    <object id=\"{id}\" type=\"model\" name=\"{}\">\n      <mesh>\n        <vertices>\n",
+            xml_escape(&obj.name)
         ));
+        for v in &mesh.vertices {
+            resources.push_str(&format!(
+                "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
+                v.x, v.y, v.z
+            ));
+        }
+        resources.push_str("        </vertices>\n        <triangles>\n");
+        for idx in &mesh.indices {
+            resources.push_str(&format!(
+                "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+                idx[0], idx[1], idx[2]
+            ));
+        }
+        resources.push_str("        </triangles>\n      </mesh>\n    </object>\n");
+        build.push_str(&format!("    <item objectid=\"{id}\"/>\n"));
     }
-    out.push_str("        </vertices>\n        <triangles>\n");
-    for idx in &mesh.indices {
-        out.push_str(&format!(
-            "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
-            idx[0], idx[1], idx[2]
-        ));
+    if next == 1 {
+        return Err(IoError::Message("model contains no triangles".into()));
     }
-    out.push_str(
-        "        </triangles>\n      </mesh>\n    </object>\n  </resources>\n  <build>\n    <item objectid=\"1\"/>\n  </build>\n</model>\n",
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">\n  <resources>\n{resources}  </resources>\n  <build>\n{build}  </build>\n</model>\n"
     );
-    out
+    Ok((xml, ids))
+}
+
+fn world_mesh(obj: &ModelObject) -> TriangleMesh {
+    if obj.instances.is_empty() {
+        return obj.mesh.clone();
+    }
+    if obj.instances.len() == 1 && obj.instances[0].offset == Vec3::ZERO {
+        return obj.mesh.clone();
+    }
+    let mut out = TriangleMesh::default();
+    for inst in &obj.instances {
+        let mut mesh = obj.mesh.clone();
+        if inst.offset != Vec3::ZERO {
+            mesh.translate(inst.offset);
+        }
+        out.append(&mesh);
+    }
+    if out.indices.is_empty() {
+        obj.mesh.clone()
+    } else {
+        out
+    }
 }
 
 fn xml_escape(s: &str) -> String {
@@ -519,6 +568,13 @@ mod tests {
     fn write_roundtrip_matches_cube() {
         let src = TriangleMesh::cube(20.0);
         let bytes = write_3mf_bytes("cube", &src).unwrap();
+        {
+            let mut zip = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            assert!(
+                zip.by_name(MODEL_SETTINGS_PATH).is_ok(),
+                "writers emit Metadata/model_settings.config"
+            );
+        }
         let loaded = load_3mf_bytes(&bytes).unwrap();
         let mesh = loaded.merged_mesh().unwrap();
         assert_eq!(mesh.indices.len(), src.indices.len());
@@ -527,6 +583,8 @@ mod tests {
         let b = mesh.aabb().unwrap().size();
         assert!((a - b).length() < 1e-4);
         assert_eq!(loaded.objects[0].name, "cube");
+        assert_eq!(loaded.plates.len(), 1);
+        assert_eq!(loaded.plates[0].name, "Plate 1");
     }
 
     fn pack_files(files: &[(&str, &str)]) -> Vec<u8> {
@@ -684,5 +742,57 @@ mod tests {
         assert_eq!(model.plates[0].object_indices, vec![0, 1]);
         assert_eq!(model.objects[0].name, "left");
         assert_eq!(model.objects[1].name, "right");
+    }
+
+    #[test]
+    fn write_model_roundtrips_plates() {
+        let mut right = TriangleMesh::cube(10.0);
+        right.translate(Vec3::new(80.0, 0.0, 0.0));
+        let model = Model {
+            objects: vec![
+                ModelObject {
+                    name: "Left cube".into(),
+                    mesh: TriangleMesh::cube(10.0),
+                    instances: vec![Instance::default()],
+                    object_id: 7,
+                    instance_id: 3,
+                },
+                ModelObject {
+                    name: "Right cube".into(),
+                    mesh: right,
+                    instances: vec![Instance::default()],
+                    object_id: 8,
+                    instance_id: 1,
+                },
+            ],
+            plates: vec![
+                PartPlate {
+                    name: "Plate A".into(),
+                    object_indices: vec![0],
+                    locked: false,
+                },
+                PartPlate {
+                    name: "Plate B".into(),
+                    object_indices: vec![1],
+                    locked: true,
+                },
+            ],
+        };
+        let bytes = write_model_3mf_bytes(&model).unwrap();
+        let loaded = load_3mf_bytes(&bytes).unwrap();
+        assert_eq!(loaded.objects.len(), 2);
+        assert_eq!(loaded.objects[0].name, "Left cube");
+        assert_eq!(loaded.objects[1].name, "Right cube");
+        assert_eq!(loaded.plates.len(), 2);
+        assert_eq!(loaded.plates[0].name, "Plate A");
+        assert_eq!(loaded.plates[1].name, "Plate B");
+        assert!(!loaded.plates[0].locked);
+        assert!(loaded.plates[1].locked);
+        assert_eq!(loaded.plates[0].object_indices, vec![0]);
+        assert_eq!(loaded.plates[1].object_indices, vec![1]);
+        let a = loaded.mesh_for_plate(0).unwrap().aabb().unwrap();
+        let b = loaded.mesh_for_plate(1).unwrap().aabb().unwrap();
+        assert!(a.max.x < 15.0, "max.x={}", a.max.x);
+        assert!(b.min.x > 75.0, "min.x={}", b.min.x);
     }
 }

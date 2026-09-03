@@ -13,7 +13,9 @@ use glam::Vec3;
 use stl_io::{IndexedMesh, Normal, Triangle, Vertex};
 use thiserror::Error;
 
-pub use threemf::{load_3mf, load_3mf_bytes, write_3mf, write_3mf_bytes};
+pub use threemf::{
+    load_3mf, load_3mf_bytes, write_3mf, write_3mf_bytes, write_model_3mf, write_model_3mf_bytes,
+};
 
 #[derive(Debug, Error)]
 pub enum IoError {
