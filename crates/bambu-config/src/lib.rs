@@ -377,6 +377,12 @@ pub struct SliceSettings {
     pub bridge_speed_mm_s: f64,
     /// C++ `top_surface_speed`.
     pub top_surface_speed_mm_s: f64,
+    /// C++ `small_perimeter_speed` raw value (mm/s, or percent of outer wall).
+    pub small_perimeter_speed: f64,
+    /// When set, [`Self::small_perimeter_speed`] is a percent of outer wall speed.
+    pub small_perimeter_speed_is_percent: bool,
+    /// C++ `small_perimeter_threshold` (mm). Compared as a circle radius.
+    pub small_perimeter_threshold_mm: f64,
     /// Skirt loops around layer 0 (0 disables).
     pub skirt_loops: u32,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
@@ -480,6 +486,9 @@ impl Default for SliceSettings {
             overhang_speed_mm_s: 10.0,
             bridge_speed_mm_s: 25.0,
             top_surface_speed_mm_s: 50.0,
+            small_perimeter_speed: 50.0,
+            small_perimeter_speed_is_percent: true,
+            small_perimeter_threshold_mm: 0.0,
             skirt_loops: 2,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
@@ -560,6 +569,15 @@ impl SliceSettings {
             0.25
         };
         frac * self.nozzle_diameter_mm
+    }
+
+    /// C++ `small_perimeter_speed.get_abs_value(outer_wall_speed)`.
+    pub fn small_perimeter_speed_mm_s(&self) -> f64 {
+        if self.small_perimeter_speed_is_percent {
+            self.small_perimeter_speed * self.print_speed_mm_s / 100.0
+        } else {
+            self.small_perimeter_speed
+        }
     }
 
     /// Thin-feature extrusion floor (`min_bead_width` × nozzle).

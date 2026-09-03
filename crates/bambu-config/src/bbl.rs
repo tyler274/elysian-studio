@@ -266,6 +266,20 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "small_perimeter_speed",
+        if settings.small_perimeter_speed_is_percent {
+            format!("{}%", num_str(settings.small_perimeter_speed))
+        } else {
+            num_str(settings.small_perimeter_speed)
+        },
+    );
+    insert(
+        &mut map,
+        "small_perimeter_threshold",
+        num_str(settings.small_perimeter_threshold_mm),
+    );
+    insert(
+        &mut map,
         "sparse_infill_speed",
         num_str(settings.infill_speed_mm_s),
     );
@@ -415,6 +429,8 @@ pub fn is_region_key(key: &str) -> bool {
             | "overhang_4_4_speed"
             | "bridge_speed"
             | "top_surface_speed"
+            | "small_perimeter_speed"
+            | "small_perimeter_threshold"
             | "sparse_infill_speed"
             | "internal_solid_infill_speed"
             | "ironing_type"
@@ -640,6 +656,13 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "top_surface_speed") {
         s.top_surface_speed_mm_s = v.max(0.0);
     }
+    if let Some((v, is_percent)) = float_or_percent(map, "small_perimeter_speed") {
+        s.small_perimeter_speed = v.max(0.0);
+        s.small_perimeter_speed_is_percent = is_percent;
+    }
+    if let Some(v) = num(map, "small_perimeter_threshold") {
+        s.small_perimeter_threshold_mm = v.max(0.0);
+    }
     if let Some(v) = num(map, "sparse_infill_speed") {
         s.infill_speed_mm_s = v;
     }
@@ -708,6 +731,15 @@ fn value_text(v: &Value) -> Option<String> {
 fn num(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
     let raw = text(map, key)?;
     raw.trim_end_matches('%').trim().parse().ok()
+}
+
+fn float_or_percent(map: &serde_json::Map<String, Value>, key: &str) -> Option<(f64, bool)> {
+    let raw = text(map, key)?;
+    let trimmed = raw.trim();
+    if let Some(p) = trimmed.strip_suffix('%') {
+        return p.trim().parse().ok().map(|v| (v, true));
+    }
+    trimmed.parse().ok().map(|v| (v, false))
 }
 
 fn percent(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
@@ -873,6 +905,10 @@ mod tests {
         assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
         assert!((s.min_feature_size - 0.25).abs() < 1e-9);
         assert!((s.min_bead_width - 0.85).abs() < 1e-9);
+        assert!(s.small_perimeter_speed_is_percent);
+        assert!((s.small_perimeter_speed - 50.0).abs() < 1e-9);
+        assert!(s.small_perimeter_threshold_mm.abs() < 1e-9);
+        assert!((s.small_perimeter_speed_mm_s() - 100.0).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
@@ -940,6 +976,8 @@ mod tests {
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
         assert!((loaded.default_acceleration_mm_s2 - 10000.0).abs() < 1e-9);
         assert!((loaded.filament_density_g_cm3 - 1.24).abs() < 1e-9);
+        assert!(loaded.small_perimeter_speed_is_percent);
+        assert!((loaded.small_perimeter_speed - 50.0).abs() < 1e-9);
     }
 
     #[test]

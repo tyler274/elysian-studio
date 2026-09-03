@@ -138,6 +138,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             travel_f,
             support_polys.as_deref(),
             settings.enable_overhang_speed,
+            !first,
             &mut last,
         )?;
         emit_wall_paths(
@@ -152,6 +153,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             travel_f,
             support_polys.as_deref(),
             settings.enable_overhang_speed,
+            !first,
             &mut last,
         )?;
         if !layer.infill.is_empty() {
@@ -309,6 +311,44 @@ fn overhang_feed(settings: &SliceSettings, degree: u8, print_f: f64) -> f64 {
     }
 }
 
+/// C++ `SMALL_PERIMETER_LENGTH`: circumference of a circle with the given radius.
+fn small_perimeter_max_length_mm(threshold_mm: f64) -> f64 {
+    std::f64::consts::TAU * threshold_mm
+}
+
+fn polyline_length_mm(path: &[Point], closed: bool) -> f64 {
+    if path.len() < 2 {
+        return 0.0;
+    }
+    let mut len = 0.0;
+    for window in path.windows(2) {
+        len += window[0].distance_mm(window[1]);
+    }
+    if closed {
+        len += path[path.len() - 1].distance_mm(path[0]);
+    }
+    len
+}
+
+/// C++ `extrude_loop`: if the whole loop is a small perimeter, take `min` with the role speed.
+fn small_perimeter_feed(
+    settings: &SliceSettings,
+    path: &[Point],
+    closed: bool,
+    print_f: f64,
+) -> f64 {
+    let speed = settings.small_perimeter_speed_mm_s();
+    if speed <= 0.0 {
+        return print_f;
+    }
+    if polyline_length_mm(path, closed)
+        > small_perimeter_max_length_mm(settings.small_perimeter_threshold_mm)
+    {
+        return print_f;
+    }
+    print_f.min(speed * 60.0)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_wall_paths(
     out: &mut String,
@@ -322,6 +362,7 @@ fn emit_wall_paths(
     travel_f: f64,
     support: Option<&[Vec<Polygon>]>,
     slow_overhang: bool,
+    apply_small: bool,
     last: &mut Option<(f64, f64)>,
 ) -> Result<(), GcodeError> {
     if paths.is_empty() {
@@ -354,7 +395,10 @@ fn emit_wall_paths(
                 writeln!(out, "; FEATURE: {feature}")?;
                 current_feature = Some(feature);
             }
-            let feed = overhang_feed(settings, run.degree, print_f);
+            let mut feed = overhang_feed(settings, run.degree, print_f);
+            if apply_small {
+                feed = small_perimeter_feed(settings, path, closed, feed);
+            }
             emit_one_path(
                 out,
                 &run.path,
@@ -848,5 +892,59 @@ mod tests {
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains("; FEATURE: Top surface"));
         assert!(gcode.contains(" F2400"), "top 40 mm/s");
+    }
+
+    #[test]
+    fn small_perimeter_slows_tiny_walls() {
+        let mesh = TriangleMesh::cube(4.0);
+        let mut settings = SliceSettings::default();
+        settings.small_perimeter_threshold_mm = 6.0;
+        settings.small_perimeter_speed = 50.0;
+        settings.small_perimeter_speed_is_percent = true;
+        settings.skirt_loops = 0;
+        settings.brim_width_mm = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains(" F1500"),
+            "later walls should be 50% of 50 mm/s"
+        );
+        assert!(
+            gcode.contains(" F3000"),
+            "first layer keeps initial_layer_speed"
+        );
+    }
+
+    #[test]
+    fn small_perimeter_skips_when_threshold_zero() {
+        let mesh = TriangleMesh::cube(4.0);
+        let mut settings = SliceSettings::default();
+        settings.small_perimeter_threshold_mm = 0.0;
+        settings.skirt_loops = 0;
+        settings.brim_width_mm = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains(" F3000"), "walls stay at 50 mm/s");
+        assert!(
+            !gcode.contains(" F1500"),
+            "threshold 0 disables small-perimeter slowdown"
+        );
+    }
+
+    #[test]
+    fn small_perimeter_skips_large_loops() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.small_perimeter_threshold_mm = 6.5;
+        settings.small_perimeter_speed = 50.0;
+        settings.small_perimeter_speed_is_percent = true;
+        settings.skirt_loops = 0;
+        settings.brim_width_mm = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            !gcode.contains(" F1500"),
+            "20 mm cube walls are larger than a 6.5 mm radius"
+        );
     }
 }
