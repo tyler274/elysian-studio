@@ -1,16 +1,17 @@
-//! Core 3MF mesh import (`3D/3dmodel.model`) plus Bambu plates.
+//! Core 3MF mesh import (`3D/3dmodel.model`) plus Bambu plates and parts.
 //!
 //! Geometry, units, build-item transforms, and component assemblies. When
-//! `Metadata/model_settings.config` is present, object names and plate
-//! grouping are applied. Writers emit that file so plates round-trip. Paint,
-//! AMS, and volume matrices stay ignored.
+//! `Metadata/model_settings.config` is present, object names, plates, part
+//! subtype, and volume matrices are applied. `Metadata/project_settings.config`
+//! carries process settings. Writers emit both files so plates, parts, and
+//! settings round-trip. Paint and AMS stay ignored.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use bambu_geom::TriangleMesh;
-use bambu_model::{Instance, Model, ModelObject, PartPlate};
+use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate};
 use glam::{Mat4, Vec3, Vec4};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -21,6 +22,7 @@ use crate::IoError;
 
 const MODEL_PATH: &str = "3D/3dmodel.model";
 const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
+const PROJECT_SETTINGS_PATH: &str = "Metadata/project_settings.config";
 const CORE_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
 
 const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -76,20 +78,35 @@ pub fn load_3mf_bytes(bytes: &[u8]) -> Result<Model, IoError> {
         .map(|(orig, _)| orig.clone())
         .ok_or_else(|| IoError::Message("3MF has no 3D model part".into()))?;
     let xml = zip_entry_text(&mut zip, &original)?;
-    let settings = entries
-        .iter()
-        .find(|(_, n)| n.eq_ignore_ascii_case(MODEL_SETTINGS_PATH))
-        .map(|(orig, _)| orig.clone());
-    let settings_xml = match settings {
-        Some(name) => Some(zip_entry_text(&mut zip, &name)?),
-        None => None,
-    };
+    let settings_xml = zip_optional(&mut zip, &entries, MODEL_SETTINGS_PATH)?;
+    let project_json = zip_optional(&mut zip, &entries, PROJECT_SETTINGS_PATH)?;
     drop(zip);
     let mut model = model_from_xml(&xml)?;
     if let Some(settings_xml) = settings_xml {
         crate::bbs::apply(&mut model, &settings_xml)?;
     }
+    if let Some(project_json) = project_json {
+        model.settings = Some(
+            bambu_config::settings_from_json(&project_json)
+                .map_err(|err| IoError::Message(err.to_string()))?,
+        );
+    }
     Ok(model)
+}
+
+fn zip_optional(
+    zip: &mut ZipArchive<Cursor<&[u8]>>,
+    entries: &[(String, String)],
+    want: &str,
+) -> Result<Option<String>, IoError> {
+    let Some(name) = entries
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(want))
+        .map(|(orig, _)| orig.clone())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(zip_entry_text(zip, &name)?))
 }
 
 fn zip_entry_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Result<String, IoError> {
@@ -111,8 +128,8 @@ pub fn write_3mf(path: impl AsRef<Path>, name: &str, mesh: &TriangleMesh) -> Res
 
 /// Pack a [`Model`] with `Metadata/model_settings.config` so plates round-trip.
 pub fn write_model_3mf_bytes(model: &Model) -> Result<Vec<u8>, IoError> {
-    let (xml, ids) = model_xml_from_model(model)?;
-    let settings = crate::bbs::write(model, &ids);
+    let exported = model_xml_from_model(model)?;
+    let settings = crate::bbs::write(model, &exported.object_ids, &exported.volume_ids);
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
@@ -122,9 +139,15 @@ pub fn write_model_3mf_bytes(model: &Model) -> Result<Vec<u8>, IoError> {
         zip.start_file("_rels/.rels", opts)?;
         zip.write_all(RELS.as_bytes())?;
         zip.start_file(MODEL_PATH, opts)?;
-        zip.write_all(xml.as_bytes())?;
+        zip.write_all(exported.xml.as_bytes())?;
         zip.start_file(MODEL_SETTINGS_PATH, opts)?;
         zip.write_all(settings.as_bytes())?;
+        if let Some(slice) = &model.settings {
+            let json = bambu_config::project_settings_json(slice)
+                .map_err(|err| IoError::Message(err.to_string()))?;
+            zip.start_file(PROJECT_SETTINGS_PATH, opts)?;
+            zip.write_all(json.as_bytes())?;
+        }
         zip.finish()?;
     }
     Ok(cursor.into_inner())
@@ -261,20 +284,32 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
     let mut instance_n: BTreeMap<u32, u32> = BTreeMap::new();
     for (id, xf) in roots {
         let instance_id = *instance_n.entry(id).and_modify(|n| *n += 1).or_insert(0);
-        let mut meshes = Vec::new();
-        flatten_object(&parsed.objects, id, xf, 0, &mut meshes)?;
-        for (name, mesh) in meshes {
-            if mesh.indices.is_empty() {
-                continue;
-            }
-            objects.push(ModelObject {
-                name,
-                mesh,
-                instances: vec![Instance::default()],
-                object_id: id,
-                instance_id,
-            });
+        let mut leaves = Vec::new();
+        flatten_object(&parsed.objects, id, xf, 0, &mut leaves)?;
+        let volumes: Vec<ModelVolume> = leaves
+            .into_iter()
+            .filter(|leaf| !leaf.mesh.indices.is_empty())
+            .map(|leaf| ModelVolume::model_part(leaf.name, leaf.mesh, leaf.part_id))
+            .collect();
+        if volumes.is_empty() {
+            continue;
         }
+        let name = parsed
+            .objects
+            .get(&id)
+            .map(|o| o.name.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("object_{id}"));
+        let mut obj = ModelObject {
+            name,
+            mesh: TriangleMesh::default(),
+            volumes,
+            instances: vec![Instance::default()],
+            object_id: id,
+            instance_id,
+        };
+        obj.rebuild_printable_mesh();
+        objects.push(obj);
     }
     if objects.is_empty() {
         return Err(IoError::Message("3MF contains no triangles".into()));
@@ -287,7 +322,14 @@ fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
             object_indices: (0..n).collect(),
             locked: false,
         }],
+        settings: None,
     })
+}
+
+struct LeafMesh {
+    part_id: u32,
+    name: String,
+    mesh: TriangleMesh,
 }
 
 fn flatten_object(
@@ -295,7 +337,7 @@ fn flatten_object(
     id: u32,
     xf: Mat4,
     depth: u32,
-    out: &mut Vec<(String, TriangleMesh)>,
+    out: &mut Vec<LeafMesh>,
 ) -> Result<(), IoError> {
     if depth > 32 {
         return Err(IoError::Message("3MF component recursion too deep".into()));
@@ -309,13 +351,14 @@ fn flatten_object(
             .iter()
             .map(|p| xf.transform_point3(*p))
             .collect();
-        out.push((
-            obj.name.clone(),
-            TriangleMesh {
+        out.push(LeafMesh {
+            part_id: id,
+            name: obj.name.clone(),
+            mesh: TriangleMesh {
                 vertices,
                 indices: obj.triangles.clone(),
             },
-        ));
+        });
     }
     for (child, child_xf) in &obj.components {
         flatten_object(objects, *child, xf * *child_xf, depth + 1, out)?;
@@ -366,38 +409,69 @@ fn attr_u32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> u32 {
     attr(e, key).and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
-fn model_xml_from_model(model: &Model) -> Result<(String, Vec<u32>), IoError> {
+struct ModelXml {
+    xml: String,
+    object_ids: Vec<u32>,
+    volume_ids: Vec<Vec<u32>>,
+}
+
+fn model_xml_from_model(model: &Model) -> Result<ModelXml, IoError> {
     let mut ids = vec![0u32; model.objects.len()];
+    let mut volume_ids = vec![Vec::new(); model.objects.len()];
     let mut next = 1u32;
     let mut resources = String::new();
     let mut build = String::new();
     for (i, obj) in model.objects.iter().enumerate() {
-        let mesh = world_mesh(obj);
-        if mesh.indices.is_empty() {
+        let vols = obj.volumes_or_mesh();
+        let world: Vec<TriangleMesh> = vols
+            .iter()
+            .map(|vol| instance_mesh(&vol.mesh, &obj.instances))
+            .collect();
+        if world.iter().all(|m| m.indices.is_empty()) {
             continue;
         }
-        let id = next;
+        if vols.len() <= 1 {
+            let mesh = world.into_iter().next().unwrap_or_default();
+            let name = vols
+                .first()
+                .map(|v| v.name.as_str())
+                .unwrap_or(obj.name.as_str());
+            let id = next;
+            next += 1;
+            ids[i] = id;
+            volume_ids[i] = vec![id];
+            push_mesh_object(&mut resources, id, name, &mesh);
+            build.push_str(&format!("    <item objectid=\"{id}\"/>\n"));
+            continue;
+        }
+        let mut child_ids = Vec::with_capacity(vols.len());
+        for (vol, mesh) in vols.iter().zip(world.iter()) {
+            if mesh.indices.is_empty() {
+                child_ids.push(0);
+                continue;
+            }
+            let id = next;
+            next += 1;
+            child_ids.push(id);
+            push_mesh_object(&mut resources, id, &vol.name, mesh);
+        }
+        let parent = next;
         next += 1;
-        ids[i] = id;
+        ids[i] = parent;
+        volume_ids[i] = child_ids.clone();
         resources.push_str(&format!(
-            "    <object id=\"{id}\" type=\"model\" name=\"{}\">\n      <mesh>\n        <vertices>\n",
+            "    <object id=\"{parent}\" type=\"model\" name=\"{}\">\n      <components>\n",
             xml_escape(&obj.name)
         ));
-        for v in &mesh.vertices {
-            resources.push_str(&format!(
-                "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
-                v.x, v.y, v.z
-            ));
+        for cid in child_ids {
+            if cid != 0 {
+                resources.push_str(&format!(
+                    "        <component objectid=\"{cid}\" transform=\"1 0 0 0 1 0 0 0 1 0 0 0\"/>\n"
+                ));
+            }
         }
-        resources.push_str("        </vertices>\n        <triangles>\n");
-        for idx in &mesh.indices {
-            resources.push_str(&format!(
-                "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
-                idx[0], idx[1], idx[2]
-            ));
-        }
-        resources.push_str("        </triangles>\n      </mesh>\n    </object>\n");
-        build.push_str(&format!("    <item objectid=\"{id}\"/>\n"));
+        resources.push_str("      </components>\n    </object>\n");
+        build.push_str(&format!("    <item objectid=\"{parent}\"/>\n"));
     }
     if next == 1 {
         return Err(IoError::Message("model contains no triangles".into()));
@@ -405,26 +479,48 @@ fn model_xml_from_model(model: &Model) -> Result<(String, Vec<u32>), IoError> {
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">\n  <resources>\n{resources}  </resources>\n  <build>\n{build}  </build>\n</model>\n"
     );
-    Ok((xml, ids))
+    Ok(ModelXml {
+        xml,
+        object_ids: ids,
+        volume_ids,
+    })
 }
 
-fn world_mesh(obj: &ModelObject) -> TriangleMesh {
-    if obj.instances.is_empty() {
-        return obj.mesh.clone();
+fn push_mesh_object(resources: &mut String, id: u32, name: &str, mesh: &TriangleMesh) {
+    resources.push_str(&format!(
+        "    <object id=\"{id}\" type=\"model\" name=\"{}\">\n      <mesh>\n        <vertices>\n",
+        xml_escape(name)
+    ));
+    for v in &mesh.vertices {
+        resources.push_str(&format!(
+            "          <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n",
+            v.x, v.y, v.z
+        ));
     }
-    if obj.instances.len() == 1 && obj.instances[0].offset == Vec3::ZERO {
-        return obj.mesh.clone();
+    resources.push_str("        </vertices>\n        <triangles>\n");
+    for idx in &mesh.indices {
+        resources.push_str(&format!(
+            "          <triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>\n",
+            idx[0], idx[1], idx[2]
+        ));
+    }
+    resources.push_str("        </triangles>\n      </mesh>\n    </object>\n");
+}
+
+fn instance_mesh(mesh: &TriangleMesh, instances: &[Instance]) -> TriangleMesh {
+    if instances.is_empty() || (instances.len() == 1 && instances[0].offset == Vec3::ZERO) {
+        return mesh.clone();
     }
     let mut out = TriangleMesh::default();
-    for inst in &obj.instances {
-        let mut mesh = obj.mesh.clone();
+    for inst in instances {
+        let mut copy = mesh.clone();
         if inst.offset != Vec3::ZERO {
-            mesh.translate(inst.offset);
+            copy.translate(inst.offset);
         }
-        out.append(&mesh);
+        out.append(&copy);
     }
     if out.indices.is_empty() {
-        obj.mesh.clone()
+        mesh.clone()
     } else {
         out
     }
@@ -585,6 +681,7 @@ mod tests {
         assert_eq!(loaded.objects[0].name, "cube");
         assert_eq!(loaded.plates.len(), 1);
         assert_eq!(loaded.plates[0].name, "Plate 1");
+        assert!(loaded.settings.is_none());
     }
 
     fn pack_files(files: &[(&str, &str)]) -> Vec<u8> {
@@ -748,23 +845,14 @@ mod tests {
     fn write_model_roundtrips_plates() {
         let mut right = TriangleMesh::cube(10.0);
         right.translate(Vec3::new(80.0, 0.0, 0.0));
+        let mut left_obj = ModelObject::new("Left cube", TriangleMesh::cube(10.0));
+        left_obj.object_id = 7;
+        left_obj.instance_id = 3;
+        let mut right_obj = ModelObject::new("Right cube", right);
+        right_obj.object_id = 8;
+        right_obj.instance_id = 1;
         let model = Model {
-            objects: vec![
-                ModelObject {
-                    name: "Left cube".into(),
-                    mesh: TriangleMesh::cube(10.0),
-                    instances: vec![Instance::default()],
-                    object_id: 7,
-                    instance_id: 3,
-                },
-                ModelObject {
-                    name: "Right cube".into(),
-                    mesh: right,
-                    instances: vec![Instance::default()],
-                    object_id: 8,
-                    instance_id: 1,
-                },
-            ],
+            objects: vec![left_obj, right_obj],
             plates: vec![
                 PartPlate {
                     name: "Plate A".into(),
@@ -777,6 +865,7 @@ mod tests {
                     locked: true,
                 },
             ],
+            settings: None,
         };
         let bytes = write_model_3mf_bytes(&model).unwrap();
         let loaded = load_3mf_bytes(&bytes).unwrap();
@@ -794,5 +883,211 @@ mod tests {
         let b = loaded.mesh_for_plate(1).unwrap().aabb().unwrap();
         assert!(a.max.x < 15.0, "max.x={}", a.max.x);
         assert!(b.min.x > 75.0, "min.x={}", b.min.x);
+    }
+
+    #[test]
+    fn project_settings_load_from_zip() {
+        let json = r#"{
+            "name": "project_settings",
+            "from": "project",
+            "layer_height": "0.28",
+            "sparse_infill_density": "15%",
+            "wall_loops": "3",
+            "enable_support": "1"
+        }"#;
+        let bytes = pack_files(&[
+            (MODEL_PATH, &cube_xml("millimeter", "")),
+            (PROJECT_SETTINGS_PATH, json),
+        ]);
+        let model = load_3mf_bytes(&bytes).unwrap();
+        let s = model.settings.expect("project settings");
+        assert!((s.layer_height_mm - 0.28).abs() < 1e-9);
+        assert!((s.infill_density - 0.15).abs() < 1e-9);
+        assert_eq!(s.wall_loops, 3);
+        assert!(s.enable_support);
+    }
+
+    #[test]
+    fn write_model_roundtrips_project_settings() {
+        let mut model = Model::from_mesh("cube", TriangleMesh::cube(20.0));
+        let mut settings = bambu_config::SliceSettings::default();
+        settings.layer_height_mm = 0.16;
+        settings.infill_pattern = bambu_config::InfillPattern::Grid;
+        settings.wall_generator = bambu_config::WallGenerator::Arachne;
+        model.settings = Some(settings.clone());
+        let bytes = write_model_3mf_bytes(&model).unwrap();
+        {
+            let mut zip = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            assert!(zip.by_name(PROJECT_SETTINGS_PATH).is_ok());
+        }
+        let loaded = load_3mf_bytes(&bytes).unwrap();
+        let s = loaded.settings.expect("project settings");
+        assert!((s.layer_height_mm - 0.16).abs() < 1e-9);
+        assert_eq!(s.infill_pattern, bambu_config::InfillPattern::Grid);
+        assert_eq!(s.wall_generator, bambu_config::WallGenerator::Arachne);
+    }
+
+    fn cube_mesh_xml(id: u32, name: &str, size: f32, origin: Vec3) -> String {
+        let o = origin;
+        let s = size;
+        let v = |x, y, z| format!(r#"          <vertex x="{x}" y="{y}" z="{z}"/>"#);
+        format!(
+            r#"    <object id="{id}" name="{name}" type="model">
+      <mesh>
+        <vertices>
+{v0}
+{v1}
+{v2}
+{v3}
+{v4}
+{v5}
+{v6}
+{v7}
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+          <triangle v1="0" v2="2" v3="3"/>
+          <triangle v1="4" v2="6" v3="5"/>
+          <triangle v1="4" v2="7" v3="6"/>
+          <triangle v1="0" v2="4" v3="5"/>
+          <triangle v1="0" v2="5" v3="1"/>
+          <triangle v1="2" v2="6" v3="7"/>
+          <triangle v1="2" v2="7" v3="3"/>
+          <triangle v1="0" v2="3" v3="7"/>
+          <triangle v1="0" v2="7" v3="4"/>
+          <triangle v1="1" v2="5" v3="6"/>
+          <triangle v1="1" v2="6" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>"#,
+            v0 = v(o.x, o.y, o.z),
+            v1 = v(o.x + s, o.y, o.z),
+            v2 = v(o.x + s, o.y + s, o.z),
+            v3 = v(o.x, o.y + s, o.z),
+            v4 = v(o.x, o.y, o.z + s),
+            v5 = v(o.x + s, o.y, o.z + s),
+            v6 = v(o.x + s, o.y + s, o.z + s),
+            v7 = v(o.x, o.y + s, o.z + s),
+        )
+    }
+
+    fn negative_part_3mf() -> Vec<u8> {
+        let xml = format!(
+            r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}">
+  <resources>
+{}
+{}
+    <object id="3" name="cut cube" type="model">
+      <components>
+        <component objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+        <component objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+      </components>
+    </object>
+  </resources>
+  <build>
+    <item objectid="3"/>
+  </build>
+</model>"#,
+            cube_mesh_xml(1, "body", 20.0, Vec3::ZERO),
+            cube_mesh_xml(2, "cutter", 10.0, Vec3::new(5.0, 5.0, 5.0)),
+        );
+        let settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="3">
+    <metadata key="name" value="cut cube"/>
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="body"/>
+    </part>
+    <part id="2" subtype="negative_part">
+      <metadata key="name" value="cutter"/>
+    </part>
+  </object>
+</config>"#;
+        pack_files(&[(MODEL_PATH, &xml), (MODEL_SETTINGS_PATH, settings)])
+    }
+
+    #[test]
+    fn volume_matrix_translates_part() {
+        let settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="1">
+    <part id="1" subtype="normal_part">
+      <metadata key="matrix" value="1 0 0 10 0 1 0 0 0 0 1 0 0 0 0 1"/>
+    </part>
+  </object>
+</config>"#;
+        let bytes = pack_files(&[
+            (MODEL_PATH, &cube_xml("millimeter", "")),
+            (MODEL_SETTINGS_PATH, settings),
+        ]);
+        let model = load_3mf_bytes(&bytes).unwrap();
+        let aabb = model.merged_mesh().unwrap().aabb().unwrap();
+        assert!((aabb.min.x - 10.0).abs() < 1e-3, "min.x={}", aabb.min.x);
+        assert!((aabb.max.x - 30.0).abs() < 1e-3, "max.x={}", aabb.max.x);
+        assert_eq!(
+            model.objects[0].volumes[0].volume_type,
+            bambu_model::VolumeType::ModelPart
+        );
+    }
+
+    #[test]
+    fn negative_part_is_omitted_from_merged_mesh() {
+        let model = load_3mf_bytes(&negative_part_3mf()).unwrap();
+        assert_eq!(model.objects.len(), 1);
+        assert_eq!(model.objects[0].volumes.len(), 2);
+        assert_eq!(
+            model.objects[0].volumes[0].volume_type,
+            bambu_model::VolumeType::ModelPart
+        );
+        assert_eq!(
+            model.objects[0].volumes[1].volume_type,
+            bambu_model::VolumeType::Negative
+        );
+        let aabb = model.merged_mesh().unwrap().aabb().unwrap();
+        assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
+        assert!(model.objects[0].volumes[1].mesh.aabb().unwrap().size().x < 11.0);
+    }
+
+    #[test]
+    fn write_model_roundtrips_negative_part() {
+        let mut body = ModelVolume::model_part("body", TriangleMesh::cube(20.0), 1);
+        body.volume_type = bambu_model::VolumeType::ModelPart;
+        let mut cutter = TriangleMesh::cube(10.0);
+        cutter.translate(Vec3::new(5.0, 5.0, 5.0));
+        let mut hole = ModelVolume::model_part("cutter", cutter, 2);
+        hole.volume_type = bambu_model::VolumeType::Negative;
+        let mut obj = ModelObject::new("cut cube", TriangleMesh::default());
+        obj.volumes = vec![body, hole];
+        obj.rebuild_printable_mesh();
+        let model = Model {
+            objects: vec![obj],
+            plates: vec![PartPlate {
+                name: "Plate 1".into(),
+                object_indices: vec![0],
+                locked: false,
+            }],
+            settings: None,
+        };
+        let bytes = write_model_3mf_bytes(&model).unwrap();
+        {
+            let mut zip = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            let mut file = zip.by_name(MODEL_SETTINGS_PATH).unwrap();
+            let mut xml = String::new();
+            file.read_to_string(&mut xml).unwrap();
+            assert!(xml.contains("subtype=\"negative_part\""), "{xml}");
+            assert!(xml.contains("subtype=\"normal_part\""), "{xml}");
+        }
+        let loaded = load_3mf_bytes(&bytes).unwrap();
+        assert_eq!(loaded.objects[0].volumes.len(), 2);
+        let types: Vec<_> = loaded.objects[0]
+            .volumes
+            .iter()
+            .map(|v| v.volume_type)
+            .collect();
+        assert!(types.contains(&bambu_model::VolumeType::ModelPart));
+        assert!(types.contains(&bambu_model::VolumeType::Negative));
+        let aabb = loaded.merged_mesh().unwrap().aabb().unwrap();
+        assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
     }
 }

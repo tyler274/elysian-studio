@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 pub use bbl::{
     bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, load_bbl_process,
-    write_flattened_bbl_profile, BblOraclePaths, ConfigError,
+    project_settings_json, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
+    ConfigError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -79,6 +80,15 @@ impl SeamPosition {
             "random" => Self::Random,
             _ => return None,
         })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Aligned => "aligned",
+            Self::Rear => "rear",
+            Self::Nearest => "nearest",
+            Self::Random => "random",
+        }
     }
 }
 
@@ -225,6 +235,15 @@ impl IroningType {
             _ => return None,
         })
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoIroning => "no ironing",
+            Self::TopSurfaces => "top",
+            Self::TopmostOnly => "topmost",
+            Self::AllSolid => "solid",
+        }
+    }
 }
 
 /// C++ ironing fill (`ironing_pattern`: concentric / zig-zag).
@@ -242,6 +261,13 @@ impl IroningPattern {
             "zig-zag" | "zigzag" | "rectilinear" | "line" => Self::Rectilinear,
             _ => return None,
         })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rectilinear => "zig-zag",
+            Self::Concentric => "concentric",
+        }
     }
 }
 

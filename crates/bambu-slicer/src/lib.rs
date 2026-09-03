@@ -32,6 +32,7 @@ use bambu_config::SliceSettings;
 use bambu_geom::{
     difference_polygons, offset_polygons, union_polygons, Point, Polygon, Polyline, TriangleMesh,
 };
+use bambu_model::ModelVolume;
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -101,6 +102,56 @@ pub fn slice_mesh(
         })
         .collect();
     Ok(slice_from_contours(contours, settings, Some(mesh)))
+}
+
+/// Slice model-part meshes, then subtract [`bambu_model::VolumeType::Negative`]
+/// contours with Clipper (C++ `PrintObjectSlice` negative volume).
+pub fn slice_volumes(
+    volumes: &[ModelVolume],
+    settings: &SliceSettings,
+) -> Result<SliceResult, SlicerError> {
+    let parts: Vec<&TriangleMesh> = volumes
+        .iter()
+        .filter(|v| v.volume_type.is_model_part())
+        .map(|v| &v.mesh)
+        .collect();
+    let negatives: Vec<&TriangleMesh> = volumes
+        .iter()
+        .filter(|v| v.volume_type.is_negative())
+        .map(|v| &v.mesh)
+        .collect();
+    if parts.is_empty() {
+        return Err(SlicerError::EmptyMesh);
+    }
+    if negatives.is_empty() && parts.len() == 1 {
+        return slice_mesh(parts[0], settings);
+    }
+    let mut merged = TriangleMesh::default();
+    for part in &parts {
+        merged.append(part);
+    }
+    let plan = layer_plan(&merged, settings)?;
+    let contours = plan
+        .par_iter()
+        .copied()
+        .map(|spec| {
+            let z = spec.slice_z_mm as f32;
+            let mut pos = Vec::new();
+            for part in &parts {
+                pos.extend(slice_at_z(part, z));
+            }
+            let pos = union_polygons(&pos);
+            if negatives.is_empty() {
+                return (spec, pos);
+            }
+            let mut neg = Vec::new();
+            for hole in &negatives {
+                neg.extend(slice_at_z(hole, z));
+            }
+            (spec, difference_polygons(&pos, &union_polygons(&neg)))
+        })
+        .collect();
+    Ok(slice_from_contours(contours, settings, Some(&merged)))
 }
 
 /// Pair GPU/CPU contour samples with the [`LayerSpec`] plan (same order as `slice_z`).
@@ -260,6 +311,10 @@ fn ring_centroid(poly: &[Point]) -> Point {
 }
 
 pub fn contour_area_mm2(poly: &Polygon) -> f64 {
+    signed_contour_area_mm2(poly).abs()
+}
+
+fn signed_contour_area_mm2(poly: &Polygon) -> f64 {
     if poly.len() < 3 {
         return 0.0;
     }
@@ -271,7 +326,7 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
         let (bx, by) = b.to_mm();
         acc += ax * by - bx * ay;
     }
-    acc.abs() * 0.5
+    acc * 0.5
 }
 
 #[cfg(test)]
@@ -954,5 +1009,43 @@ mod tests {
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
         }
+    }
+
+    #[test]
+    fn negative_volume_cuts_a_hole() {
+        let settings = SliceSettings::default();
+        let solid = TriangleMesh::cube(20.0);
+        let mut cutter = TriangleMesh::cube(10.0);
+        cutter.translate(glam::Vec3::new(5.0, 5.0, 5.0));
+        let mut hole = bambu_model::ModelVolume::model_part("cut", cutter, 2);
+        hole.volume_type = bambu_model::VolumeType::Negative;
+        let volumes = vec![
+            bambu_model::ModelVolume::model_part("body", solid.clone(), 1),
+            hole,
+        ];
+        let solid_slice = slice_mesh(&solid, &settings).unwrap();
+        let cut = slice_volumes(&volumes, &settings).unwrap();
+        let mid_solid = &solid_slice.layers[solid_slice.layers.len() / 2];
+        let mid_cut = &cut.layers[cut.layers.len() / 2];
+        let net_area = |layer: &Layer| {
+            layer
+                .contours
+                .iter()
+                .map(signed_contour_area_mm2)
+                .sum::<f64>()
+                .abs()
+        };
+        let a = net_area(mid_solid);
+        let b = net_area(mid_cut);
+        assert!(
+            b < a - 50.0,
+            "negative volume should shrink net contour area: solid={a} cut={b}"
+        );
+        assert!(
+            mid_cut.contours.len() > mid_solid.contours.len(),
+            "expected a hole ring, solid={} cut={}",
+            mid_solid.contours.len(),
+            mid_cut.contours.len()
+        );
     }
 }

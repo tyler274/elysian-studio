@@ -1,6 +1,6 @@
 //! Triangle mesh in millimeters.
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb3 {
@@ -48,6 +48,13 @@ impl TriangleMesh {
     pub fn translate(&mut self, delta: Vec3) {
         for v in &mut self.vertices {
             *v += delta;
+        }
+    }
+
+    /// Apply a 4×4 transform to every vertex (Bambu volume `matrix` / 3MF component).
+    pub fn transform(&mut self, xf: Mat4) {
+        for v in &mut self.vertices {
+            *v = xf.transform_point3(*v);
         }
     }
 

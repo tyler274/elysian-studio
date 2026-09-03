@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Mesh and project file I/O (STL, 3MF geometry, Bambu plates)"
+description = "Mesh and project file I/O (STL, 3MF geometry, Bambu plates, parts, and settings)"
 
 [lints]
 workspace = true
 
 [dependencies]
 bambu-geom.workspace = true
+bambu-config.workspace = true
 glam.workspace = true
 bambu-model.workspace = true
 quick-xml.workspace = true

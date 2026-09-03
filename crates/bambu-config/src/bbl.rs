@@ -28,6 +28,242 @@ pub fn load_bbl_process(path: impl AsRef<Path>) -> Result<SliceSettings, ConfigE
     Ok(settings_from_map(&map))
 }
 
+/// Parse Bambu `project_settings.config` / process JSON (no `inherits`).
+pub fn settings_from_json(text: &str) -> Result<SliceSettings, ConfigError> {
+    let value: Value = serde_json::from_str(text)?;
+    let Value::Object(map) = value else {
+        return Err(ConfigError::Message(
+            "project settings is not a JSON object".into(),
+        ));
+    };
+    Ok(settings_from_map(&map))
+}
+
+/// Emit the keys we understand as a Bambu project_settings JSON object.
+pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigError> {
+    let mut map = serde_json::Map::new();
+    insert(&mut map, "version", env!("CARGO_PKG_VERSION"));
+    insert(&mut map, "name", "project_settings");
+    insert(&mut map, "from", "project");
+    insert(&mut map, "layer_height", num_str(settings.layer_height_mm));
+    insert(
+        &mut map,
+        "initial_layer_print_height",
+        num_str(settings.first_layer_height_mm),
+    );
+    insert(
+        &mut map,
+        "min_layer_height",
+        num_str(settings.min_layer_height_mm),
+    );
+    insert(
+        &mut map,
+        "max_layer_height",
+        num_str(settings.max_layer_height_mm),
+    );
+    insert_bool(&mut map, "precise_z_height", settings.precise_z_height);
+    insert(
+        &mut map,
+        "elefant_foot_compensation",
+        num_str(settings.elephant_foot_mm),
+    );
+    insert(
+        &mut map,
+        "xy_contour_compensation",
+        num_str(settings.xy_contour_compensation_mm),
+    );
+    insert(
+        &mut map,
+        "xy_hole_compensation",
+        num_str(settings.xy_hole_compensation_mm),
+    );
+    insert(&mut map, "line_width", num_str(settings.line_width_mm));
+    insert(&mut map, "wall_loops", settings.wall_loops.to_string());
+    insert(
+        &mut map,
+        "top_one_wall_type",
+        settings.top_one_wall.as_str(),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_density",
+        pct_str(settings.infill_density),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_pattern",
+        settings.infill_pattern.as_str(),
+    );
+    insert(&mut map, "seam_position", settings.seam.as_str());
+    insert(&mut map, "wall_generator", settings.wall_generator.as_str());
+    insert(
+        &mut map,
+        "min_feature_size",
+        pct_str(settings.min_feature_size),
+    );
+    insert(&mut map, "min_bead_width", pct_str(settings.min_bead_width));
+    insert(&mut map, "fuzzy_skin", settings.fuzzy_skin.as_str());
+    insert(
+        &mut map,
+        "fuzzy_skin_thickness",
+        num_str(settings.fuzzy_skin_thickness_mm),
+    );
+    insert(
+        &mut map,
+        "fuzzy_skin_point_distance",
+        num_str(settings.fuzzy_skin_point_distance_mm),
+    );
+    insert_bool(
+        &mut map,
+        "fuzzy_skin_first_layer",
+        settings.fuzzy_skin_first_layer,
+    );
+    insert(&mut map, "skirt_loops", settings.skirt_loops.to_string());
+    insert(
+        &mut map,
+        "skirt_distance",
+        num_str(settings.skirt_distance_mm),
+    );
+    insert(&mut map, "brim_width", num_str(settings.brim_width_mm));
+    insert(&mut map, "raft_layers", settings.raft_layers.to_string());
+    insert(
+        &mut map,
+        "raft_contact_distance",
+        num_str(settings.raft_contact_distance_mm),
+    );
+    insert(
+        &mut map,
+        "raft_expansion",
+        num_str(settings.raft_expansion_mm),
+    );
+    insert(
+        &mut map,
+        "raft_first_layer_expansion",
+        num_str(settings.raft_first_layer_expansion_mm),
+    );
+    insert(
+        &mut map,
+        "raft_first_layer_density",
+        pct_str(settings.raft_first_layer_density),
+    );
+    insert_bool(&mut map, "enable_support", settings.enable_support);
+    insert(&mut map, "support_type", settings.support_type.as_str());
+    insert(
+        &mut map,
+        "tree_support_branch_angle",
+        num_str(settings.tree_branch_angle_deg),
+    );
+    insert(
+        &mut map,
+        "tree_support_branch_diameter",
+        num_str(settings.tree_branch_diameter_mm),
+    );
+    insert(
+        &mut map,
+        "support_threshold_angle",
+        num_str(settings.support_threshold_angle_deg),
+    );
+    insert(
+        &mut map,
+        "support_object_xy_distance",
+        num_str(settings.support_xy_distance_mm),
+    );
+    insert(
+        &mut map,
+        "support_top_z_distance",
+        num_str(settings.support_top_z_distance_mm),
+    );
+    insert(
+        &mut map,
+        "support_interface_top_layers",
+        settings.support_interface_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "bottom_shell_layers",
+        settings.bottom_shell_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "top_shell_layers",
+        settings.top_shell_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "top_surface_pattern",
+        settings.top_surface_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "bottom_surface_pattern",
+        settings.bottom_surface_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "outer_wall_speed",
+        num_str(settings.print_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_speed",
+        num_str(settings.infill_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "travel_speed",
+        num_str(settings.travel_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "support_speed",
+        num_str(settings.support_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "internal_solid_infill_speed",
+        num_str(settings.solid_infill_speed_mm_s),
+    );
+    insert(&mut map, "ironing_type", settings.ironing_type.as_str());
+    insert(
+        &mut map,
+        "ironing_pattern",
+        settings.ironing_pattern.as_str(),
+    );
+    insert(&mut map, "ironing_flow", pct_str(settings.ironing_flow));
+    insert(
+        &mut map,
+        "ironing_spacing",
+        num_str(settings.ironing_spacing_mm),
+    );
+    insert(
+        &mut map,
+        "ironing_inset",
+        num_str(settings.ironing_inset_mm),
+    );
+    insert(
+        &mut map,
+        "ironing_speed",
+        num_str(settings.ironing_speed_mm_s),
+    );
+    Ok(serde_json::to_string_pretty(&Value::Object(map))?)
+}
+
+fn insert(map: &mut serde_json::Map<String, Value>, key: &str, value: impl Into<String>) {
+    map.insert(key.to_string(), Value::String(value.into()));
+}
+
+fn insert_bool(map: &mut serde_json::Map<String, Value>, key: &str, value: bool) {
+    insert(map, key, if value { "1" } else { "0" });
+}
+
+fn num_str(v: f64) -> String {
+    format!("{v}")
+}
+
+fn pct_str(frac: f64) -> String {
+    format!("{}%", (frac * 100.0).round())
+}
+
 fn load_inherited(dir: &Path, path: &Path) -> Result<serde_json::Map<String, Value>, ConfigError> {
     let text = std::fs::read_to_string(path)?;
     let value: Value = serde_json::from_str(&text)?;
@@ -467,5 +703,25 @@ mod tests {
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
+    }
+
+    #[test]
+    fn project_settings_json_roundtrip() {
+        let mut src = SliceSettings::default();
+        src.layer_height_mm = 0.28;
+        src.infill_density = 0.15;
+        src.wall_loops = 3;
+        src.enable_support = true;
+        src.support_type = crate::SupportType::Tree;
+        src.ironing_type = crate::IroningType::TopSurfaces;
+        let json = crate::project_settings_json(&src).unwrap();
+        assert!(json.contains("\"from\": \"project\""));
+        let loaded = crate::settings_from_json(&json).unwrap();
+        assert!((loaded.layer_height_mm - 0.28).abs() < 1e-9);
+        assert!((loaded.infill_density - 0.15).abs() < 1e-9);
+        assert_eq!(loaded.wall_loops, 3);
+        assert!(loaded.enable_support);
+        assert_eq!(loaded.support_type, crate::SupportType::Tree);
+        assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
     }
 }

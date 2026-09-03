@@ -14,7 +14,7 @@ use bambu_io::load_model;
 use bambu_protocol::{
     default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
 };
-use bambu_slicer::slice_mesh;
+use bambu_slicer::{slice_mesh, slice_volumes};
 use clap::{Parser, Subcommand};
 use thiserror::Error;
 
@@ -301,6 +301,7 @@ fn run() -> Result<(), CliError> {
             gpu,
             plate,
         } => {
+            let model = load_model(&input)?;
             let mut slice_settings = if let Some(path) = settings {
                 load_bbl_process(path)?
             } else if bbl_0_20 {
@@ -310,7 +311,7 @@ fn run() -> Result<(), CliError> {
                     SliceSettings::bbl_0_20()
                 }
             } else {
-                SliceSettings::default()
+                model.settings.clone().unwrap_or_default()
             };
             if let Some(h) = layer_height {
                 slice_settings.layer_height_mm = h;
@@ -395,7 +396,7 @@ fn run() -> Result<(), CliError> {
             if precise_z {
                 slice_settings.precise_z_height = true;
             }
-            let gcode = slice_file(&input, &slice_settings, cpu, gpu, plate)?;
+            let gcode = slice_file(&model, &slice_settings, cpu, gpu, plate)?;
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
         }
@@ -504,7 +505,7 @@ fn run() -> Result<(), CliError> {
 }
 
 pub fn slice_file(
-    input: &std::path::Path,
+    model: &bambu_model::Model,
     settings: &SliceSettings,
     force_cpu: bool,
     force_gpu: bool,
@@ -513,8 +514,23 @@ pub fn slice_file(
     if plate == 0 {
         return Err(CliError::Message("plate index is 1-based (got 0)".into()));
     }
-    let model = load_model(input)?;
-    let mesh = model.mesh_for_plate((plate - 1) as usize).ok_or_else(|| {
+    let plate_idx = (plate - 1) as usize;
+    let volumes = model.world_volumes_for_plate(plate_idx);
+    if volumes.iter().any(|v| v.volume_type.is_negative()) {
+        if !volumes.iter().any(|v| v.volume_type.is_model_part()) {
+            return Err(CliError::Message(format!(
+                "plate {plate} has no printable volumes ({} plate(s))",
+                model.plates.len()
+            )));
+        }
+        if force_gpu {
+            tracing::warn!("negative volumes: Clipper difference stays on CPU");
+        }
+        let sliced = slice_volumes(&volumes, settings)?;
+        tracing::info!("sliced {} layers (cpu)", sliced.layers.len());
+        return Ok(write_gcode(settings, &sliced)?);
+    }
+    let mesh = model.mesh_for_plate(plate_idx).ok_or_else(|| {
         CliError::Message(format!(
             "plate {plate} is empty or missing ({} plate(s))",
             model.plates.len()

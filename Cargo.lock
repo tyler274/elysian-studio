@@ -487,6 +487,7 @@ dependencies = [
 name = "bambu-io"
 version = "0.1.0"
 dependencies = [
+ "bambu-config",
  "bambu-geom",
  "bambu-model",
  "glam 0.29.3",
