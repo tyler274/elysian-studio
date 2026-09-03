@@ -12,17 +12,21 @@ in safe Rust. The C++ tree remains the behavioral oracle; this workspace does
 | `bambu-config` | Slice / print settings |
 | `bambu-model` | Objects, instances, plates |
 | `bambu-io` | STL (3MF later) |
-| `bambu-slicer` | Layer slice → walls → infill |
+| `bambu-slicer` | Layer slice → walls → infill → skirt/brim → classic supports |
 | `bambu-gcode` | G-code writer |
 | `bambu-preview` | CPU toolpath buffers for the GPU |
-| `bambu-gpu` | wgpu / Vulkan viewport |
+| `bambu-gpu` | wgpu Vulkan viewport + compute contours |
 | `bambu-device` | Printer / AMS / camera traits (no I/O) |
 | `bambu-protocol` | LAN MQTT/FTPS backend (stub) |
 | `bambu-cli` | Headless slice |
 | `bambu-ui` | iced application |
 
 First-party crates set `unsafe_code = "forbid"`. GPU work uses wgpu with the
-Vulkan backend on Linux. Toolpaths are CPU-generated.
+Vulkan backend on Linux: the plater viewport, G-code preview overlay, and the
+triangle–plane contour pass. Clipper union, walls, infill, skirt, brim, and
+classic supports stay on the CPU for integer determinism. `bambu-cli slice` and the UI **Slice** button use
+Vulkan compute when an adapter is present and fall back to CPU otherwise
+(`--cpu` / `--gpu` to force).
 
 ## Build
 
@@ -31,6 +35,10 @@ Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`).
 ```bash
 cargo test --workspace
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --gpu
+cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --brim 5 --skirt 2
+# table-like overhangs:
+# cargo run -p bambu-cli -- slice overhang.stl -o /tmp/overhang.gcode --support
 cargo run -p bambu-ui
 ```
 

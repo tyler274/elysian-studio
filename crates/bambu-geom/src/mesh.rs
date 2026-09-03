@@ -64,18 +64,17 @@ impl TriangleMesh {
         ));
     }
 
-    /// Axis-aligned cube from the origin to `size` millimeters on each axis.
-    pub fn cube(size: f32) -> Self {
-        let s = size;
+    /// Axis-aligned box with the same face winding as [`cube`].
+    pub fn aabb_box(min: Vec3, max: Vec3) -> Self {
         let vertices = vec![
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(s, 0.0, 0.0),
-            Vec3::new(s, s, 0.0),
-            Vec3::new(0.0, s, 0.0),
-            Vec3::new(0.0, 0.0, s),
-            Vec3::new(s, 0.0, s),
-            Vec3::new(s, s, s),
-            Vec3::new(0.0, s, s),
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(max.x, max.y, max.z),
+            Vec3::new(min.x, max.y, max.z),
         ];
         let indices = vec![
             [0, 1, 2],
@@ -92,5 +91,35 @@ impl TriangleMesh {
             [1, 6, 2], // right
         ];
         Self { vertices, indices }
+    }
+
+    /// Axis-aligned cube from the origin to `size` millimeters on each axis.
+    pub fn cube(size: f32) -> Self {
+        Self::aabb_box(Vec3::ZERO, Vec3::splat(size))
+    }
+
+    pub fn append(&mut self, other: &Self) {
+        let base = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(&other.vertices);
+        self.indices.extend(
+            other
+                .indices
+                .iter()
+                .map(|&[a, b, c]| [a + base, b + base, c + base]),
+        );
+    }
+
+    /// Pillar with a larger slab on top — a reliable classic-support overhang.
+    pub fn overhang_table(pillar_xy: f32, pillar_z: f32, slab_xy: f32, slab_z: f32) -> Self {
+        let inset = (slab_xy - pillar_xy) * 0.5;
+        let mut mesh = Self::aabb_box(
+            Vec3::new(inset, inset, 0.0),
+            Vec3::new(inset + pillar_xy, inset + pillar_xy, pillar_z),
+        );
+        mesh.append(&Self::aabb_box(
+            Vec3::new(0.0, 0.0, pillar_z),
+            Vec3::new(slab_xy, slab_xy, pillar_z + slab_z),
+        ));
+        mesh
     }
 }

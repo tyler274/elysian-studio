@@ -13,6 +13,7 @@ workspace = true
 bambu-config.workspace = true
 bambu-gcode.workspace = true
 bambu-geom.workspace = true
+bambu-gpu.workspace = true
 bambu-io.workspace = true
 bambu-model.workspace = true
 bambu-slicer.workspace = true

@@ -15,7 +15,17 @@ pub fn slice_at_z(mesh: &TriangleMesh, z: f32) -> Vec<Polygon> {
             }
         }
     }
-    stitch_loops(&segments)
+    loops_from_segments(&segments)
+}
+
+/// Convert plane-hit segments into closed contours. Used by the CPU slicer and
+/// by the Vulkan compute readback path.
+pub fn loops_from_segments(segments: &[(Point, Point)]) -> Vec<Polygon> {
+    stitch_loops(segments)
+}
+
+pub fn point_from_xy_mm(x: f64, y: f64) -> Point {
+    Point::new(snap(scale(x)), snap(scale(y)))
 }
 
 fn triangle_plane_segment(a: Vec3, b: Vec3, c: Vec3, z: f32) -> Option<(Point, Point)> {

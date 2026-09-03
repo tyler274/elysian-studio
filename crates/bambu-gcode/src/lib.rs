@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::SliceSettings;
+use bambu_config::{Flow, SliceSettings};
 use bambu_geom::{unscale, Point, Polyline};
 use bambu_slicer::SliceResult;
 use thiserror::Error;
@@ -26,42 +26,110 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M190 S{}", settings.bed_temperature_c)?;
     writeln!(out, "G92 E0")?;
 
-    let mut e = 0.0_f64;
-    let filament_area =
-        std::f64::consts::PI * (settings.filament_diameter_mm * 0.5).powi(2);
-    let extrusion_area = settings.line_width_mm * settings.layer_height_mm;
-    let e_per_mm = if filament_area > 0.0 {
-        extrusion_area / filament_area
-    } else {
-        0.0
-    };
-    let print_f = settings.print_speed_mm_s * 60.0;
     let travel_f = settings.travel_speed_mm_s * 60.0;
+    let wall_f = settings.print_speed_mm_s * 60.0;
+    let infill_f = settings.infill_speed_mm_s * 60.0;
+    let support_f = settings.support_speed_mm_s * 60.0;
 
+    let mut e = 0.0_f64;
     let mut last: Option<(f64, f64)> = None;
     for layer in &sliced.layers {
         writeln!(out, ";LAYER:{}", layer.index)?;
         writeln!(out, "G1 Z{:.3} F600", layer.z_mm)?;
-        emit_paths(
-            &mut out,
-            &layer.perimeters,
-            true,
-            &mut e,
-            e_per_mm,
-            print_f,
-            travel_f,
-            &mut last,
-        )?;
-        emit_paths(
-            &mut out,
-            &layer.infill,
-            false,
-            &mut e,
-            e_per_mm,
-            print_f,
-            travel_f,
-            &mut last,
-        )?;
+        let flow = Flow::from_settings(settings, settings.layer_height_at(layer.index));
+        let e_per_mm = flow.e_per_mm();
+
+        if !layer.skirt.is_empty() {
+            writeln!(out, "; FEATURE: Skirt")?;
+            emit_paths(
+                &mut out,
+                &layer.skirt,
+                true,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.brim.is_empty() {
+            writeln!(out, "; FEATURE: Brim")?;
+            emit_paths(
+                &mut out,
+                &layer.brim,
+                true,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.support.is_empty() {
+            writeln!(out, "; FEATURE: Support")?;
+            emit_paths(
+                &mut out,
+                &layer.support,
+                false,
+                &mut e,
+                e_per_mm,
+                support_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.support_interface.is_empty() {
+            writeln!(out, "; FEATURE: Support interface")?;
+            emit_paths(
+                &mut out,
+                &layer.support_interface,
+                false,
+                &mut e,
+                e_per_mm,
+                support_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.outer_walls.is_empty() {
+            writeln!(out, "; FEATURE: Outer wall")?;
+            emit_paths(
+                &mut out,
+                &layer.outer_walls,
+                true,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.inner_walls.is_empty() {
+            writeln!(out, "; FEATURE: Inner wall")?;
+            emit_paths(
+                &mut out,
+                &layer.inner_walls,
+                true,
+                &mut e,
+                e_per_mm,
+                wall_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
+        if !layer.infill.is_empty() {
+            writeln!(out, "; FEATURE: Sparse infill")?;
+            emit_paths(
+                &mut out,
+                &layer.infill,
+                false,
+                &mut e,
+                e_per_mm,
+                infill_f,
+                travel_f,
+                &mut last,
+            )?;
+        }
     }
 
     writeln!(out, "M104 S0")?;
@@ -71,6 +139,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_paths(
     out: &mut String,
     paths: &[Polyline],
@@ -89,14 +158,11 @@ fn emit_paths(
         let start = pts[0];
         writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", start.0, start.1, travel_f)?;
         *last = Some(start);
-        let n = if closed { pts.len() } else { pts.len() };
-        let end = if closed { pts.len() } else { pts.len() - 1 };
+        let n = pts.len();
+        let end = if closed { n } else { n - 1 };
         for i in 0..end {
             let a = pts[i];
             let b = pts[(i + 1) % n];
-            if closed && i + 1 == pts.len() && b == pts[0] && i == 0 {
-                continue;
-            }
             let dist = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
             *e += dist * e_per_mm;
             writeln!(
@@ -106,7 +172,6 @@ fn emit_paths(
             )?;
             *last = Some(b);
         }
-        let _ = last;
     }
     Ok(())
 }
@@ -144,7 +209,10 @@ pub struct LayerStats {
 
 fn parse_g1_z(line: &str) -> Option<f64> {
     let upper = line.to_ascii_uppercase();
-    if !(upper.starts_with("G1 ") || upper.starts_with("G0 ") || upper.starts_with("G1") || upper.starts_with("G0"))
+    if !(upper.starts_with("G1 ")
+        || upper.starts_with("G0 ")
+        || upper.starts_with("G1")
+        || upper.starts_with("G0"))
     {
         return None;
     }
@@ -181,5 +249,18 @@ mod tests {
         let stats = layer_stats(&gcode);
         assert!(stats.layer_comments >= 90, "{stats:?}");
         assert!(gcode.contains("G1 X"));
+        assert!(gcode.contains("; FEATURE: Outer wall"));
+        assert!(gcode.contains("; FEATURE: Sparse infill"));
+        assert!(gcode.contains("; FEATURE: Skirt"));
+    }
+
+    #[test]
+    fn table_gcode_has_support() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Support") || gcode.contains("; FEATURE: Support interface"));
     }
 }

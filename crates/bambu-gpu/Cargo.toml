@@ -4,14 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "wgpu Vulkan viewport for the iced plater"
+description = "wgpu Vulkan viewport and compute slice acceleration"
 
 [lints]
 workspace = true
 
 [dependencies]
+bambu-config.workspace = true
 bambu-geom.workspace = true
 bambu-preview.workspace = true
+bambu-slicer.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 iced.workspace = true

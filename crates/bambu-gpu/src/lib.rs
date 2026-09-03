@@ -1,12 +1,16 @@
-//! wgpu / Vulkan viewport primitives for iced.
+//! wgpu / Vulkan viewport and compute slice acceleration.
 
 #![forbid(unsafe_code)]
 
 mod camera;
+mod compute;
 mod scene;
+mod slice_accel;
 
 pub use bambu_preview::ToolpathBuffer;
+pub use compute::VulkanSliceAccel;
 pub use scene::{OrbitCamera, ViewportEvent, ViewportScene, BED_MM};
+pub use slice_accel::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
 
 use thiserror::Error;
 use wgpu::{Backends, InstanceDescriptor};

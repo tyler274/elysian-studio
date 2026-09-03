@@ -1,13 +1,19 @@
 #![forbid(unsafe_code)]
 
+mod clip;
 mod infill;
+mod perimeters;
+mod seams;
+mod skirt_brim;
 mod slice_plane;
 mod steps;
+mod support;
 
 use bambu_config::SliceSettings;
-use bambu_geom::{offset_polygons, union_polygons, Polygon, Polyline, TriangleMesh};
+use bambu_geom::{union_polygons, Polygon, Polyline, TriangleMesh};
 use thiserror::Error;
 
+pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
 pub use steps::{PrintObjectStep, PrintStep};
 
 #[derive(Debug, Error)]
@@ -22,8 +28,21 @@ pub enum SlicerError {
 pub struct Layer {
     pub z_mm: f64,
     pub index: usize,
-    pub perimeters: Vec<Polyline>,
+    pub contours: Vec<Polygon>,
+    pub outer_walls: Vec<Polyline>,
+    pub inner_walls: Vec<Polyline>,
     pub infill: Vec<Polyline>,
+    pub support: Vec<Polyline>,
+    pub support_interface: Vec<Polyline>,
+    pub support_region: Vec<Polygon>,
+    pub skirt: Vec<Polyline>,
+    pub brim: Vec<Polyline>,
+}
+
+impl Layer {
+    pub fn perimeters(&self) -> impl Iterator<Item = &Polyline> {
+        self.outer_walls.iter().chain(self.inner_walls.iter())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -31,47 +50,78 @@ pub struct SliceResult {
     pub layers: Vec<Layer>,
 }
 
-/// Horizontal slice → outer wall centerline → rectilinear infill.
-pub fn slice_mesh(
-    mesh: &TriangleMesh,
-    settings: &SliceSettings,
-) -> Result<SliceResult, SlicerError> {
+/// Z samples used for a mesh (mid-layer, matching the CPU/GPU contour pass).
+pub fn layer_z_values(mesh: &TriangleMesh, settings: &SliceSettings) -> Result<Vec<f64>, SlicerError> {
     let aabb = mesh.aabb().ok_or(SlicerError::EmptyBounds)?;
     if mesh.indices.is_empty() {
         return Err(SlicerError::EmptyMesh);
     }
-
     let z_min = aabb.min.z as f64;
     let z_max = aabb.max.z as f64;
     let lh = settings.layer_height_mm;
-    let mut layers = Vec::new();
-    let mut index = 0usize;
+    let mut zs = Vec::new();
     let mut z = z_min + lh * 0.5;
     while z < z_max - 1e-6 {
-        let mut contours = slice_plane::slice_at_z(mesh, z as f32);
-        contours = union_polygons(&contours);
-        if contours.is_empty() {
-            z += lh;
-            continue;
-        }
-
-        let wall = offset_polygons(&contours, -settings.line_width_mm * 0.5);
-        let perimeters: Vec<Polyline> = wall.iter().cloned().filter(|p| p.len() >= 3).collect();
-
-        let infill_region = offset_polygons(&wall, -settings.line_width_mm);
-        let infill = infill::rectilinear(&infill_region, settings.infill_spacing_mm(), index);
-
-        layers.push(Layer {
-            z_mm: z,
-            index,
-            perimeters,
-            infill,
-        });
-        index += 1;
+        zs.push(z);
         z += lh;
     }
+    Ok(zs)
+}
 
-    Ok(SliceResult { layers })
+pub fn slice_mesh(mesh: &TriangleMesh, settings: &SliceSettings) -> Result<SliceResult, SlicerError> {
+    let zs = layer_z_values(mesh, settings)?;
+    let contours = zs
+        .iter()
+        .map(|&z| (z, union_polygons(&slice_at_z(mesh, z as f32))))
+        .collect();
+    Ok(slice_from_contours(contours, settings))
+}
+
+/// Toolpath generation from already-computed layer contours (CPU Clipper).
+/// Contours may come from the CPU plane slicer or Vulkan compute readback.
+pub fn slice_from_contours(
+    layers: Vec<(f64, Vec<Polygon>)>,
+    settings: &SliceSettings,
+) -> SliceResult {
+    let mut out = Vec::new();
+    let mut seam_hint = None;
+    let mut index = 0usize;
+    for (z, mut contours) in layers {
+        contours = union_polygons(&contours);
+        if contours.is_empty() {
+            continue;
+        }
+        let peri = perimeters::classic_perimeters(&contours, settings, seam_hint);
+        seam_hint = peri.seam_hint;
+        let infill = infill::generate(&peri.infill_region, settings, index, z);
+        out.push(Layer {
+            z_mm: z,
+            index,
+            contours,
+            outer_walls: peri.outer,
+            inner_walls: peri.inner,
+            infill,
+            support: Vec::new(),
+            support_interface: Vec::new(),
+            support_region: Vec::new(),
+            skirt: Vec::new(),
+            brim: Vec::new(),
+        });
+        index += 1;
+    }
+
+    support::apply_classic(&mut out, settings);
+    if let Some(first) = out.first() {
+        let brim = skirt_brim::brim(&first.contours, settings);
+        let footprint = support::first_layer_footprint(first);
+        let skirt = skirt_brim::skirt(&footprint, settings);
+        if let Some(first) = out.first_mut() {
+            first.brim = brim;
+            first.skirt = skirt;
+        }
+    }
+
+    SliceResult { layers: out }
 }
 
 pub fn contour_area_mm2(poly: &Polygon) -> f64 {
@@ -92,6 +142,7 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bambu_config::{InfillPattern, SeamPosition, SliceSettings};
     use bambu_geom::TriangleMesh;
 
     #[test]
@@ -99,14 +150,88 @@ mod tests {
         let mesh = TriangleMesh::cube(20.0);
         let settings = SliceSettings::default();
         let result = slice_mesh(&mesh, &settings).unwrap();
-        // 20mm / 0.2mm = 100 mid-layer samples
         assert!(
             (90..=105).contains(&result.layers.len()),
             "layers={}",
             result.layers.len()
         );
         let mid = &result.layers[result.layers.len() / 2];
-        assert!(!mid.perimeters.is_empty());
+        assert!(mid.perimeters().next().is_some());
         assert!(!mid.infill.is_empty());
+        assert_eq!(mid.outer_walls.len(), 1);
+        assert!(!mid.inner_walls.is_empty());
+    }
+
+    #[test]
+    fn two_walls_more_than_one() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut one = SliceSettings::default();
+        one.wall_loops = 1;
+        one.infill_pattern = InfillPattern::Rectilinear;
+        let mut two = one.clone();
+        two.wall_loops = 2;
+        let a = slice_mesh(&mesh, &one).unwrap();
+        let b = slice_mesh(&mesh, &two).unwrap();
+        let mid_a = &a.layers[a.layers.len() / 2];
+        let mid_b = &b.layers[b.layers.len() / 2];
+        assert!(mid_a.inner_walls.is_empty());
+        assert!(!mid_b.inner_walls.is_empty());
+    }
+
+    #[test]
+    fn rear_seam_on_outer_wall() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.seam = SeamPosition::Rear;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let mid = &result.layers[result.layers.len() / 2];
+        let start_y = mid.outer_walls[0][0].to_mm().1;
+        let max_y = mid.outer_walls[0]
+            .iter()
+            .map(|p| p.to_mm().1)
+            .fold(f64::MIN, f64::max);
+        assert!((start_y - max_y).abs() < 0.05, "start_y={start_y} max_y={max_y}");
+    }
+
+    #[test]
+    fn cube_gets_skirt_not_support() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let first = &result.layers[0];
+        assert_eq!(first.skirt.len(), settings.skirt_loops as usize);
+        assert!(first.brim.is_empty());
+        assert!(result.layers.iter().all(|l| l.support.is_empty()));
+    }
+
+    #[test]
+    fn brim_loops_scale_with_width() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_loops = 0;
+        settings.brim_width_mm = settings.line_width_mm * 3.0;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(result.layers[0].brim.len(), 3);
+    }
+
+    #[test]
+    fn table_overhang_gets_classic_support() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let support_layers = result
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .count();
+        assert!(
+            support_layers >= 10,
+            "expected support under the slab, got {support_layers} layers"
+        );
+        let cube = slice_mesh(&TriangleMesh::cube(20.0), &settings).unwrap();
+        assert!(cube.layers.iter().all(|l| l.support.is_empty() && l.support_interface.is_empty()));
     }
 }

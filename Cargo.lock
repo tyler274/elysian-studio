@@ -354,6 +354,7 @@ dependencies = [
  "bambu-config",
  "bambu-gcode",
  "bambu-geom",
+ "bambu-gpu",
  "bambu-io",
  "bambu-model",
  "bambu-slicer",
@@ -402,8 +403,10 @@ dependencies = [
 name = "bambu-gpu"
 version = "0.1.0"
 dependencies = [
+ "bambu-config",
  "bambu-geom",
  "bambu-preview",
+ "bambu-slicer",
  "bytemuck",
  "glam 0.29.3",
  "iced",

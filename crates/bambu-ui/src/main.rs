@@ -3,9 +3,11 @@
 use std::process::Command;
 
 use bambu_config::SliceSettings;
-use bambu_gpu::{force_vulkan_env, probe_vulkan, ViewportEvent, ViewportScene};
+use bambu_gpu::{
+    force_vulkan_env, probe_vulkan, slice_with_gpu_or_cpu, ToolpathBuffer, ViewportEvent,
+    ViewportScene,
+};
 use bambu_io::load_stl;
-use bambu_slicer::slice_mesh;
 use iced::widget::{button, column, container, row, shader, text};
 use iced::{Color, Element, Fill, Theme};
 
@@ -127,12 +129,21 @@ impl App {
             }
             Message::Slice => {
                 let settings = SliceSettings::default();
-                match slice_mesh(&self.scene.mesh, &settings) {
-                    Ok(result) => {
+                match slice_with_gpu_or_cpu(&self.scene.mesh, &settings) {
+                    Ok((result, backend)) => {
+                        self.scene
+                            .set_toolpaths(ToolpathBuffer::from_slice(&result));
+                        let support = result
+                            .layers
+                            .iter()
+                            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+                            .count();
                         self.status = format!(
-                            "sliced {} layers @ {}mm",
+                            "sliced {} layers @ {}mm ({backend}; skirt {} · support {})",
                             result.layers.len(),
-                            settings.layer_height_mm
+                            settings.layer_height_mm,
+                            result.layers.first().map(|l| l.skirt.len()).unwrap_or(0),
+                            support
                         );
                     }
                     Err(err) => self.status = format!("slice failed: {err}"),

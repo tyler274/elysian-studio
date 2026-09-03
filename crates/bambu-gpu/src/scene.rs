@@ -3,6 +3,7 @@
 pub use crate::camera::OrbitCamera;
 
 use bambu_geom::TriangleMesh;
+use bambu_preview::{ExtrusionRole, ToolpathBuffer};
 use iced::mouse;
 use iced::widget::shader::{self, Viewport};
 use iced::wgpu;
@@ -12,12 +13,20 @@ pub const BED_MM: f32 = 256.0;
 const PLASTIC: [f32; 3] = [0.93, 0.42, 0.18];
 const BED: [f32; 3] = [0.16, 0.17, 0.20];
 const GRID: [f32; 3] = [0.28, 0.32, 0.38];
+const OUTER_WALL: [f32; 3] = [1.00, 0.86, 0.22];
+const INNER_WALL: [f32; 3] = [0.95, 0.52, 0.18];
+const INFILL: [f32; 3] = [0.28, 0.78, 0.96];
+const SKIRT: [f32; 3] = [0.62, 0.48, 0.88];
+const BRIM: [f32; 3] = [0.72, 0.74, 0.78];
+const SUPPORT: [f32; 3] = [0.18, 0.82, 0.42];
+const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
 
 #[derive(Debug, Clone)]
 pub struct ViewportScene {
     pub adapter_label: String,
     pub camera: OrbitCamera,
     pub mesh: TriangleMesh,
+    pub toolpaths: ToolpathBuffer,
 }
 
 impl Default for ViewportScene {
@@ -34,13 +43,19 @@ impl ViewportScene {
             adapter_label,
             camera: OrbitCamera::looking_at_bed(BED_MM),
             mesh,
+            toolpaths: ToolpathBuffer::default(),
         }
     }
 
     pub fn set_mesh(&mut self, mut mesh: TriangleMesh) {
         mesh.place_on_bed(BED_MM);
         self.mesh = mesh;
+        self.toolpaths = ToolpathBuffer::default();
         self.camera = OrbitCamera::looking_at_bed(BED_MM);
+    }
+
+    pub fn set_toolpaths(&mut self, toolpaths: ToolpathBuffer) {
+        self.toolpaths = toolpaths;
     }
 }
 
@@ -98,9 +113,7 @@ where
                 )
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                if cursor.position_over(bounds).is_none() {
-                    return None;
-                }
+                cursor.position_over(bounds)?;
                 let y = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
                     mouse::ScrollDelta::Pixels { y, .. } => y / 40.0,
@@ -130,11 +143,19 @@ where
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
+        let mut lines = grid_vertices(BED_MM);
+        lines.extend(toolpath_vertices(&self.toolpaths));
+        let solid = if self.toolpaths.is_empty() {
+            solid_vertices(&self.mesh)
+        } else {
+            // Hide the solid mesh so inset walls/infill are not occluded.
+            bed_quad(BED_MM)
+        };
         ScenePrimitive {
             aspect: (bounds.width / bounds.height.max(1.0)).max(0.1),
             camera: self.camera,
-            solid: solid_vertices(&self.mesh),
-            lines: grid_vertices(BED_MM),
+            solid,
+            lines,
         }
     }
 }
@@ -256,7 +277,7 @@ impl ScenePipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[vertex_layout.clone()],
+                buffers: std::slice::from_ref(&vertex_layout),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -570,6 +591,26 @@ fn grid_vertices(bed: f32) -> Vec<Vertex> {
         y += step;
     }
     out
+}
+
+fn toolpath_vertices(buf: &ToolpathBuffer) -> Vec<Vertex> {
+    let n = [0.0, 0.0, 1.0];
+    buf.vertices
+        .iter()
+        .map(|v| Vertex {
+            position: [v.position.x, v.position.y, v.position.z + 0.08],
+            normal: n,
+            color: match v.role {
+                ExtrusionRole::OuterWall => OUTER_WALL,
+                ExtrusionRole::InnerWall => INNER_WALL,
+                ExtrusionRole::Infill => INFILL,
+                ExtrusionRole::Skirt => SKIRT,
+                ExtrusionRole::Brim => BRIM,
+                ExtrusionRole::Support => SUPPORT,
+                ExtrusionRole::SupportInterface => SUPPORT_INTERFACE,
+            },
+        })
+        .collect()
 }
 
 fn push_line(
