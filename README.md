@@ -13,7 +13,7 @@ Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are neve
 | `bambu-geom` | Scaled integer geometry, clipper, meshes |
 | `bambu-config` | Slice / print settings |
 | `bambu-model` | Objects, instances, plates |
-| `bambu-io` | STL (3MF later) |
+| `bambu-io` | STL and 3MF mesh import |
 | `bambu-slicer` | Layer slice → walls → top/bottom shells → infill → ironing → skirt/brim → classic supports |
 | `bambu-gcode` | G-code writer |
 | `bambu-preview` | CPU toolpath buffers for the GPU |
@@ -38,6 +38,7 @@ Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`).
 cargo test --workspace
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --gpu
+cargo run -p bambu-cli -- slice model.3mf -o /tmp/model.gcode
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --brim 5 --skirt 2 --top 4 --bottom 3
 cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --ironing top
 # table-like overhangs:
@@ -45,7 +46,7 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --
 cargo run -p bambu-ui
 ```
 
-The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. Drag to orbit, scroll to zoom, Open STL, Slice.
+The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. Drag to orbit, scroll to zoom, **Open model** (STL/3MF), Slice.
 
 Load the same Bambu process JSON the C++ app uses (`inherits` is followed in-directory):
 

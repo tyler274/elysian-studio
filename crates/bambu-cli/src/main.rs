@@ -9,7 +9,7 @@ use bambu_config::{
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
-use bambu_io::load_stl;
+use bambu_io::load_mesh;
 use bambu_protocol::{
     default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
 };
@@ -53,7 +53,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Slice an STL to G-code (Vulkan plane intersection when available).
+    /// Slice an STL or 3MF to G-code (Vulkan plane intersection when available).
     Slice {
         input: PathBuf,
         #[arg(short, long)]
@@ -401,7 +401,7 @@ pub fn slice_file(
     force_cpu: bool,
     force_gpu: bool,
 ) -> Result<String, CliError> {
-    let mesh = load_stl(input)?;
+    let mesh = load_mesh(input)?;
     let (sliced, backend) = if force_cpu {
         (slice_mesh(&mesh, settings)?, SliceBackend::Cpu)
     } else if force_gpu {

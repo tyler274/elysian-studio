@@ -9,7 +9,7 @@ use bambu_gpu::{
     force_vulkan_env, probe_vulkan, slice_with_gpu_or_cpu, ToolpathBuffer, ViewportEvent,
     ViewportScene,
 };
-use bambu_io::load_stl;
+use bambu_io::load_mesh;
 use bambu_protocol::LanBackend;
 use iced::widget::{button, column, container, row, shader, text, text_input};
 use iced::{Color, Element, Fill, Task, Theme};
@@ -85,7 +85,7 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Viewport(ViewportEvent),
-    OpenStl,
+    OpenModel,
     Slice,
     ResetCamera,
     ExtractKeys,
@@ -127,12 +127,14 @@ impl App {
             Message::Viewport(ViewportEvent::Zoom(delta)) => {
                 self.scene.camera.zoom(delta);
             }
-            Message::OpenStl => {
+            Message::OpenModel => {
                 if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Meshes", &["3mf", "3MF", "stl", "STL"])
+                    .add_filter("3MF", &["3mf", "3MF"])
                     .add_filter("STL", &["stl", "STL"])
                     .pick_file()
                 {
-                    match load_stl(&path) {
+                    match load_mesh(&path) {
                         Ok(mesh) => {
                             let tris = mesh.indices.len();
                             self.scene.set_mesh(mesh);
@@ -307,7 +309,7 @@ impl App {
             text("Bambu Studio").size(22),
             text("Rust rewrite · iced + wgpu").size(14),
             text(format!("GPU: {}", self.adapter)).size(13),
-            button("Open STL").on_press(Message::OpenStl),
+            button("Open model").on_press(Message::OpenModel),
             button("Slice").on_press(Message::Slice),
             button("Reset camera").on_press(Message::ResetCamera),
             button("Extract keys").on_press(Message::ExtractKeys),

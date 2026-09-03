@@ -53,6 +53,29 @@ impl Model {
     pub fn first_mesh(&self) -> Option<&TriangleMesh> {
         self.objects.first().map(|o| &o.mesh)
     }
+
+    /// Concatenate every object mesh after applying instance offsets.
+    pub fn merged_mesh(&self) -> Option<TriangleMesh> {
+        let mut out = TriangleMesh::default();
+        for object in &self.objects {
+            if object.instances.is_empty() {
+                out.append(&object.mesh);
+                continue;
+            }
+            for inst in &object.instances {
+                let mut mesh = object.mesh.clone();
+                if inst.offset != Vec3::ZERO {
+                    mesh.translate(inst.offset);
+                }
+                out.append(&mesh);
+            }
+        }
+        if out.indices.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
 }
 
 pub fn default_settings() -> SliceSettings {

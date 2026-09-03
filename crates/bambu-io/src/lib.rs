@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod threemf;
+
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
@@ -10,10 +12,18 @@ use glam::Vec3;
 use stl_io::{IndexedMesh, Normal, Triangle, Vertex};
 use thiserror::Error;
 
+pub use threemf::{load_3mf, load_3mf_bytes, write_3mf, write_3mf_bytes};
+
 #[derive(Debug, Error)]
 pub enum IoError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("zip: {0}")]
+    Zip(#[from] zip::result::ZipError),
+    #[error("xml: {0}")]
+    Xml(#[from] quick_xml::Error),
+    #[error("{0}")]
+    Message(String),
 }
 
 pub fn load_stl(path: impl AsRef<Path>) -> Result<TriangleMesh, IoError> {
@@ -47,6 +57,29 @@ pub fn load_model_stl(path: impl AsRef<Path>) -> Result<Model, IoError> {
         .unwrap_or("object")
         .to_string();
     Ok(Model::from_mesh(name, mesh))
+}
+
+/// Load STL or 3MF by file extension (meshes only; 3MF metadata is ignored).
+pub fn load_mesh(path: impl AsRef<Path>) -> Result<TriangleMesh, IoError> {
+    load_model(path)?
+        .merged_mesh()
+        .ok_or_else(|| IoError::Message("file contains no triangles".into()))
+}
+
+pub fn load_model(path: impl AsRef<Path>) -> Result<Model, IoError> {
+    let path = path.as_ref();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "3mf" => load_3mf(path),
+        "stl" | "" => load_model_stl(path),
+        other => Err(IoError::Message(format!(
+            "unsupported mesh format '.{other}' (stl|3mf)"
+        ))),
+    }
 }
 
 pub fn write_stl(path: impl AsRef<Path>, mesh: &TriangleMesh) -> Result<(), IoError> {

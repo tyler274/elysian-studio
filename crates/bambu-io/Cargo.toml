@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Mesh and project file I/O (STL now; 3MF later)"
+description = "Mesh and project file I/O (STL, 3MF geometry)"
 
 [lints]
 workspace = true
@@ -13,5 +13,7 @@ workspace = true
 bambu-geom.workspace = true
 glam.workspace = true
 bambu-model.workspace = true
+quick-xml.workspace = true
 stl_io.workspace = true
 thiserror.workspace = true
+zip.workspace = true
