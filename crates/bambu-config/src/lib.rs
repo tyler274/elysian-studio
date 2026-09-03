@@ -5,9 +5,9 @@ mod bbl;
 use serde::{Deserialize, Serialize};
 
 pub use bbl::{
-    bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, load_bbl_process,
-    project_settings_json, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
-    ConfigError,
+    apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, is_region_key,
+    load_bbl_process, project_settings_json, settings_from_json, write_flattened_bbl_profile,
+    BblOraclePaths, ConfigError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

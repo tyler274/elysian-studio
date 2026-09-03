@@ -1,6 +1,8 @@
 //! Bambu `Metadata/model_settings.config` (plates, object names, parts).
 //!
 //! Triangle AMS mapping and assemble-view transforms stay ignored.
+//! Parameter-modifier region keys on `<part>` overlay PrintRegion settings.
+//! Triangle `paint_supports` / `paint_seam` / `paint_fuzzy_skin` live on the mesh.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +42,7 @@ struct PartRec {
     subtype: VolumeType,
     name: String,
     matrix: Mat4,
+    config: BTreeMap<String, String>,
 }
 
 impl Default for PartRec {
@@ -49,6 +52,7 @@ impl Default for PartRec {
             subtype: VolumeType::ModelPart,
             name: String::new(),
             matrix: Mat4::IDENTITY,
+            config: BTreeMap::new(),
         }
     }
 }
@@ -129,6 +133,7 @@ fn apply_part_to_volume(vol: &mut ModelVolume, part: &PartRec) {
         vol.mesh.transform(part.matrix);
         vol.matrix = part.matrix;
     }
+    vol.config = part.config.clone();
 }
 
 /// Serialize plates, object names, and part subtype/matrix as Bambu `model_settings.config`.
@@ -165,6 +170,13 @@ pub fn write(model: &Model, object_ids: &[u32], volume_ids: &[Vec<u32>]) -> Stri
                 "      <metadata key=\"matrix\" value=\"{}\"/>\n",
                 matrix_string(vol.matrix)
             ));
+            for (key, value) in &vol.config {
+                out.push_str(&format!(
+                    "      <metadata key=\"{}\" value=\"{}\"/>\n",
+                    xml_escape(key),
+                    xml_escape(value)
+                ));
+            }
             out.push_str("    </part>\n");
         }
         out.push_str("  </object>\n");
@@ -394,7 +406,12 @@ fn apply_part_meta(part: &mut PartRec, e: &quick_xml::events::BytesStart<'_>) {
         "name" => part.name = value,
         "matrix" => part.matrix = parse_matrix(&value),
         "volume_type" | "part_type" => part.subtype = VolumeType::from_subtype(&value),
-        _ => {}
+        "mesh_shared" | "source_file" | "source_object_id" | "source_volume_id"
+        | "source_offset_x" | "source_offset_y" | "source_offset_z" | "source_in_inches"
+        | "source_in_meters" => {}
+        _ => {
+            part.config.insert(key, value);
+        }
     }
 }
 

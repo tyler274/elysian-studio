@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 use bambu_config::SliceSettings;
 use bambu_geom::TriangleMesh;
 use glam::{Mat4, Vec3};
@@ -45,6 +47,10 @@ impl VolumeType {
         }
     }
 
+    pub fn is_modifier(self) -> bool {
+        matches!(self, Self::Modifier)
+    }
+
     pub fn is_model_part(self) -> bool {
         matches!(self, Self::ModelPart)
     }
@@ -76,8 +82,8 @@ pub enum TrianglePaint {
 }
 
 impl TrianglePaint {
-    /// Decode Bambu/Prusa `paint_supports` hex (`TriangleSelector::serialize`).
-    pub fn from_support_hex(s: &str) -> Self {
+    /// Decode Bambu/Prusa `TriangleSelector::serialize` hex (`4` enforcer, `8` blocker).
+    pub fn from_hex(s: &str) -> Self {
         if s.is_empty() {
             return Self::None;
         }
@@ -86,12 +92,20 @@ impl TrianglePaint {
         decode_paint_node(&bits, &mut i)
     }
 
-    pub fn as_support_hex(self) -> Option<&'static str> {
+    pub fn from_support_hex(s: &str) -> Self {
+        Self::from_hex(s)
+    }
+
+    pub fn as_hex(self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::Enforcer => Some("4"),
             Self::Blocker => Some("8"),
         }
+    }
+
+    pub fn as_support_hex(self) -> Option<&'static str> {
+        self.as_hex()
     }
 
     fn or_paint(self, other: Self) -> Self {
@@ -164,6 +178,14 @@ pub struct ModelVolume {
     pub matrix: Mat4,
     /// `paint_supports` on each triangle (`indices` order). Empty means none.
     pub triangle_support: Vec<TrianglePaint>,
+    /// `paint_seam` (`Enforcer` = forced seam, `Blocker` = avoid).
+    pub triangle_seam: Vec<TrianglePaint>,
+    /// `paint_fuzzy_skin` (`Enforcer`/`Blocker` both mean painted fuzzy).
+    pub triangle_fuzzy_skin: Vec<TrianglePaint>,
+    /// Raw `paint_color` hex per triangle (MMU; ignored at slice time).
+    pub triangle_color: Vec<String>,
+    /// Extra `<metadata key>` on this part (`volume.config` in C++).
+    pub config: BTreeMap<String, String>,
 }
 
 impl ModelVolume {
@@ -175,6 +197,10 @@ impl ModelVolume {
             part_id,
             matrix: Mat4::IDENTITY,
             triangle_support: Vec::new(),
+            triangle_seam: Vec::new(),
+            triangle_fuzzy_skin: Vec::new(),
+            triangle_color: Vec::new(),
+            config: BTreeMap::new(),
         }
     }
 
@@ -182,6 +208,41 @@ impl ModelVolume {
         self.triangle_support
             .iter()
             .any(|p| *p != TrianglePaint::None)
+    }
+
+    pub fn has_seam_paint(&self) -> bool {
+        self.triangle_seam.iter().any(|p| *p != TrianglePaint::None)
+    }
+
+    pub fn has_fuzzy_paint(&self) -> bool {
+        self.triangle_fuzzy_skin
+            .iter()
+            .any(|p| *p != TrianglePaint::None)
+    }
+
+    pub fn has_color_paint(&self) -> bool {
+        self.triangle_color.iter().any(|s| !s.is_empty())
+    }
+
+    pub fn has_region_config(&self) -> bool {
+        self.config.keys().any(|k| bambu_config::is_region_key(k))
+    }
+
+    /// Parent region settings with this volume's PrintRegion keys applied.
+    pub fn region_settings(&self, parent: &SliceSettings) -> SliceSettings {
+        let mut out = parent.clone();
+        bambu_config::apply_config_pairs(&mut out, &self.config, true);
+        out
+    }
+
+    /// CPU Clipper path: negatives, support modifiers, paint, or region overrides.
+    pub fn needs_volume_slice(&self) -> bool {
+        self.volume_type.is_negative()
+            || self.volume_type.is_support_modifier()
+            || self.has_support_paint()
+            || self.has_seam_paint()
+            || self.has_fuzzy_paint()
+            || (self.volume_type.is_modifier() && self.has_region_config())
     }
 }
 
@@ -355,13 +416,25 @@ mod tests {
 
     #[test]
     fn paint_supports_hex_unsplit() {
-        assert_eq!(TrianglePaint::from_support_hex(""), TrianglePaint::None);
-        assert_eq!(
-            TrianglePaint::from_support_hex("4"),
-            TrianglePaint::Enforcer
-        );
-        assert_eq!(TrianglePaint::from_support_hex("8"), TrianglePaint::Blocker);
-        assert_eq!(TrianglePaint::Enforcer.as_support_hex(), Some("4"));
-        assert_eq!(TrianglePaint::Blocker.as_support_hex(), Some("8"));
+        assert_eq!(TrianglePaint::from_hex(""), TrianglePaint::None);
+        assert_eq!(TrianglePaint::from_hex("4"), TrianglePaint::Enforcer);
+        assert_eq!(TrianglePaint::from_hex("8"), TrianglePaint::Blocker);
+        assert_eq!(TrianglePaint::Enforcer.as_hex(), Some("4"));
+        assert_eq!(TrianglePaint::Blocker.as_hex(), Some("8"));
+    }
+
+    #[test]
+    fn region_config_overlays_infill() {
+        let mut vol = ModelVolume::model_part("mod", TriangleMesh::default(), 2);
+        vol.volume_type = VolumeType::Modifier;
+        vol.config
+            .insert("sparse_infill_density".into(), "100%".into());
+        vol.config.insert("layer_height".into(), "0.08".into());
+        assert!(vol.has_region_config());
+        assert!(vol.needs_volume_slice());
+        let parent = SliceSettings::default();
+        let over = vol.region_settings(&parent);
+        assert!((over.infill_density - 1.0).abs() < 1e-9);
+        assert!((over.layer_height_mm - parent.layer_height_mm).abs() < 1e-9);
     }
 }

@@ -145,6 +145,8 @@ fn raft_layer(
         top_region: Vec::new(),
         support_enforcer: Vec::new(),
         support_blocker: Vec::new(),
+        region_infill: Vec::new(),
+        region_settings: Vec::new(),
     }
 }
 

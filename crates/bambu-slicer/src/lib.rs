@@ -28,9 +28,10 @@ mod slicing;
 mod steps;
 mod support;
 
-use bambu_config::SliceSettings;
+use bambu_config::{FuzzySkinType, SliceSettings};
 use bambu_geom::{
-    difference_polygons, offset_polygons, union_polygons, Point, Polygon, Polyline, TriangleMesh,
+    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Point, Polygon,
+    Polyline, TriangleMesh,
 };
 use bambu_model::{ModelVolume, TrianglePaint};
 use rayon::prelude::*;
@@ -77,6 +78,10 @@ pub struct Layer {
     pub support_enforcer: Vec<Polygon>,
     /// Sliced `support_blocker` volumes at this layer (C++ `slice_support_blockers`).
     pub support_blocker: Vec<Polygon>,
+    /// Per-region infill islands (C++ `LayerRegion`). Empty means one region.
+    pub region_infill: Vec<Vec<Polygon>>,
+    /// Settings for [`Self::region_infill`] slots (same length).
+    pub region_settings: Vec<SliceSettings>,
 }
 
 impl Layer {
@@ -113,10 +118,18 @@ struct PreparedContours {
     contours: Vec<Polygon>,
     enforcers: Vec<Polygon>,
     blockers: Vec<Polygon>,
+    /// Slot 0 is leftover model; 1..n are parameter modifiers in volume order.
+    regions: Vec<Vec<Polygon>>,
+    region_settings: Vec<SliceSettings>,
+    /// Painted seam enforcer centroid (`paint_seam`).
+    seam_paint: Option<Point>,
+    /// Layer intersects `paint_fuzzy_skin`.
+    fuzzy_paint: bool,
 }
 
-/// Slice model-part meshes, subtract negatives, and keep support enforcer/blocker
-/// contours for [`support::apply`] (C++ `PrintObjectSlice` + `slice_support_volumes`).
+/// Slice model-part meshes, subtract negatives, clip parameter modifiers into
+/// regions, and keep support enforcer/blocker contours for [`support::apply`]
+/// (C++ `PrintObjectSlice` + `slice_support_volumes`).
 pub fn slice_volumes(
     volumes: &[ModelVolume],
     settings: &SliceSettings,
@@ -144,11 +157,17 @@ pub fn slice_volumes(
     if parts.is_empty() {
         return Err(SlicerError::EmptyMesh);
     }
+    let modifiers: Vec<&ModelVolume> = volumes
+        .iter()
+        .filter(|v| v.volume_type.is_modifier() && v.has_region_config())
+        .filter(|v| v.region_settings(settings) != *settings)
+        .collect();
     if negatives.is_empty()
         && parts.len() == 1
         && enforcers.is_empty()
         && blockers.is_empty()
-        && !volumes.iter().any(ModelVolume::has_support_paint)
+        && modifiers.is_empty()
+        && !volumes.iter().any(ModelVolume::needs_volume_slice)
     {
         return slice_mesh(parts[0], settings);
     }
@@ -168,17 +187,47 @@ pub fn slice_volumes(
             } else {
                 difference_polygons(&pos, &union_slices(&negatives, z))
             };
+            let (regions, region_settings) = if modifiers.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                split_modifier_regions(&contours, &modifiers, z, settings)
+            };
             PreparedContours {
                 spec,
                 contours,
                 enforcers: merge_support(
                     union_slices(&enforcers, z),
-                    paint_polygons(volumes, spec, TrianglePaint::Enforcer),
+                    paint_polygons(
+                        volumes,
+                        spec,
+                        |v| &v.triangle_support,
+                        |p| p == TrianglePaint::Enforcer,
+                    ),
                 ),
                 blockers: merge_support(
                     union_slices(&blockers, z),
-                    paint_polygons(volumes, spec, TrianglePaint::Blocker),
+                    paint_polygons(
+                        volumes,
+                        spec,
+                        |v| &v.triangle_support,
+                        |p| p == TrianglePaint::Blocker,
+                    ),
                 ),
+                regions,
+                region_settings,
+                seam_paint: paint_centroid(
+                    volumes,
+                    spec,
+                    |v| &v.triangle_seam,
+                    |p| p == TrianglePaint::Enforcer,
+                ),
+                fuzzy_paint: !paint_raw(
+                    volumes,
+                    spec,
+                    |v| &v.triangle_fuzzy_skin,
+                    |p| p != TrianglePaint::None,
+                )
+                .is_empty(),
             }
         })
         .collect();
@@ -204,22 +253,86 @@ fn merge_support(mut a: Vec<Polygon>, b: Vec<Polygon>) -> Vec<Polygon> {
     union_polygons(&a)
 }
 
-/// Project painted triangles onto the slice plane by Z range (C++ `slice_mesh_slabs`
-/// on `supported_facets` — unsplit faces only need the original triangle).
-fn paint_polygons(volumes: &[ModelVolume], spec: LayerSpec, want: TrianglePaint) -> Vec<Polygon> {
-    if want == TrianglePaint::None {
-        return Vec::new();
+/// Split printable contours by parameter-modifier meshes (C++ `slice_volumes`
+/// region clipping). Later modifiers steal from leftover and earlier modifiers.
+fn split_modifier_regions(
+    contours: &[Polygon],
+    modifiers: &[&ModelVolume],
+    z: f32,
+    settings: &SliceSettings,
+) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
+    let n = modifiers.len();
+    let mut slots = vec![Vec::new(); n + 1];
+    slots[0] = contours.to_vec();
+    let mut cfgs = vec![settings.clone(); n + 1];
+    for (i, vol) in modifiers.iter().enumerate() {
+        cfgs[i + 1] = vol.region_settings(settings);
+        let sliced = slice_at_z(&vol.mesh, z);
+        if sliced.is_empty() {
+            continue;
+        }
+        let m = union_polygons(&sliced);
+        let mut stolen = Vec::new();
+        for slot in slots.iter_mut().take(i + 1) {
+            if slot.is_empty() {
+                continue;
+            }
+            let hit = intersect_polygons(slot, &m);
+            if hit.is_empty() {
+                continue;
+            }
+            *slot = difference_polygons(slot, &m);
+            stolen.extend(hit);
+        }
+        slots[i + 1] = union_polygons(&stolen);
     }
+    (slots, cfgs)
+}
+
+/// Project painted triangles onto the slice plane by Z range (C++ `slice_mesh_slabs`
+/// on painted facets — unsplit faces only need the original triangle).
+fn paint_polygons(
+    volumes: &[ModelVolume],
+    spec: LayerSpec,
+    field: impl Fn(&ModelVolume) -> &[TrianglePaint],
+    want: impl Fn(TrianglePaint) -> bool,
+) -> Vec<Polygon> {
+    union_polygons(&paint_raw(volumes, spec, field, want))
+}
+
+fn paint_centroid(
+    volumes: &[ModelVolume],
+    spec: LayerSpec,
+    field: impl Fn(&ModelVolume) -> &[TrianglePaint],
+    want: impl Fn(TrianglePaint) -> bool,
+) -> Option<Point> {
+    let mut acc = Vec::new();
+    for poly in paint_raw(volumes, spec, field, want) {
+        acc.extend(poly);
+    }
+    polygon_centroid(&acc)
+}
+
+fn paint_raw(
+    volumes: &[ModelVolume],
+    spec: LayerSpec,
+    field: impl Fn(&ModelVolume) -> &[TrianglePaint],
+    want: impl Fn(TrianglePaint) -> bool,
+) -> Vec<Polygon> {
     let mut acc = Vec::new();
     const EPS: f32 = 1e-3;
     let z = spec.slice_z_mm as f32;
     let height = spec.height_mm as f32;
     for vol in volumes {
-        if !vol.volume_type.is_model_part() || vol.triangle_support.is_empty() {
+        if !vol.volume_type.is_model_part() {
+            continue;
+        }
+        let paints = field(vol);
+        if paints.is_empty() {
             continue;
         }
         for (i, idx) in vol.mesh.indices.iter().enumerate() {
-            if vol.triangle_support.get(i).copied().unwrap_or_default() != want {
+            if !want(paints.get(i).copied().unwrap_or_default()) {
                 continue;
             }
             let [a, b, c] = vol.mesh.triangle(*idx);
@@ -237,7 +350,18 @@ fn paint_polygons(volumes: &[ModelVolume], spec: LayerSpec, want: TrianglePaint)
             ]);
         }
     }
-    union_polygons(&acc)
+    acc
+}
+
+fn polygon_centroid(poly: &[Point]) -> Option<Point> {
+    if poly.is_empty() {
+        return None;
+    }
+    let n = i64::try_from(poly.len()).ok()?;
+    Some(Point::new(
+        poly.iter().map(|p| p.x).sum::<i64>() / n,
+        poly.iter().map(|p| p.y).sum::<i64>() / n,
+    ))
 }
 
 /// Pair GPU/CPU contour samples with the [`LayerSpec`] plan (same order as `slice_z`).
@@ -265,6 +389,10 @@ pub fn slice_from_contours(
             contours,
             enforcers: Vec::new(),
             blockers: Vec::new(),
+            regions: Vec::new(),
+            region_settings: Vec::new(),
+            seam_paint: None,
+            fuzzy_paint: false,
         })
         .collect();
     slice_prepared(layers, settings, mesh)
@@ -278,9 +406,22 @@ fn slice_prepared(
     let prepared: Vec<_> = layers
         .into_par_iter()
         .map(|mut layer| {
-            let (spec, contours) = prepare_layer_contours(layer.spec, layer.contours, settings);
-            layer.spec = spec;
-            layer.contours = contours;
+            if layer.regions.len() > 1 {
+                layer.regions = layer
+                    .regions
+                    .into_iter()
+                    .map(|r| prepare_layer_contours(layer.spec, r, settings).1)
+                    .collect();
+                let mut acc = Vec::new();
+                for r in &layer.regions {
+                    acc.extend(r.iter().cloned());
+                }
+                layer.contours = union_polygons(&acc);
+            } else {
+                let (spec, contours) = prepare_layer_contours(layer.spec, layer.contours, settings);
+                layer.spec = spec;
+                layer.contours = contours;
+            }
             layer
         })
         .collect();
@@ -292,28 +433,42 @@ fn slice_prepared(
     let mut out = Vec::new();
     let mut seam_hint = None;
     for i in 0..prepared.len() {
-        let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
-        let peri = perimeters::generate(&prepared[i].contours, settings, seam_hint, upper);
-        seam_hint = peri.seam_hint;
         let spec = prepared[i].spec;
-        let mut outer_walls = peri.outer;
-        let mut inner_walls = peri.inner;
-        fuzzy::apply_walls(
-            &mut outer_walls,
-            &mut inner_walls,
-            settings,
-            spec.index,
-            spec.slice_z_mm,
-        );
+        let hint = prepared[i].seam_paint.or(seam_hint);
+        let paths = if prepared[i].regions.len() > 1 {
+            layer_region_perimeters(&prepared, i, hint)
+        } else {
+            let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
+            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper);
+            let mut outer_walls = peri.outer;
+            let mut inner_walls = peri.inner;
+            apply_layer_fuzzy(
+                &mut outer_walls,
+                &mut inner_walls,
+                settings,
+                prepared[i].fuzzy_paint,
+                spec.index,
+                spec.slice_z_mm,
+            );
+            LayerToolpaths {
+                outer_walls,
+                inner_walls,
+                infill_region: peri.infill_region,
+                region_infill: Vec::new(),
+                region_settings: Vec::new(),
+                seam_hint: peri.seam_hint,
+            }
+        };
+        seam_hint = paths.seam_hint;
         out.push(Layer {
             z_mm: spec.slice_z_mm,
             index: i,
             height_mm: spec.height_mm,
             print_z_mm: spec.print_z_mm,
             contours: prepared[i].contours.clone(),
-            outer_walls,
-            inner_walls,
-            infill_region: peri.infill_region,
+            outer_walls: paths.outer_walls,
+            inner_walls: paths.inner_walls,
+            infill_region: paths.infill_region,
             infill: Vec::new(),
             solid_infill: Vec::new(),
             top_surface: Vec::new(),
@@ -328,6 +483,8 @@ fn slice_prepared(
             top_region: Vec::new(),
             support_enforcer: prepared[i].enforcers.clone(),
             support_blocker: prepared[i].blockers.clone(),
+            region_infill: paths.region_infill,
+            region_settings: paths.region_settings,
         });
     }
 
@@ -355,6 +512,82 @@ fn slice_prepared(
     }
 
     SliceResult { layers: out }
+}
+
+struct LayerToolpaths {
+    outer_walls: Vec<Polyline>,
+    inner_walls: Vec<Polyline>,
+    infill_region: Vec<Polygon>,
+    region_infill: Vec<Vec<Polygon>>,
+    region_settings: Vec<SliceSettings>,
+    seam_hint: Option<Point>,
+}
+
+fn layer_region_perimeters(
+    prepared: &[PreparedContours],
+    i: usize,
+    mut seam_hint: Option<Point>,
+) -> LayerToolpaths {
+    let spec = prepared[i].spec;
+    let n = prepared[i].regions.len();
+    let mut outer_walls = Vec::new();
+    let mut inner_walls = Vec::new();
+    let mut infill_acc = Vec::new();
+    let mut region_infill = Vec::with_capacity(n);
+    for r in 0..n {
+        let polys = &prepared[i].regions[r];
+        let cfg = &prepared[i].region_settings[r];
+        if polys.is_empty() {
+            region_infill.push(Vec::new());
+            continue;
+        }
+        let upper = prepared
+            .get(i + 1)
+            .and_then(|layer| layer.regions.get(r))
+            .map(Vec::as_slice)
+            .filter(|u| !u.is_empty());
+        let peri = perimeters::generate(polys, cfg, seam_hint, upper);
+        seam_hint = peri.seam_hint;
+        let mut outer = peri.outer;
+        let mut inner = peri.inner;
+        apply_layer_fuzzy(
+            &mut outer,
+            &mut inner,
+            cfg,
+            prepared[i].fuzzy_paint,
+            spec.index,
+            spec.slice_z_mm,
+        );
+        outer_walls.extend(outer);
+        inner_walls.extend(inner);
+        infill_acc.extend(peri.infill_region.iter().cloned());
+        region_infill.push(peri.infill_region);
+    }
+    LayerToolpaths {
+        outer_walls,
+        inner_walls,
+        infill_region: union_polygons(&infill_acc),
+        region_infill,
+        region_settings: prepared[i].region_settings.clone(),
+        seam_hint,
+    }
+}
+
+fn apply_layer_fuzzy(
+    outer: &mut [Polyline],
+    inner: &mut [Polyline],
+    settings: &SliceSettings,
+    painted: bool,
+    layer_idx: usize,
+    z_mm: f64,
+) {
+    if painted && !settings.fuzzy_skin.is_enabled() {
+        let mut painted_settings = settings.clone();
+        painted_settings.fuzzy_skin = FuzzySkinType::External;
+        fuzzy::apply_walls(outer, inner, &painted_settings, layer_idx, z_mm);
+    } else {
+        fuzzy::apply_walls(outer, inner, settings, layer_idx, z_mm);
+    }
 }
 
 fn prepare_layer_contours(
@@ -1285,6 +1518,129 @@ mod tests {
         assert!(
             blocked_n < open_n / 2,
             "painted blocker should drop support: open={open_n} blocked={blocked_n}"
+        );
+    }
+
+    #[test]
+    fn parameter_modifier_densifies_infill() {
+        let body = TriangleMesh::cube(20.0);
+        let mut inset = TriangleMesh::cube(10.0);
+        inset.translate(glam::Vec3::new(5.0, 5.0, 5.0));
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.15;
+        settings.wall_loops = 2;
+        let open = slice_mesh(&body, &settings).unwrap();
+        let mut modifier = bambu_model::ModelVolume::model_part("dense", inset, 2);
+        modifier.volume_type = bambu_model::VolumeType::Modifier;
+        modifier
+            .config
+            .insert("sparse_infill_density".into(), "100%".into());
+        let denser = slice_volumes(
+            &[
+                bambu_model::ModelVolume::model_part("body", body, 1),
+                modifier,
+            ],
+            &settings,
+        )
+        .unwrap();
+        let mid_open = &open.layers[open.layers.len() / 2];
+        let mid_mod = &denser.layers[denser.layers.len() / 2];
+        let fill =
+            |layer: &Layer| polyline_len_mm(&layer.infill) + polyline_len_mm(&layer.solid_infill);
+        let a = fill(mid_open);
+        let b = fill(mid_mod);
+        assert!(
+            b > a * 1.5,
+            "100% modifier should add infill: open={a} dense={b}"
+        );
+        assert_eq!(mid_mod.region_infill.len(), 2);
+    }
+
+    #[test]
+    fn parameter_modifier_adds_inner_walls() {
+        let body = TriangleMesh::cube(20.0);
+        let mut inset = TriangleMesh::cube(10.0);
+        inset.translate(glam::Vec3::new(5.0, 5.0, 5.0));
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.wall_loops = 2;
+        let open = slice_mesh(&body, &settings).unwrap();
+        let mut modifier = bambu_model::ModelVolume::model_part("shells", inset, 2);
+        modifier.volume_type = bambu_model::VolumeType::Modifier;
+        modifier.config.insert("wall_loops".into(), "6".into());
+        let thick = slice_volumes(
+            &[
+                bambu_model::ModelVolume::model_part("body", body, 1),
+                modifier,
+            ],
+            &settings,
+        )
+        .unwrap();
+        let a = polyline_len_mm(&open.layers[open.layers.len() / 2].inner_walls);
+        let b = polyline_len_mm(&thick.layers[thick.layers.len() / 2].inner_walls);
+        assert!(b > a * 1.5, "extra walls in modifier: open={a} thick={b}");
+    }
+
+    fn paint_on_y(
+        mesh: &TriangleMesh,
+        y: f32,
+        paint: bambu_model::TrianglePaint,
+    ) -> Vec<bambu_model::TrianglePaint> {
+        mesh.indices
+            .iter()
+            .map(|&idx| {
+                let [a, b, c] = mesh.triangle(idx);
+                if (a.y - y).abs() < 1e-3 && (b.y - y).abs() < 1e-3 && (c.y - y).abs() < 1e-3 {
+                    paint
+                } else {
+                    bambu_model::TrianglePaint::None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn painted_seam_moves_start_off_rear() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.seam = SeamPosition::Aligned;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let open = slice_mesh(&mesh, &settings).unwrap();
+        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        part.triangle_seam = paint_on_y(&mesh, 0.0, bambu_model::TrianglePaint::Enforcer);
+        let painted = slice_volumes(&[part], &settings).unwrap();
+        let mid_open = &open.layers[open.layers.len() / 2];
+        let mid_paint = &painted.layers[painted.layers.len() / 2];
+        let open_y = mid_open.outer_walls[0][0].to_mm().1;
+        let paint_y = mid_paint.outer_walls[0][0].to_mm().1;
+        assert!(
+            open_y > 15.0,
+            "aligned default should sit on +Y, got {open_y}"
+        );
+        assert!(
+            paint_y < 5.0,
+            "painted seam should sit on Y=0, got {paint_y}"
+        );
+    }
+
+    #[test]
+    fn painted_fuzzy_skin_jitters_without_global_fuzzy() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.fuzzy_skin = FuzzySkinType::None;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let open = slice_mesh(&mesh, &settings).unwrap();
+        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        part.triangle_fuzzy_skin = paint_on_y(&mesh, 0.0, bambu_model::TrianglePaint::Enforcer);
+        let painted = slice_volumes(&[part], &settings).unwrap();
+        let mid_open = &open.layers[open.layers.len() / 2];
+        let mid_paint = &painted.layers[painted.layers.len() / 2];
+        let open_n = mid_open.outer_walls.iter().map(|w| w.len()).sum::<usize>();
+        let paint_n = mid_paint.outer_walls.iter().map(|w| w.len()).sum::<usize>();
+        assert!(
+            paint_n > open_n * 4,
+            "painted fuzzy should densify walls: open={open_n} painted={paint_n}"
         );
     }
 }

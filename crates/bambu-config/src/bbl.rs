@@ -1,5 +1,6 @@
 //! Load Bambu Lab process JSON (`resources/profiles/BBL/process`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -290,8 +291,70 @@ fn load_inherited(dir: &Path, path: &Path) -> Result<serde_json::Map<String, Val
     Ok(map)
 }
 
+/// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
+/// keys such as `layer_height` and `enable_support` are ignored here.
+pub fn is_region_key(key: &str) -> bool {
+    matches!(
+        key,
+        "line_width"
+            | "wall_loops"
+            | "only_one_wall_top"
+            | "top_one_wall_type"
+            | "sparse_infill_density"
+            | "sparse_infill_pattern"
+            | "seam_position"
+            | "wall_generator"
+            | "min_feature_size"
+            | "min_bead_width"
+            | "fuzzy_skin"
+            | "fuzzy_skin_thickness"
+            | "fuzzy_skin_point_distance"
+            | "fuzzy_skin_first_layer"
+            | "bottom_shell_layers"
+            | "top_shell_layers"
+            | "top_surface_pattern"
+            | "bottom_surface_pattern"
+            | "outer_wall_speed"
+            | "sparse_infill_speed"
+            | "internal_solid_infill_speed"
+            | "ironing_type"
+            | "ironing_pattern"
+            | "ironing_flow"
+            | "ironing_spacing"
+            | "ironing_inset"
+            | "ironing_speed"
+            | "wall_filament"
+            | "sparse_infill_filament"
+            | "solid_infill_filament"
+    )
+}
+
+/// Overlay 3MF / `model_settings.config` key-values onto [`SliceSettings`].
+///
+/// When `region_only` is set, object-level keys are skipped (C++
+/// `apply_to_print_region_config`).
+pub fn apply_config_pairs(
+    settings: &mut SliceSettings,
+    pairs: &BTreeMap<String, String>,
+    region_only: bool,
+) {
+    let mut map = serde_json::Map::new();
+    for (key, value) in pairs {
+        if region_only && !is_region_key(key) {
+            continue;
+        }
+        map.insert(key.clone(), Value::String(value.clone()));
+    }
+    apply_map_onto(settings, &map);
+}
+
 fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     let mut s = SliceSettings::default();
+    apply_map_onto(&mut s, map);
+    s
+}
+
+fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "layer_height") {
         s.layer_height_mm = v;
     }
@@ -475,7 +538,6 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     if let Some(v) = num(map, "ironing_speed") {
         s.ironing_speed_mm_s = v;
     }
-    s
 }
 
 fn text(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -584,6 +646,7 @@ pub fn write_flattened_bbl_profile(
 mod tests {
     use super::*;
     use crate::InfillPattern;
+    use std::collections::BTreeMap;
 
     #[test]
     fn inline_process_json() {
@@ -723,5 +786,23 @@ mod tests {
         assert!(loaded.enable_support);
         assert_eq!(loaded.support_type, crate::SupportType::Tree);
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
+    }
+
+    #[test]
+    fn region_overrides_skip_object_keys() {
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert("sparse_infill_density".into(), "100%".into());
+        pairs.insert("wall_loops".into(), "6".into());
+        pairs.insert("layer_height".into(), "0.08".into());
+        pairs.insert("enable_support".into(), "1".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert!((s.infill_density - 1.0).abs() < 1e-9);
+        assert_eq!(s.wall_loops, 6);
+        assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
+        assert!(!s.enable_support);
+        apply_config_pairs(&mut s, &pairs, false);
+        assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
+        assert!(s.enable_support);
     }
 }
