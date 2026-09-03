@@ -8,7 +8,9 @@
 mod tree;
 
 use bambu_config::{SliceSettings, SupportType};
-use bambu_geom::{difference_polygons, offset_polygons, union_polygons, Polygon};
+use bambu_geom::{
+    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
+};
 use rayon::prelude::*;
 
 use crate::infill;
@@ -18,7 +20,8 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     if !settings.enable_support || layers.len() < 2 {
         return;
     }
-    let overhangs = detect_overhangs(layers, settings);
+    let mut overhangs = detect_overhangs(layers, settings);
+    apply_enforcer_blocker(&mut overhangs, layers);
     match settings.support_type {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
         SupportType::Tree => tree::apply(layers, settings, &overhangs),
@@ -39,6 +42,26 @@ fn detect_overhangs(layers: &[Layer], settings: &SliceSettings) -> Vec<Vec<Polyg
         *slot = difference_polygons(&layers[i].contours, &supported);
     });
     overhangs
+}
+
+/// C++ `SupportAnnotations`: enforcers are 90° contacts (`intersection(lslices, enforcer)
+/// minus lower layer`); blockers trim overhangs.
+fn apply_enforcer_blocker(overhangs: &mut [Vec<Polygon>], layers: &[Layer]) {
+    for i in 0..layers.len() {
+        if i > 0 && !layers[i].support_enforcer.is_empty() {
+            let forced = intersect_polygons(&layers[i].contours, &layers[i].support_enforcer);
+            let below = offset_polygons(&layers[i - 1].contours, 0.05);
+            let forced = difference_polygons(&forced, &below);
+            if !forced.is_empty() {
+                let mut acc = overhangs[i].clone();
+                acc.extend(forced);
+                overhangs[i] = union_polygons(&acc);
+            }
+        }
+        if !layers[i].support_blocker.is_empty() {
+            overhangs[i] = difference_polygons(&overhangs[i], &layers[i].support_blocker);
+        }
+    }
 }
 
 fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {

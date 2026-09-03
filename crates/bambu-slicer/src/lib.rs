@@ -73,6 +73,10 @@ pub struct Layer {
     pub ironing: Vec<Polyline>,
     /// Top-shell polygons (before infill fill), used by ironing.
     pub top_region: Vec<Polygon>,
+    /// Sliced `support_enforcer` volumes at this layer (C++ `slice_support_enforcers`).
+    pub support_enforcer: Vec<Polygon>,
+    /// Sliced `support_blocker` volumes at this layer (C++ `slice_support_blockers`).
+    pub support_blocker: Vec<Polygon>,
 }
 
 impl Layer {
@@ -104,8 +108,15 @@ pub fn slice_mesh(
     Ok(slice_from_contours(contours, settings, Some(mesh)))
 }
 
-/// Slice model-part meshes, then subtract [`bambu_model::VolumeType::Negative`]
-/// contours with Clipper (C++ `PrintObjectSlice` negative volume).
+struct PreparedContours {
+    spec: LayerSpec,
+    contours: Vec<Polygon>,
+    enforcers: Vec<Polygon>,
+    blockers: Vec<Polygon>,
+}
+
+/// Slice model-part meshes, subtract negatives, and keep support enforcer/blocker
+/// contours for [`support::apply`] (C++ `PrintObjectSlice` + `slice_support_volumes`).
 pub fn slice_volumes(
     volumes: &[ModelVolume],
     settings: &SliceSettings,
@@ -120,10 +131,20 @@ pub fn slice_volumes(
         .filter(|v| v.volume_type.is_negative())
         .map(|v| &v.mesh)
         .collect();
+    let enforcers: Vec<&TriangleMesh> = volumes
+        .iter()
+        .filter(|v| v.volume_type.is_support_enforcer())
+        .map(|v| &v.mesh)
+        .collect();
+    let blockers: Vec<&TriangleMesh> = volumes
+        .iter()
+        .filter(|v| v.volume_type.is_support_blocker())
+        .map(|v| &v.mesh)
+        .collect();
     if parts.is_empty() {
         return Err(SlicerError::EmptyMesh);
     }
-    if negatives.is_empty() && parts.len() == 1 {
+    if negatives.is_empty() && parts.len() == 1 && enforcers.is_empty() && blockers.is_empty() {
         return slice_mesh(parts[0], settings);
     }
     let mut merged = TriangleMesh::default();
@@ -131,27 +152,37 @@ pub fn slice_volumes(
         merged.append(part);
     }
     let plan = layer_plan(&merged, settings)?;
-    let contours = plan
+    let layers = plan
         .par_iter()
         .copied()
         .map(|spec| {
             let z = spec.slice_z_mm as f32;
-            let mut pos = Vec::new();
-            for part in &parts {
-                pos.extend(slice_at_z(part, z));
+            let pos = union_slices(&parts, z);
+            let contours = if negatives.is_empty() {
+                pos
+            } else {
+                difference_polygons(&pos, &union_slices(&negatives, z))
+            };
+            PreparedContours {
+                spec,
+                contours,
+                enforcers: union_slices(&enforcers, z),
+                blockers: union_slices(&blockers, z),
             }
-            let pos = union_polygons(&pos);
-            if negatives.is_empty() {
-                return (spec, pos);
-            }
-            let mut neg = Vec::new();
-            for hole in &negatives {
-                neg.extend(slice_at_z(hole, z));
-            }
-            (spec, difference_polygons(&pos, &union_polygons(&neg)))
         })
         .collect();
-    Ok(slice_from_contours(contours, settings, Some(&merged)))
+    Ok(slice_prepared(layers, settings, Some(&merged)))
+}
+
+fn union_slices(meshes: &[&TriangleMesh], z: f32) -> Vec<Polygon> {
+    if meshes.is_empty() {
+        return Vec::new();
+    }
+    let mut acc = Vec::new();
+    for mesh in meshes {
+        acc.extend(slice_at_z(mesh, z));
+    }
+    union_polygons(&acc)
 }
 
 /// Pair GPU/CPU contour samples with the [`LayerSpec`] plan (same order as `slice_z`).
@@ -172,22 +203,44 @@ pub fn slice_from_contours(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
 ) -> SliceResult {
+    let layers = layers
+        .into_iter()
+        .map(|(spec, contours)| PreparedContours {
+            spec,
+            contours,
+            enforcers: Vec::new(),
+            blockers: Vec::new(),
+        })
+        .collect();
+    slice_prepared(layers, settings, mesh)
+}
+
+fn slice_prepared(
+    layers: Vec<PreparedContours>,
+    settings: &SliceSettings,
+    mesh: Option<&TriangleMesh>,
+) -> SliceResult {
     let prepared: Vec<_> = layers
         .into_par_iter()
-        .map(|(spec, contours)| prepare_layer_contours(spec, contours, settings))
+        .map(|mut layer| {
+            let (spec, contours) = prepare_layer_contours(layer.spec, layer.contours, settings);
+            layer.spec = spec;
+            layer.contours = contours;
+            layer
+        })
         .collect();
     let prepared: Vec<_> = prepared
         .into_iter()
-        .filter(|(_, contours)| !contours.is_empty())
+        .filter(|layer| !layer.contours.is_empty())
         .collect();
 
     let mut out = Vec::new();
     let mut seam_hint = None;
     for i in 0..prepared.len() {
-        let upper = prepared.get(i + 1).map(|(_, c)| c.as_slice());
-        let peri = perimeters::generate(&prepared[i].1, settings, seam_hint, upper);
+        let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
+        let peri = perimeters::generate(&prepared[i].contours, settings, seam_hint, upper);
         seam_hint = peri.seam_hint;
-        let (spec, contours) = prepared[i].clone();
+        let spec = prepared[i].spec;
         let mut outer_walls = peri.outer;
         let mut inner_walls = peri.inner;
         fuzzy::apply_walls(
@@ -202,7 +255,7 @@ pub fn slice_from_contours(
             index: i,
             height_mm: spec.height_mm,
             print_z_mm: spec.print_z_mm,
-            contours,
+            contours: prepared[i].contours.clone(),
             outer_walls,
             inner_walls,
             infill_region: peri.infill_region,
@@ -218,6 +271,8 @@ pub fn slice_from_contours(
             brim: Vec::new(),
             ironing: Vec::new(),
             top_region: Vec::new(),
+            support_enforcer: prepared[i].enforcers.clone(),
+            support_blocker: prepared[i].blockers.clone(),
         });
     }
 
@@ -1046,6 +1101,83 @@ mod tests {
             "expected a hole ring, solid={} cut={}",
             mid_solid.contours.len(),
             mid_cut.contours.len()
+        );
+    }
+
+    fn support_fill_layers(result: &SliceResult) -> usize {
+        result
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .count()
+    }
+
+    #[test]
+    fn support_blocker_clears_table_overhang() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let open = slice_mesh(&mesh, &settings).unwrap();
+        let open_n = support_fill_layers(&open);
+        assert!(open_n >= 10, "expected auto support, got {open_n}");
+        let mut blocker = bambu_model::ModelVolume::model_part(
+            "block",
+            TriangleMesh::aabb_box(
+                glam::Vec3::new(-1.0, -1.0, 7.5),
+                glam::Vec3::new(25.0, 25.0, 13.0),
+            ),
+            2,
+        );
+        blocker.volume_type = bambu_model::VolumeType::SupportBlocker;
+        let blocked = slice_volumes(
+            &[
+                bambu_model::ModelVolume::model_part("table", mesh, 1),
+                blocker,
+            ],
+            &settings,
+        )
+        .unwrap();
+        let blocked_n = support_fill_layers(&blocked);
+        assert!(
+            blocked_n < open_n / 2,
+            "blocker should drop support: open={open_n} blocked={blocked_n}"
+        );
+    }
+
+    #[test]
+    fn support_enforcer_forces_steep_overhang() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.support_threshold_angle_deg = 89.0;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let auto = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(
+            support_fill_layers(&auto),
+            0,
+            "89° threshold should skip the table slab"
+        );
+        let mut enforcer = bambu_model::ModelVolume::model_part(
+            "enforce",
+            TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(24.0, 24.0, 12.0)),
+            2,
+        );
+        enforcer.volume_type = bambu_model::VolumeType::SupportEnforcer;
+        let forced = slice_volumes(
+            &[
+                bambu_model::ModelVolume::model_part("table", mesh, 1),
+                enforcer,
+            ],
+            &settings,
+        )
+        .unwrap();
+        let n = support_fill_layers(&forced);
+        assert!(
+            n >= 10,
+            "enforcer should restore support under the slab, got {n}"
         );
     }
 }

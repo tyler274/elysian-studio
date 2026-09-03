@@ -516,7 +516,10 @@ pub fn slice_file(
     }
     let plate_idx = (plate - 1) as usize;
     let volumes = model.world_volumes_for_plate(plate_idx);
-    if volumes.iter().any(|v| v.volume_type.is_negative()) {
+    if volumes
+        .iter()
+        .any(|v| v.volume_type.is_negative() || v.volume_type.is_support_modifier())
+    {
         if !volumes.iter().any(|v| v.volume_type.is_model_part()) {
             return Err(CliError::Message(format!(
                 "plate {plate} has no printable volumes ({} plate(s))",
@@ -524,7 +527,7 @@ pub fn slice_file(
             )));
         }
         if force_gpu {
-            tracing::warn!("negative volumes: Clipper difference stays on CPU");
+            tracing::warn!("volume modifiers: Clipper booleans stay on CPU");
         }
         let sliced = slice_volumes(&volumes, settings)?;
         tracing::info!("sliced {} layers (cpu)", sliced.layers.len());

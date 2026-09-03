@@ -52,6 +52,18 @@ impl VolumeType {
     pub fn is_negative(self) -> bool {
         matches!(self, Self::Negative)
     }
+
+    pub fn is_support_enforcer(self) -> bool {
+        matches!(self, Self::SupportEnforcer)
+    }
+
+    pub fn is_support_blocker(self) -> bool {
+        matches!(self, Self::SupportBlocker)
+    }
+
+    pub fn is_support_modifier(self) -> bool {
+        self.is_support_enforcer() || self.is_support_blocker()
+    }
 }
 
 /// One mesh of a [`ModelObject`] (C++ `ModelVolume`).

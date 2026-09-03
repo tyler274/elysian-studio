@@ -1090,4 +1090,51 @@ mod tests {
         let aabb = loaded.merged_mesh().unwrap().aabb().unwrap();
         assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
     }
+
+    #[test]
+    fn support_modifier_parts_load_from_settings() {
+        let xml = format!(
+            r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}">
+  <resources>
+{}
+{}
+    <object id="3" name="painted" type="model">
+      <components>
+        <component objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+        <component objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>
+      </components>
+    </object>
+  </resources>
+  <build>
+    <item objectid="3"/>
+  </build>
+</model>"#,
+            cube_mesh_xml(1, "body", 20.0, Vec3::ZERO),
+            cube_mesh_xml(2, "paint", 10.0, Vec3::new(5.0, 5.0, 5.0)),
+        );
+        let settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="3">
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="body"/>
+    </part>
+    <part id="2" subtype="support_enforcer">
+      <metadata key="name" value="paint"/>
+    </part>
+  </object>
+</config>"#;
+        let model = load_3mf_bytes(&pack_files(&[
+            (MODEL_PATH, &xml),
+            (MODEL_SETTINGS_PATH, settings),
+        ]))
+        .unwrap();
+        assert_eq!(model.objects[0].volumes.len(), 2);
+        assert_eq!(
+            model.objects[0].volumes[1].volume_type,
+            bambu_model::VolumeType::SupportEnforcer
+        );
+        let aabb = model.merged_mesh().unwrap().aabb().unwrap();
+        assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
+    }
 }
