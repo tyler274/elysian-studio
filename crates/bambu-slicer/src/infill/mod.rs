@@ -1,6 +1,6 @@
 //! Sparse infill patterns (classic Slic3r / Bambu set).
 
-use bambu_config::{InfillPattern, SliceSettings};
+use bambu_config::{InfillPattern, SliceSettings, SurfacePattern};
 use bambu_geom::{offset_polygons, scale, Point, Polygon, Polyline};
 
 use crate::clip::clip_polylines;
@@ -44,16 +44,42 @@ pub fn generate(
 }
 
 pub fn rectilinear(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, layer_index, false)
+    scanlines(polygons, spacing_mm, layer_index, false, true)
 }
 
-/// 100% rectilinear fill, direction alternating each layer.
+/// 100% rectilinear fill, direction alternating each layer. Odd lines reverse (zig-zag).
 pub fn solid(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, 0, layer_index.is_multiple_of(2))
+    scanlines(polygons, spacing_mm, 0, layer_index.is_multiple_of(2), true)
+}
+
+/// Solid fill with every scanline in the same direction (C++ `params.monotonic`).
+pub fn solid_monotonic(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
+    scanlines(
+        polygons,
+        spacing_mm,
+        0,
+        layer_index.is_multiple_of(2),
+        false,
+    )
+}
+
+pub fn solid_surface(
+    polygons: &[Polygon],
+    spacing_mm: f64,
+    layer_index: usize,
+    pattern: SurfacePattern,
+) -> Vec<Polyline> {
+    match pattern {
+        SurfacePattern::Concentric => concentric(polygons, spacing_mm),
+        SurfacePattern::Rectilinear => solid(polygons, spacing_mm, layer_index),
+        SurfacePattern::Monotonic | SurfacePattern::MonotonicLine => {
+            solid_monotonic(polygons, spacing_mm, layer_index)
+        }
+    }
 }
 
 fn vertical(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, layer_index, true)
+    scanlines(polygons, spacing_mm, layer_index, true, true)
 }
 
 fn scanlines(
@@ -61,6 +87,7 @@ fn scanlines(
     spacing_mm: f64,
     layer_index: usize,
     vertical: bool,
+    zigzag: bool,
 ) -> Vec<Polyline> {
     if polygons.is_empty() || !spacing_mm.is_finite() || spacing_mm <= 0.0 {
         return Vec::new();
@@ -111,9 +138,11 @@ fn scanlines(
         v += spacing;
     }
 
-    for (i, line) in lines.iter_mut().enumerate() {
-        if i % 2 == 1 {
-            line.reverse();
+    if zigzag {
+        for (i, line) in lines.iter_mut().enumerate() {
+            if i % 2 == 1 {
+                line.reverse();
+            }
         }
     }
     lines

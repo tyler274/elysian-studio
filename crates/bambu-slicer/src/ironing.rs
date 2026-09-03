@@ -30,7 +30,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         }
         layer.ironing = match settings.ironing_pattern {
             IroningPattern::Concentric => infill::concentric(&inset_area, spacing),
-            IroningPattern::Rectilinear => infill::solid(&inset_area, spacing, i),
+            IroningPattern::Rectilinear => infill::solid_monotonic(&inset_area, spacing, i),
         };
     }
 }

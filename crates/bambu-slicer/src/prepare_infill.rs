@@ -74,8 +74,14 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         rest = difference_polygons(&rest, &bottom[i]);
 
         layers[i].top_region = top[i].clone();
-        layers[i].top_surface = infill::solid(&top[i], spacing, i);
-        let bottom_paths = infill::solid(&bottom[i], spacing, i.wrapping_add(1));
+        layers[i].top_surface =
+            infill::solid_surface(&top[i], spacing, i, settings.top_surface_pattern);
+        let bottom_paths = infill::solid_surface(
+            &bottom[i],
+            spacing,
+            i.wrapping_add(1),
+            settings.bottom_surface_pattern,
+        );
         if i == 0 {
             layers[i].bottom_surface = bottom_paths;
         } else {

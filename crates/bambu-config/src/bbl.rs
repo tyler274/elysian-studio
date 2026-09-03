@@ -6,7 +6,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings, WallGenerator,
+    InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings, SurfacePattern,
+    WallGenerator,
 };
 
 #[derive(Debug, Error)]
@@ -73,6 +74,12 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     if let Some(v) = num(map, "elefant_foot_compensation") {
         s.elephant_foot_mm = v.max(0.0);
     }
+    if let Some(v) = num(map, "xy_contour_compensation") {
+        s.xy_contour_compensation_mm = v;
+    }
+    if let Some(v) = num(map, "xy_hole_compensation") {
+        s.xy_hole_compensation_mm = v;
+    }
     if let Some(v) = num(map, "line_width") {
         s.line_width_mm = v;
     }
@@ -126,6 +133,16 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     }
     if let Some(v) = u32_val(map, "top_shell_layers") {
         s.top_shell_layers = v;
+    }
+    if let Some(name) = text(map, "top_surface_pattern") {
+        if let Some(p) = SurfacePattern::from_name(&name) {
+            s.top_surface_pattern = p;
+        }
+    }
+    if let Some(name) = text(map, "bottom_surface_pattern") {
+        if let Some(p) = SurfacePattern::from_name(&name) {
+            s.bottom_surface_pattern = p;
+        }
     }
     if let Some(v) = num(map, "outer_wall_speed") {
         s.print_speed_mm_s = v;
@@ -333,10 +350,14 @@ mod tests {
         assert!((s.ironing_flow - 0.10).abs() < 1e-9);
         assert!((s.elephant_foot_mm - 0.15).abs() < 1e-9);
         assert!(!s.precise_z_height);
+        assert_eq!(s.top_surface_pattern, crate::SurfacePattern::MonotonicLine);
+        assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
         assert_eq!(baked.infill_pattern, s.infill_pattern);
+        assert_eq!(baked.top_surface_pattern, s.top_surface_pattern);
+        assert_eq!(baked.bottom_surface_pattern, s.bottom_surface_pattern);
         assert!((baked.infill_density - s.infill_density).abs() < 1e-9);
         assert!((baked.brim_width_mm - s.brim_width_mm).abs() < 1e-9);
         assert!((baked.elephant_foot_mm - s.elephant_foot_mm).abs() < 1e-9);

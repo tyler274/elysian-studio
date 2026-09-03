@@ -13,7 +13,9 @@ mod steps;
 mod support;
 
 use bambu_config::SliceSettings;
-use bambu_geom::{offset_polygons, union_polygons, Polygon, Polyline, TriangleMesh};
+use bambu_geom::{
+    difference_polygons, offset_polygons, union_polygons, Point, Polygon, Polyline, TriangleMesh,
+};
 use thiserror::Error;
 
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
@@ -107,6 +109,11 @@ pub fn slice_from_contours(
     let mut index = 0usize;
     for (spec, mut contours) in layers {
         contours = union_polygons(&contours);
+        contours = compensate_xy(
+            &contours,
+            settings.xy_contour_compensation_mm,
+            settings.xy_hole_compensation_mm,
+        );
         if spec.index == 0 && settings.elephant_foot_mm > 1e-9 {
             let shrunk = offset_polygons(&contours, -settings.elephant_foot_mm);
             if !shrunk.is_empty() {
@@ -159,6 +166,49 @@ pub fn slice_from_contours(
     SliceResult { layers: out }
 }
 
+/// Bambu `_shrink_contour_holes`: offset outer rings by `contour_mm` and holes
+/// by `-hole_mm` (positive hole compensation enlarges holes).
+fn compensate_xy(polygons: &[Polygon], contour_mm: f64, hole_mm: f64) -> Vec<Polygon> {
+    if contour_mm.abs() < 1e-9 && hole_mm.abs() < 1e-9 {
+        return polygons.to_vec();
+    }
+    let mut outers = Vec::new();
+    let mut holes = Vec::new();
+    for (i, poly) in polygons.iter().enumerate() {
+        let c = ring_centroid(poly);
+        if clip::point_in_polygons_skip(c, polygons, i) {
+            holes.push(poly.clone());
+        } else {
+            outers.push(poly.clone());
+        }
+    }
+    let mut acc = if contour_mm.abs() < 1e-9 {
+        outers
+    } else {
+        offset_polygons(&outers, contour_mm)
+    };
+    if acc.is_empty() {
+        return polygons.to_vec();
+    }
+    if !holes.is_empty() {
+        let hole_offs = if hole_mm.abs() < 1e-9 {
+            holes
+        } else {
+            offset_polygons(&holes, -hole_mm)
+        };
+        acc = difference_polygons(&acc, &hole_offs);
+    }
+    union_polygons(&acc)
+}
+
+fn ring_centroid(poly: &[Point]) -> Point {
+    let n = poly.len().max(1) as i64;
+    Point::new(
+        poly.iter().map(|p| p.x).sum::<i64>() / n,
+        poly.iter().map(|p| p.y).sum::<i64>() / n,
+    )
+}
+
 pub fn contour_area_mm2(poly: &Polygon) -> f64 {
     if poly.len() < 3 {
         return 0.0;
@@ -177,7 +227,7 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::{InfillPattern, SeamPosition, SliceSettings};
+    use bambu_config::{InfillPattern, SeamPosition, SliceSettings, SurfacePattern};
     use bambu_geom::TriangleMesh;
 
     #[test]
@@ -547,6 +597,64 @@ mod tests {
         assert!(
             support_len < adaptive_len,
             "support cubic {support_len} should be sparser than adaptive {adaptive_len}"
+        );
+    }
+
+    fn scanline_dx_signs(paths: &[Polyline]) -> Vec<i32> {
+        paths
+            .iter()
+            .filter(|pl| pl.len() >= 2)
+            .map(|pl| {
+                let dx = pl[pl.len() - 1].x - pl[0].x;
+                dx.signum() as i32
+            })
+            .filter(|s| *s != 0)
+            .collect()
+    }
+
+    #[test]
+    fn monotonic_top_scanlines_share_direction() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut zigzag = SliceSettings::default();
+        zigzag.top_surface_pattern = SurfacePattern::Rectilinear;
+        let mut monotonic = zigzag.clone();
+        monotonic.top_surface_pattern = SurfacePattern::MonotonicLine;
+        let a = slice_mesh(&mesh, &zigzag).unwrap();
+        let b = slice_mesh(&mesh, &monotonic).unwrap();
+        let top_z = a.layers.last().unwrap();
+        let top_m = b.layers.last().unwrap();
+        let zig = scanline_dx_signs(&top_z.top_surface);
+        let mono = scanline_dx_signs(&top_m.top_surface);
+        assert!(
+            zig.iter().any(|s| *s < 0) && zig.iter().any(|s| *s > 0),
+            "zig-zag top should reverse every other line: {zig:?}"
+        );
+        assert!(
+            !mono.is_empty() && mono.iter().all(|s| *s == mono[0]),
+            "monotonic top should keep one direction: {mono:?}"
+        );
+    }
+
+    #[test]
+    fn xy_contour_compensation_grows_all_layers() {
+        let mesh = TriangleMesh::cube(20.0);
+        let plain = SliceSettings::default();
+        let mut grown = plain.clone();
+        grown.xy_contour_compensation_mm = 0.4;
+        grown.elephant_foot_mm = 0.0;
+        let a = slice_mesh(&mesh, &plain).unwrap();
+        let b = slice_mesh(&mesh, &grown).unwrap();
+        let area = |layers: &[Layer], i: usize| {
+            layers[i].contours.iter().map(contour_area_mm2).sum::<f64>()
+        };
+        assert!(
+            area(&b.layers, 0) > area(&a.layers, 0) + 5.0,
+            "first layer should grow"
+        );
+        let mid = a.layers.len() / 2;
+        assert!(
+            area(&b.layers, mid) > area(&a.layers, mid) + 5.0,
+            "inner layers should grow"
         );
     }
 }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bambu_config::{
     bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, IroningType, SeamPosition,
-    SliceSettings,
+    SliceSettings, SurfacePattern,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -40,6 +40,8 @@ pub enum CliError {
     Seam(String),
     #[error("unknown ironing '{0}' (off|top|topmost|solid)")]
     Ironing(String),
+    #[error("unknown surface pattern '{0}' (rectilinear|monotonic|monotonicline|concentric)")]
+    SurfacePattern(String),
     #[error("{0}")]
     Message(String),
 }
@@ -55,6 +57,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Slice an STL or 3MF to G-code (Vulkan plane intersection when available).
     Slice {
@@ -107,6 +110,18 @@ enum Commands {
         /// First-layer inward offset in millimetres (`elefant_foot_compensation`).
         #[arg(long)]
         elephant_foot: Option<f64>,
+        /// Outer contour XY size compensation, millimetres (`xy_contour_compensation`).
+        #[arg(long)]
+        xy_contour: Option<f64>,
+        /// Hole XY size compensation, millimetres (`xy_hole_compensation`).
+        #[arg(long)]
+        xy_hole: Option<f64>,
+        /// Top shell fill (`top_surface_pattern`).
+        #[arg(long)]
+        top_pattern: Option<String>,
+        /// Bottom shell fill (`bottom_surface_pattern`).
+        #[arg(long)]
+        bottom_pattern: Option<String>,
         /// Bambu `precise_z_height`: retune the last five layers to the object top.
         #[arg(long)]
         precise_z: bool,
@@ -246,6 +261,10 @@ fn run() -> Result<(), CliError> {
             top,
             ironing,
             elephant_foot,
+            xy_contour,
+            xy_hole,
+            top_pattern,
+            bottom_pattern,
             precise_z,
             cpu,
             gpu,
@@ -307,6 +326,20 @@ fn run() -> Result<(), CliError> {
             }
             if let Some(mm) = elephant_foot {
                 slice_settings.elephant_foot_mm = mm.max(0.0);
+            }
+            if let Some(mm) = xy_contour {
+                slice_settings.xy_contour_compensation_mm = mm;
+            }
+            if let Some(mm) = xy_hole {
+                slice_settings.xy_hole_compensation_mm = mm;
+            }
+            if let Some(name) = top_pattern {
+                slice_settings.top_surface_pattern =
+                    SurfacePattern::from_name(&name).ok_or(CliError::SurfacePattern(name))?;
+            }
+            if let Some(name) = bottom_pattern {
+                slice_settings.bottom_surface_pattern =
+                    SurfacePattern::from_name(&name).ok_or(CliError::SurfacePattern(name))?;
             }
             if precise_z {
                 slice_settings.precise_z_height = true;

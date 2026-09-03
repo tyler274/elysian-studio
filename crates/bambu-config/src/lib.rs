@@ -129,6 +129,43 @@ impl IroningPattern {
     }
 }
 
+/// C++ `top_surface_pattern` / `bottom_surface_pattern`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SurfacePattern {
+    #[default]
+    Rectilinear,
+    /// Same-direction scanlines (`ipMonotonic`).
+    Monotonic,
+    /// Monotonic without perimeter anchors (`ipMonotonicLine`, BBL default top).
+    MonotonicLine,
+    Concentric,
+}
+
+impl SurfacePattern {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "rectilinear" | "line" | "zigzag" | "zig-zag" => Self::Rectilinear,
+            "monotonic" => Self::Monotonic,
+            "monotonicline" | "monotonic_line" | "monotonic line" => Self::MonotonicLine,
+            "concentric" => Self::Concentric,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rectilinear => "rectilinear",
+            Self::Monotonic => "monotonic",
+            Self::MonotonicLine => "monotonicline",
+            Self::Concentric => "concentric",
+        }
+    }
+
+    pub fn is_monotonic(self) -> bool {
+        matches!(self, Self::Monotonic | Self::MonotonicLine)
+    }
+}
+
 /// FFF settings used by the slice pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SliceSettings {
@@ -143,6 +180,10 @@ pub struct SliceSettings {
     pub precise_z_height: bool,
     /// First-layer inward offset (`elefant_foot_compensation`). 0 disables.
     pub elephant_foot_mm: f64,
+    /// Grow/shrink outer contours (`xy_contour_compensation`). 0 disables.
+    pub xy_contour_compensation_mm: f64,
+    /// Enlarge/shrink holes (`xy_hole_compensation`). Positive makes holes bigger.
+    pub xy_hole_compensation_mm: f64,
     pub line_width_mm: f64,
     pub wall_loops: u32,
     pub infill_density: f64,
@@ -175,6 +216,10 @@ pub struct SliceSettings {
     pub bottom_shell_layers: u32,
     /// Solid layers at the top of the part (0 disables).
     pub top_shell_layers: u32,
+    /// C++ `top_surface_pattern` (BBL 0.20 is `monotonicline`).
+    pub top_surface_pattern: SurfacePattern,
+    /// C++ `bottom_surface_pattern` (BBL common is `monotonic`).
+    pub bottom_surface_pattern: SurfacePattern,
     pub solid_infill_speed_mm_s: f64,
     pub ironing_type: IroningType,
     pub ironing_pattern: IroningPattern,
@@ -195,6 +240,8 @@ impl Default for SliceSettings {
             max_layer_height_mm: 0.3,
             precise_z_height: false,
             elephant_foot_mm: 0.0,
+            xy_contour_compensation_mm: 0.0,
+            xy_hole_compensation_mm: 0.0,
             line_width_mm: 0.42,
             wall_loops: 2,
             infill_density: 0.20,
@@ -221,6 +268,8 @@ impl Default for SliceSettings {
             support_interface_layers: 2,
             bottom_shell_layers: 3,
             top_shell_layers: 3,
+            top_surface_pattern: SurfacePattern::Rectilinear,
+            bottom_surface_pattern: SurfacePattern::Rectilinear,
             solid_infill_speed_mm_s: 80.0,
             ironing_type: IroningType::NoIroning,
             ironing_pattern: IroningPattern::Rectilinear,
@@ -265,6 +314,8 @@ impl SliceSettings {
             skirt_loops: 0,
             brim_width_mm: 5.0,
             top_shell_layers: 5,
+            top_surface_pattern: SurfacePattern::MonotonicLine,
+            bottom_surface_pattern: SurfacePattern::Monotonic,
             elephant_foot_mm: 0.15,
             travel_speed_mm_s: 400.0,
             print_speed_mm_s: 200.0,

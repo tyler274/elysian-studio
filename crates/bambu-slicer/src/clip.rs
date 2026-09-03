@@ -36,6 +36,19 @@ pub fn point_in_polygons(p: Point, polygons: &[Polygon]) -> bool {
     inside
 }
 
+pub fn point_in_polygons_skip(p: Point, polygons: &[Polygon], skip: usize) -> bool {
+    let mut inside = false;
+    for (i, poly) in polygons.iter().enumerate() {
+        if i == skip {
+            continue;
+        }
+        if point_in_polygon(poly, p) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
 fn lerp(a: Point, b: Point, t: f64) -> Point {
     Point::new(
         a.x + ((b.x - a.x) as f64 * t).round() as i64,
