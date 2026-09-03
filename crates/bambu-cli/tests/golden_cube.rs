@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bambu_config::{
-    bbl_oracle_paths, load_bbl_process, write_flattened_bbl_profile, SliceSettings,
+    bbl_oracle_paths, load_bbl_process, overlay_bbl_profile, write_flattened_bbl_profile,
+    SliceSettings,
 };
 use bambu_gcode::{
     assert_matches_cpp, layer_stats, parse_config_comments, parse_gcode, write_gcode,
@@ -66,7 +67,8 @@ fn cube_matches_cpp_bambu_studio() {
     write_flattened_bbl_profile(&profiles.machine, &machine_flat).expect("flatten machine");
     write_flattened_bbl_profile(&profiles.filament, &filament_flat).expect("flatten filament");
 
-    let settings = load_bbl_process(&profiles.process).expect("load BBL process");
+    let mut settings = load_bbl_process(&profiles.process).expect("load BBL process");
+    overlay_bbl_profile(&mut settings, &profiles.filament).expect("overlay filament");
     assert_eq!(settings.wall_loops, 2);
     assert!((settings.infill_density - 0.15).abs() < 1e-9);
     let sliced = slice_mesh(&TriangleMesh::cube(20.0), &settings).expect("rust slice");

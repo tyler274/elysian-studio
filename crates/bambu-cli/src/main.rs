@@ -4,8 +4,9 @@ use bambu_alloc as _;
 use std::path::PathBuf;
 
 use bambu_config::{
-    bbl_oracle_paths, load_bbl_process, ConfigError, FuzzySkinType, InfillPattern, IroningType,
-    SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+    bbl_oracle_paths, load_bbl_process, overlay_bbl_profile, ConfigError, FuzzySkinType,
+    InfillPattern, IroningType, SeamPosition, SliceSettings, SupportType, SurfacePattern,
+    TopOneWallType, WallGenerator,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -306,7 +307,9 @@ fn run() -> Result<(), CliError> {
                 load_bbl_process(path)?
             } else if bbl_0_20 {
                 if let Some(paths) = bbl_oracle_paths() {
-                    load_bbl_process(&paths.process)?
+                    let mut s = load_bbl_process(&paths.process)?;
+                    overlay_bbl_profile(&mut s, &paths.filament)?;
+                    s
                 } else {
                     SliceSettings::bbl_0_20()
                 }

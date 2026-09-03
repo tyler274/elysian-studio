@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 pub use bbl::{
     apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, is_region_key,
-    load_bbl_process, project_settings_json, settings_from_json, write_flattened_bbl_profile,
-    BblOraclePaths, ConfigError,
+    load_bbl_process, overlay_bbl_profile, project_settings_json, settings_from_json,
+    write_flattened_bbl_profile, BblOraclePaths, ConfigError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -435,6 +435,22 @@ pub struct SliceSettings {
     pub travel_acceleration_mm_s2: f64,
     /// C++ `filament_density` (g/cm³). Generic PLA is 1.24.
     pub filament_density_g_cm3: f64,
+    /// C++ `fan_min_speed` (percent).
+    pub fan_min_speed: u32,
+    /// C++ `fan_max_speed` (percent).
+    pub fan_max_speed: u32,
+    /// C++ `close_fan_the_first_x_layers`.
+    pub close_fan_the_first_x_layers: u32,
+    /// C++ `first_x_layer_part_fan_speed` (percent). Default 0.
+    pub first_x_layer_part_fan_speed: u32,
+    /// C++ `full_fan_speed_layer`. 0 disables the ramp.
+    pub full_fan_speed_layer: u32,
+    /// C++ `fan_cooling_layer_time` (seconds).
+    pub fan_cooling_layer_time_s: f64,
+    /// C++ `slow_down_layer_time` (seconds). Also the full-fan time threshold.
+    pub slow_down_layer_time_s: f64,
+    /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
+    pub reduce_fan_stop_start_freq: bool,
     /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
@@ -520,6 +536,14 @@ impl Default for SliceSettings {
             default_acceleration_mm_s2: 10000.0,
             travel_acceleration_mm_s2: 10000.0,
             filament_density_g_cm3: 1.24,
+            fan_min_speed: 20,
+            fan_max_speed: 100,
+            close_fan_the_first_x_layers: 1,
+            first_x_layer_part_fan_speed: 0,
+            full_fan_speed_layer: 0,
+            fan_cooling_layer_time_s: 60.0,
+            slow_down_layer_time_s: 8.0,
+            reduce_fan_stop_start_freq: false,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
         }
@@ -619,6 +643,12 @@ impl SliceSettings {
             overhang_speed_mm_s: 10.0,
             bridge_speed_mm_s: 50.0,
             top_surface_speed_mm_s: 200.0,
+            fan_min_speed: 100,
+            fan_max_speed: 100,
+            close_fan_the_first_x_layers: 1,
+            fan_cooling_layer_time_s: 100.0,
+            slow_down_layer_time_s: 8.0,
+            reduce_fan_stop_start_freq: true,
             ..Self::default()
         }
     }

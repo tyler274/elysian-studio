@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod cooling;
 mod processor;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -10,6 +11,7 @@ use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
 
+pub use cooling::{apply_part_cooling, part_fan_percent, set_fan_gcode};
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
 
 #[derive(Debug, Error)]
@@ -244,6 +246,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M140 S0")?;
     writeln!(out, "G28 X0 Y0")?;
     writeln!(out, "M84")?;
+    out = apply_part_cooling(&out, settings);
     let stats = process_gcode(&out, settings);
     out.push_str(&stats.footer_lines());
     Ok(out)
@@ -946,5 +949,28 @@ mod tests {
             !gcode.contains(" F1500"),
             "20 mm cube walls are larger than a 6.5 mm radius"
         );
+    }
+
+    #[test]
+    fn pla_emits_part_fan_after_first_layer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::bbl_0_20();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("M106 S0\n"), "first layer fan off");
+        assert!(gcode.contains("M106 S255\n"), "later layers full PLA fan");
+        let first_fan = gcode.find("M106 S0\n").expect("closed fan");
+        let full_fan = gcode.find("M106 S255\n").expect("full fan");
+        assert!(first_fan < full_fan);
+    }
+
+    #[test]
+    fn default_cube_closes_fan_on_layer_zero() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("M106 S0\n"));
+        assert!(gcode.contains("M106 S"));
     }
 }

@@ -29,6 +29,18 @@ pub fn load_bbl_process(path: impl AsRef<Path>) -> Result<SliceSettings, ConfigE
     Ok(settings_from_map(&map))
 }
 
+/// Overlay another BBL JSON (filament, machine) onto existing settings.
+pub fn overlay_bbl_profile(
+    settings: &mut SliceSettings,
+    path: impl AsRef<Path>,
+) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let map = load_inherited(dir, path)?;
+    apply_map_onto(settings, &map);
+    Ok(())
+}
+
 /// Parse Bambu `project_settings.config` / process JSON (no `inherits`).
 pub fn settings_from_json(text: &str) -> Result<SliceSettings, ConfigError> {
     let value: Value = serde_json::from_str(text)?;
@@ -334,6 +346,46 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "filament_density",
         num_str(settings.filament_density_g_cm3),
+    );
+    insert(
+        &mut map,
+        "fan_min_speed",
+        settings.fan_min_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "fan_max_speed",
+        settings.fan_max_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "close_fan_the_first_x_layers",
+        settings.close_fan_the_first_x_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "first_x_layer_part_fan_speed",
+        settings.first_x_layer_part_fan_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "full_fan_speed_layer",
+        settings.full_fan_speed_layer.to_string(),
+    );
+    insert(
+        &mut map,
+        "fan_cooling_layer_time",
+        num_str(settings.fan_cooling_layer_time_s),
+    );
+    insert(
+        &mut map,
+        "slow_down_layer_time",
+        num_str(settings.slow_down_layer_time_s),
+    );
+    insert_bool(
+        &mut map,
+        "reduce_fan_stop_start_freq",
+        settings.reduce_fan_stop_start_freq,
     );
     insert(
         &mut map,
@@ -706,6 +758,30 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "filament_density") {
         s.filament_density_g_cm3 = v.max(0.0);
     }
+    if let Some(v) = u32_val(map, "fan_min_speed") {
+        s.fan_min_speed = v.min(100);
+    }
+    if let Some(v) = u32_val(map, "fan_max_speed") {
+        s.fan_max_speed = v.min(100);
+    }
+    if let Some(v) = u32_val(map, "close_fan_the_first_x_layers") {
+        s.close_fan_the_first_x_layers = v;
+    }
+    if let Some(v) = u32_val(map, "first_x_layer_part_fan_speed") {
+        s.first_x_layer_part_fan_speed = v.min(100);
+    }
+    if let Some(v) = u32_val(map, "full_fan_speed_layer") {
+        s.full_fan_speed_layer = v;
+    }
+    if let Some(v) = num(map, "fan_cooling_layer_time") {
+        s.fan_cooling_layer_time_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slow_down_layer_time") {
+        s.slow_down_layer_time_s = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "reduce_fan_stop_start_freq") {
+        s.reduce_fan_stop_start_freq = v;
+    }
     if let Some(v) = num(map, "machine_max_jerk_x").or_else(|| num(map, "machine_max_jerk_y")) {
         s.xy_jerk_mm_s = v.max(0.0);
     }
@@ -957,6 +1033,20 @@ mod tests {
     }
 
     #[test]
+    fn generic_pla_sets_part_cooling() {
+        let paths = bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mut s = SliceSettings::default();
+        overlay_bbl_profile(&mut s, &paths.filament).unwrap();
+        assert_eq!(s.fan_min_speed, 100);
+        assert_eq!(s.fan_max_speed, 100);
+        assert_eq!(s.close_fan_the_first_x_layers, 1);
+        assert!(s.reduce_fan_stop_start_freq);
+        assert!((s.fan_cooling_layer_time_s - 100.0).abs() < 1e-9);
+        assert!((s.slow_down_layer_time_s - 8.0).abs() < 1e-9);
+        assert!((s.filament_density_g_cm3 - 1.24).abs() < 1e-9);
+    }
+
+    #[test]
     fn project_settings_json_roundtrip() {
         let mut src = SliceSettings::default();
         src.layer_height_mm = 0.28;
@@ -978,6 +1068,8 @@ mod tests {
         assert!((loaded.filament_density_g_cm3 - 1.24).abs() < 1e-9);
         assert!(loaded.small_perimeter_speed_is_percent);
         assert!((loaded.small_perimeter_speed - 50.0).abs() < 1e-9);
+        assert_eq!(loaded.fan_min_speed, 20);
+        assert!(!loaded.reduce_fan_stop_start_freq);
     }
 
     #[test]
