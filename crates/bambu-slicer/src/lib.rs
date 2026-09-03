@@ -4,7 +4,7 @@
 //! ironing, classic support fills) use ordered `par_iter` / `par_chunks` so
 //! join-by-index matches `RAYON_NUM_THREADS=1`. Do not `ThreadPoolBuilder::install`
 //! inside a Rayon job. Perimeters stay sequential because `seam_hint` chains
-//! across layers. Lightning infill and downward support columns stay sequential.
+//! across layers. Lightning infill, tree drop, and downward support columns stay sequential.
 //! Tokio is UI/LAN only; wgpu stays on the GPU queue. Clipper2 is per-job — never
 //! share a document across threads.
 //!
@@ -172,7 +172,7 @@ pub fn slice_from_contours(
 
     prepare_infill::apply(&mut out, settings, mesh);
     ironing::apply(&mut out, settings);
-    support::apply_classic(&mut out, settings);
+    support::apply(&mut out, settings);
     raft::apply(&mut out, settings);
     if let Some(first) = out.first() {
         let rafted = settings.raft_layers > 0;
@@ -278,7 +278,8 @@ pub fn contour_area_mm2(poly: &Polygon) -> f64 {
 mod tests {
     use super::*;
     use bambu_config::{
-        FuzzySkinType, InfillPattern, SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
+        FuzzySkinType, InfillPattern, SeamPosition, SliceSettings, SupportType, SurfacePattern,
+        TopOneWallType,
     };
     use bambu_geom::TriangleMesh;
 
@@ -463,6 +464,7 @@ mod tests {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
         let mut settings = SliceSettings::default();
         settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
         settings.infill_pattern = InfillPattern::Rectilinear;
         let result = slice_mesh(&mesh, &settings).unwrap();
         let support_layers = result
@@ -475,6 +477,46 @@ mod tests {
             "expected support under the slab, got {support_layers} layers"
         );
         let cube = slice_mesh(&TriangleMesh::cube(20.0), &settings).unwrap();
+        assert!(cube
+            .layers
+            .iter()
+            .all(|l| l.support.is_empty() && l.support_interface.is_empty()));
+    }
+
+    #[test]
+    fn table_overhang_gets_tree_support() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut tree = SliceSettings::default();
+        tree.enable_support = true;
+        tree.support_type = SupportType::Tree;
+        tree.infill_pattern = InfillPattern::Rectilinear;
+        let mut classic = tree.clone();
+        classic.support_type = SupportType::Classic;
+        let a = slice_mesh(&mesh, &tree).unwrap();
+        let b = slice_mesh(&mesh, &classic).unwrap();
+        let tree_layers = a
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .count();
+        assert!(
+            tree_layers >= 10,
+            "expected tree trunks under the slab, got {tree_layers} layers"
+        );
+        assert!(!a.layers[0].support.is_empty() || !a.layers[0].support_interface.is_empty());
+        let region_area = |layers: &[Layer]| {
+            layers
+                .iter()
+                .map(|l| l.support_region.iter().map(contour_area_mm2).sum::<f64>())
+                .sum::<f64>()
+        };
+        let tree_area = region_area(&a.layers);
+        let classic_area = region_area(&b.layers);
+        assert!(
+            tree_area < classic_area * 0.5,
+            "tree footprint {tree_area} should be smaller than classic columns {classic_area}"
+        );
+        let cube = slice_mesh(&TriangleMesh::cube(20.0), &tree).unwrap();
         assert!(cube
             .layers
             .iter()

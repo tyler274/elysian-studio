@@ -89,6 +89,34 @@ pub enum WallGenerator {
     Classic,
 }
 
+/// C++ `support_type` (`normal(auto)` vs `tree(auto)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SupportType {
+    /// Downward-projected columns (`normal(auto)` / `normal(manual)`).
+    #[default]
+    Classic,
+    /// Slim trees to the bed (`tree(auto)` / `tree(manual)`). Bambu default.
+    Tree,
+}
+
+impl SupportType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        let n = name.to_ascii_lowercase();
+        Some(match n.as_str() {
+            "normal" | "normal(auto)" | "normal(manual)" | "classic" | "grid" => Self::Classic,
+            "tree" | "tree(auto)" | "tree(manual)" | "organic" | "slim" => Self::Tree,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "normal(auto)",
+            Self::Tree => "tree(auto)",
+        }
+    }
+}
+
 /// C++ `TopOneWallType` (`top_one_wall_type`, legacy `only_one_wall_top`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TopOneWallType {
@@ -292,12 +320,18 @@ pub struct SliceSettings {
     /// First raft layer fill fraction (`raft_first_layer_density`, C++ percent).
     pub raft_first_layer_density: f64,
     pub enable_support: bool,
+    /// C++ `support_type`. Default is classic columns; BBL profiles use tree.
+    pub support_type: SupportType,
     /// Maximum overhang angle from vertical that does not need support (degrees).
     pub support_threshold_angle_deg: f64,
     pub support_density: f64,
     pub support_xy_distance_mm: f64,
     pub support_top_z_distance_mm: f64,
     pub support_interface_layers: u32,
+    /// Max XY lean per layer (`tree_support_branch_angle`).
+    pub tree_branch_angle_deg: f64,
+    /// Disk diameter at each tree node (`tree_support_branch_diameter`).
+    pub tree_branch_diameter_mm: f64,
     /// Solid layers at the bottom of the part (0 disables).
     pub bottom_shell_layers: u32,
     /// Solid layers at the top of the part (0 disables).
@@ -357,11 +391,14 @@ impl Default for SliceSettings {
             raft_first_layer_expansion_mm: -1.0,
             raft_first_layer_density: 0.90,
             enable_support: false,
+            support_type: SupportType::Classic,
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,
             support_xy_distance_mm: 0.35,
             support_top_z_distance_mm: 0.2,
             support_interface_layers: 2,
+            tree_branch_angle_deg: 45.0,
+            tree_branch_diameter_mm: 2.0,
             bottom_shell_layers: 3,
             top_shell_layers: 3,
             top_surface_pattern: SurfacePattern::Rectilinear,
@@ -424,6 +461,7 @@ impl SliceSettings {
             bottom_surface_pattern: SurfacePattern::Monotonic,
             elephant_foot_mm: 0.15,
             top_one_wall: TopOneWallType::AllTop,
+            support_type: SupportType::Tree,
             travel_speed_mm_s: 400.0,
             print_speed_mm_s: 200.0,
             infill_speed_mm_s: 270.0,

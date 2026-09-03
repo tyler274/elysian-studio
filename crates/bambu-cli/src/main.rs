@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use bambu_config::{
     bbl_oracle_paths, load_bbl_process, ConfigError, FuzzySkinType, InfillPattern, IroningType,
-    SeamPosition, SliceSettings, SurfacePattern, TopOneWallType,
+    SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType,
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
@@ -40,6 +40,8 @@ pub enum CliError {
     Seam(String),
     #[error("unknown ironing '{0}' (off|top|topmost|solid)")]
     Ironing(String),
+    #[error("unknown support type '{0}' (classic|tree)")]
+    SupportType(String),
     #[error("unknown surface pattern '{0}' (rectilinear|monotonic|monotonicline|concentric)")]
     SurfacePattern(String),
     #[error("unknown one-wall-top '{0}' (off|all|topmost)")]
@@ -96,9 +98,12 @@ enum Commands {
         /// Outer brim width in millimeters (0 disables).
         #[arg(long)]
         brim: Option<f64>,
-        /// Generate classic grid supports under overhangs.
+        /// Generate supports under overhangs (type from settings, default classic).
         #[arg(long)]
         support: bool,
+        /// `normal(auto)` columns or `tree(auto)` slim trunks (`classic`|`tree`).
+        #[arg(long)]
+        support_type: Option<String>,
         /// Overhang threshold from vertical, degrees.
         #[arg(long)]
         support_angle: Option<f64>,
@@ -269,6 +274,7 @@ fn run() -> Result<(), CliError> {
             skirt_distance,
             brim,
             support,
+            support_type,
             support_angle,
             bottom,
             top,
@@ -326,6 +332,10 @@ fn run() -> Result<(), CliError> {
             }
             if support {
                 slice_settings.enable_support = true;
+            }
+            if let Some(name) = support_type {
+                slice_settings.support_type =
+                    SupportType::from_name(&name).ok_or(CliError::SupportType(name))?;
             }
             if let Some(a) = support_angle {
                 slice_settings.support_threshold_angle_deg = a.clamp(0.0, 89.0);

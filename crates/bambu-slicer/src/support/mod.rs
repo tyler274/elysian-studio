@@ -1,37 +1,48 @@
-//! Classic downward-projected supports (`PrintObjectStep::SupportMaterial`).
+//! Supports (`PrintObjectStep::SupportMaterial`).
 //!
-//! Tree supports are not implemented yet. Overhangs are `layer[i] minus an
-//! expansion of layer[i-1]` using `tan(threshold)` as the per-layer XY reach,
-//! then unioned downward and subtracted from the part plus XY gap.
+//! Overhangs are `layer[i] minus an expansion of layer[i-1]` using
+//! `tan(threshold)` as the per-layer XY reach. Classic fills the downward
+//! union with grid infill. Tree (`tree(auto)`) drops slim branch disks to the
+//! bed, steering around the part — Bambu's default when supports are on.
 
-use bambu_config::SliceSettings;
+mod tree;
+
+use bambu_config::{SliceSettings, SupportType};
 use bambu_geom::{difference_polygons, offset_polygons, union_polygons, Polygon};
 use rayon::prelude::*;
 
 use crate::infill;
 use crate::Layer;
 
-pub fn apply_classic(layers: &mut [Layer], settings: &SliceSettings) {
+pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     if !settings.enable_support || layers.len() < 2 {
         return;
     }
+    let overhangs = detect_overhangs(layers, settings);
+    match settings.support_type {
+        SupportType::Classic => apply_classic(layers, settings, &overhangs),
+        SupportType::Tree => tree::apply(layers, settings, &overhangs),
+    }
+}
 
+fn detect_overhangs(layers: &[Layer], settings: &SliceSettings) -> Vec<Vec<Polygon>> {
     let n = layers.len();
     let tan_th = settings.support_threshold_angle_deg.to_radians().tan();
     let mut overhangs: Vec<Vec<Polygon>> = vec![Vec::new(); n];
-    {
-        let layers: &[Layer] = layers;
-        overhangs.par_iter_mut().enumerate().for_each(|(i, slot)| {
-            if i == 0 {
-                return;
-            }
-            let dz = (layers[i].print_z_mm - layers[i - 1].print_z_mm).max(1e-6);
-            let expansion = dz * tan_th;
-            let supported = offset_polygons(&layers[i - 1].contours, expansion);
-            *slot = difference_polygons(&layers[i].contours, &supported);
-        });
-    }
+    overhangs.par_iter_mut().enumerate().for_each(|(i, slot)| {
+        if i == 0 {
+            return;
+        }
+        let dz = (layers[i].print_z_mm - layers[i - 1].print_z_mm).max(1e-6);
+        let expansion = dz * tan_th;
+        let supported = offset_polygons(&layers[i - 1].contours, expansion);
+        *slot = difference_polygons(&layers[i].contours, &supported);
+    });
+    overhangs
+}
 
+fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {
+    let n = layers.len();
     let xy = settings.support_xy_distance_mm;
     let mut column: Vec<Polygon> = Vec::new();
     let mut regions: Vec<Vec<Polygon>> = vec![Vec::new(); n];

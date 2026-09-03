@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::{
     FuzzySkinType, InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings,
-    SurfacePattern, TopOneWallType, WallGenerator,
+    SupportType, SurfacePattern, TopOneWallType, WallGenerator,
 };
 
 #[derive(Debug, Error)]
@@ -156,6 +156,17 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     }
     if let Some(v) = bool_val(map, "enable_support") {
         s.enable_support = v;
+    }
+    if let Some(name) = text(map, "support_type") {
+        if let Some(t) = SupportType::from_name(&name) {
+            s.support_type = t;
+        }
+    }
+    if let Some(v) = num(map, "tree_support_branch_angle") {
+        s.tree_branch_angle_deg = v.clamp(0.0, 89.0);
+    }
+    if let Some(v) = num(map, "tree_support_branch_diameter") {
+        s.tree_branch_diameter_mm = v.max(0.0);
     }
     if let Some(v) = num(map, "support_threshold_angle") {
         s.support_threshold_angle_deg = v;
@@ -387,6 +398,7 @@ mod tests {
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert!(!s.enable_support);
+        assert_eq!(s.support_type, crate::SupportType::Tree);
         assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
         assert!((s.ironing_flow - 0.10).abs() < 1e-9);
         assert!((s.elephant_foot_mm - 0.15).abs() < 1e-9);
@@ -406,6 +418,7 @@ mod tests {
         assert!((baked.brim_width_mm - s.brim_width_mm).abs() < 1e-9);
         assert_eq!(baked.elephant_foot_mm, s.elephant_foot_mm);
         assert_eq!(baked.top_one_wall, s.top_one_wall);
+        assert_eq!(baked.support_type, crate::SupportType::Tree);
     }
 
     #[test]
