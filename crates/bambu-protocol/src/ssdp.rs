@@ -117,7 +117,9 @@ pub fn discover(timeout: Duration) -> Result<Vec<DiscoveredPrinter>, SsdpError> 
                     SocketAddr::V6(_) => None,
                 };
                 if let Some(printer) = printer_from_headers(&headers, src_ip) {
-                    if !found.iter().any(|p: &DiscoveredPrinter| p.dev_id == printer.dev_id)
+                    if !found
+                        .iter()
+                        .any(|p: &DiscoveredPrinter| p.dev_id == printer.dev_id)
                     {
                         found.push(printer);
                     }

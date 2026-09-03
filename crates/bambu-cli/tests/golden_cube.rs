@@ -81,7 +81,12 @@ fn cube_matches_cpp_bambu_studio() {
         &process_flat,
         &filament_flat,
     )
-    .unwrap_or_else(|err| panic!("C++ Bambu Studio oracle failed using {}:\n{err}", bin.display()));
+    .unwrap_or_else(|err| {
+        panic!(
+            "C++ Bambu Studio oracle failed using {}:\n{err}",
+            bin.display()
+        )
+    });
 
     let ours = parse_gcode(&ours_gcode);
     let cpp = parse_gcode(&cpp_gcode);
@@ -174,10 +179,7 @@ fn run_cpp_slice(
     );
 
     if !output.status.success() {
-        return Err(format!(
-            "{} --slice=0 failed: {captured}",
-            bin.display()
-        ));
+        return Err(format!("{} --slice=0 failed: {captured}", bin.display()));
     }
 
     let gcode_path = find_gcode(outdir).ok_or_else(|| {
@@ -188,12 +190,8 @@ fn run_cpp_slice(
         )
     })?;
 
-    std::fs::read_to_string(&gcode_path).map_err(|err| {
-        format!(
-            "failed to read {}: {err}. {captured}",
-            gcode_path.display()
-        )
-    })
+    std::fs::read_to_string(&gcode_path)
+        .map_err(|err| format!("failed to read {}: {err}. {captured}", gcode_path.display()))
 }
 
 fn find_gcode(outdir: &Path) -> Option<PathBuf> {

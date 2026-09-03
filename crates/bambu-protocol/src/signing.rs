@@ -90,10 +90,7 @@ pub fn rsa_sha256_sign_b64(key: &RsaPrivateKey, data: &[u8]) -> Result<String, S
 }
 
 /// Sign a `{"print":...}` payload. Other JSON is returned unchanged.
-pub fn maybe_sign(
-    payload_json: &str,
-    creds: &SlicerCredentials,
-) -> Result<String, SigningError> {
+pub fn maybe_sign(payload_json: &str, creds: &SlicerCredentials) -> Result<String, SigningError> {
     if !is_print_payload(payload_json) {
         return Ok(payload_json.to_string());
     }

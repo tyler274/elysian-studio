@@ -29,7 +29,9 @@ impl SlicerCredentials {
     }
 
     pub fn can_install_app_cert(&self) -> bool {
-        self.cert_pem.as_ref().is_some_and(|s| s.contains("BEGIN CERTIFICATE"))
+        self.cert_pem
+            .as_ref()
+            .is_some_and(|s| s.contains("BEGIN CERTIFICATE"))
             && self.crl_pem.as_ref().is_some_and(|s| s.contains("BEGIN"))
     }
 
@@ -61,7 +63,11 @@ impl SlicerCredentials {
             ),
             format!(
                 "Option B MQTT signing: {}",
-                if self.can_sign() { "ready" } else { "needs slicer_key.pem" }
+                if self.can_sign() {
+                    "ready"
+                } else {
+                    "needs slicer_key.pem"
+                }
             ),
             format!(
                 "app_cert_install: {}",

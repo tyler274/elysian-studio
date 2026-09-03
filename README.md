@@ -64,9 +64,14 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode \
 cargo run -p bambu-cli -- keys extract --plugin /path/to/libbambu_networking.so
 cargo run -p bambu-cli -- keys status
 cargo run -p bambu-cli -- device discover --timeout 3
+cargo run -p bambu-cli -- device status --host 192.168.1.42 --code 12345678
+cargo run -p bambu-cli -- device send cube.gcode --host 192.168.1.42 --code 12345678
+cargo run -p bambu-cli -- device gcode --host 192.168.1.42 --code 12345678 --line G28
 ```
 
-The UI **Extract keys** / **Discover printers** buttons run the same paths. C++ CLI leftovers such as `result.json` are gitignored.
+`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Developer Mode accepts a cleartext `url`; without it, extract `slicer_*.pem` for Option B signing (`url_enc` is still TODO). Serial can be omitted: the MQTT certificate CN is used.
+
+The UI **Extract keys** / **Discover printers** / **Send last slice** buttons run the same paths. C++ CLI leftovers such as `result.json` are gitignored.
 
 Nix:
 

@@ -18,8 +18,10 @@ bambu-io.workspace = true
 bambu-model.workspace = true
 bambu-slicer.workspace = true
 bambu-protocol.workspace = true
+bambu-device.workspace = true
 clap.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

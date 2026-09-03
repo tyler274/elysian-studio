@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use bambu_config::{
     bbl_oracle_paths, load_bbl_process, ConfigError, InfillPattern, SeamPosition, SliceSettings,
 };
+use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
 use bambu_io::load_stl;
+use bambu_protocol::{default_config_dir, load_from_dir, send_gcode_line, LanBackend};
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
 use thiserror::Error;
@@ -35,7 +37,10 @@ pub enum CliError {
 }
 
 #[derive(Parser)]
-#[command(name = "bambu-cli", about = "Headless Bambu Studio slicer (Rust rewrite)")]
+#[command(
+    name = "bambu-cli",
+    about = "Headless Bambu Studio slicer (Rust rewrite)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -128,6 +133,41 @@ enum DeviceCommand {
     Discover {
         #[arg(long, default_value_t = 3)]
         timeout: u64,
+    },
+    /// MQTT `pushall` and print nozzle/bed temps.
+    Status {
+        #[arg(long)]
+        host: String,
+        /// LAN access code (printer screen).
+        #[arg(long)]
+        code: String,
+        /// Serial / USN. Omit to read the MQTT certificate CN.
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// FTPS-upload a G-code file as `.gcode.3mf` and MQTT `project_file`.
+    Send {
+        file: PathBuf,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        /// Remote basename (default: input stem).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// MQTT `gcode_line` (Developer Mode or signed Option B).
+    Gcode {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        line: String,
     },
 }
 
@@ -222,11 +262,9 @@ fn run() -> Result<(), CliError> {
         }
         Commands::Keys { command } => match command {
             KeysCommand::Extract { plugin, out } => {
-                let report = bambu_protocol::extract_to_config_dir(
-                    plugin.as_deref(),
-                    out.as_deref(),
-                )
-                .map_err(|err| CliError::Message(err.to_string()))?;
+                let report =
+                    bambu_protocol::extract_to_config_dir(plugin.as_deref(), out.as_deref())
+                        .map_err(|err| CliError::Message(err.to_string()))?;
                 for note in &report.notes {
                     println!("{note}");
                 }
@@ -259,6 +297,47 @@ fn run() -> Result<(), CliError> {
                     }
                 }
             }
+            DeviceCommand::Status { host, code, serial } => {
+                let backend = lan_backend(host, code, serial)?;
+                let st = block_on(backend.status())?;
+                println!(
+                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}",
+                    st.serial, st.name, st.nozzle_temp_c, st.bed_temp_c, st.online
+                );
+            }
+            DeviceCommand::Send {
+                file,
+                host,
+                code,
+                serial,
+                name,
+            } => {
+                let gcode = std::fs::read_to_string(&file)?;
+                let filename = name.unwrap_or_else(|| {
+                    file.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("job.gcode")
+                        .to_string()
+                });
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.start_print(PrintJob { filename, gcode }))?;
+                println!("print command sent");
+            }
+            DeviceCommand::Gcode {
+                host,
+                code,
+                serial,
+                line,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                let report = tokio::runtime::Runtime::new()?
+                    .block_on(send_gcode_line(&backend, &line))
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                match report {
+                    Some(body) => println!("{body}"),
+                    None => println!("gcode_line published (no report within 5s)"),
+                }
+            }
         },
     }
     Ok(())
@@ -283,4 +362,19 @@ pub fn slice_file(
     };
     tracing::info!("sliced {} layers ({backend})", sliced.layers.len());
     Ok(write_gcode(settings, &sliced)?)
+}
+
+fn lan_backend(host: String, code: String, serial: String) -> Result<LanBackend, CliError> {
+    let creds = load_from_dir(default_config_dir()).unwrap_or_else(|_| Default::default());
+    Ok(LanBackend::new(host, code)
+        .with_serial(serial)
+        .with_credentials(creds))
+}
+
+fn block_on<T>(
+    fut: impl std::future::Future<Output = Result<T, bambu_device::DeviceError>>,
+) -> Result<T, CliError> {
+    tokio::runtime::Runtime::new()?
+        .block_on(fut)
+        .map_err(|err| CliError::Message(err.to_string()))
 }

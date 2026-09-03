@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::credentials::{SlicerCredentials, default_config_dir, import_from_known_locations};
+use crate::credentials::{default_config_dir, import_from_known_locations, SlicerCredentials};
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractReport {
@@ -30,9 +30,7 @@ pub fn extract_to_config_dir(
         );
     }
 
-    let plugin_path = plugin
-        .map(Path::to_path_buf)
-        .or_else(find_stock_plugin);
+    let plugin_path = plugin.map(Path::to_path_buf).or_else(find_stock_plugin);
     if let Some(path) = plugin_path {
         report.notes.push(format!("scanning {}", path.display()));
         match std::fs::read(&path) {
@@ -58,7 +56,9 @@ pub fn extract_to_config_dir(
         || report.credentials.crl_pem.is_some()
     {
         crate::credentials::write_to_dir(&dest, &report.credentials)?;
-        report.notes.push(format!("wrote credentials under {}", dest.display()));
+        report
+            .notes
+            .push(format!("wrote credentials under {}", dest.display()));
     } else {
         report.notes.push(
             "no PEMs found. Recent plugins obfuscate keys past a simple scan; import slicer_cert.pem / slicer_key.pem / slicer_crl.pem extracted by a local tool such as BambuSlicerKeySaver into the config dir."
@@ -197,10 +197,7 @@ pub fn find_stock_plugin() -> Option<PathBuf> {
     }
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
-        candidates.push(
-            PathBuf::from(appdata)
-                .join("BambuStudio/plugins/bambu_networking.dll"),
-        );
+        candidates.push(PathBuf::from(appdata).join("BambuStudio/plugins/bambu_networking.dll"));
     }
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -227,9 +224,6 @@ mod tests {
         let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
         let xored: Vec<u8> = cert.bytes().map(|b| b ^ 0x5A).collect();
         let creds = extract_pems_from_bytes(&xored);
-        assert!(creds
-            .cert_pem
-            .unwrap()
-            .contains("BEGIN CERTIFICATE"));
+        assert!(creds.cert_pem.unwrap().contains("BEGIN CERTIFICATE"));
     }
 }

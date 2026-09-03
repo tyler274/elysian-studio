@@ -3,12 +3,15 @@
 use std::process::Command;
 
 use bambu_config::SliceSettings;
+use bambu_device::{PrintJob, PrinterBackend};
+use bambu_gcode::write_gcode;
 use bambu_gpu::{
     force_vulkan_env, probe_vulkan, slice_with_gpu_or_cpu, ToolpathBuffer, ViewportEvent,
     ViewportScene,
 };
 use bambu_io::load_stl;
-use iced::widget::{button, column, container, row, shader, text};
+use bambu_protocol::LanBackend;
+use iced::widget::{button, column, container, row, shader, text, text_input};
 use iced::{Color, Element, Fill, Task, Theme};
 
 fn main() -> iced::Result {
@@ -73,6 +76,10 @@ struct App {
     adapter: String,
     scene: ViewportScene,
     status: String,
+    host: String,
+    access_code: String,
+    serial: String,
+    last_gcode: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +91,11 @@ enum Message {
     ExtractKeys,
     Discover,
     Discovered(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
+    Host(String),
+    AccessCode(String),
+    Serial(String),
+    Send,
+    Sent(Result<(), String>),
 }
 
 impl From<ViewportEvent> for Message {
@@ -98,6 +110,10 @@ impl App {
             adapter: adapter.clone(),
             scene: ViewportScene::with_cube(adapter),
             status: "20mm cube on 256mm bed".into(),
+            host: String::new(),
+            access_code: String::new(),
+            serial: String::new(),
+            last_gcode: None,
         }
     }
 
@@ -120,9 +136,7 @@ impl App {
                             self.scene.set_mesh(mesh);
                             self.status = format!(
                                 "loaded {} ({} triangles)",
-                                path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("mesh"),
+                                path.file_name().and_then(|n| n.to_str()).unwrap_or("mesh"),
                                 tris
                             );
                         }
@@ -136,6 +150,13 @@ impl App {
                     Ok((result, backend)) => {
                         self.scene
                             .set_toolpaths(ToolpathBuffer::from_slice(&result));
+                        match write_gcode(&settings, &result) {
+                            Ok(gcode) => self.last_gcode = Some(gcode),
+                            Err(err) => {
+                                self.status = format!("gcode failed: {err}");
+                                return Task::none();
+                            }
+                        }
                         let support = result
                             .layers
                             .iter()
@@ -155,24 +176,22 @@ impl App {
             Message::ResetCamera => {
                 self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(bambu_gpu::BED_MM);
             }
-            Message::ExtractKeys => {
-                match bambu_protocol::extract_to_config_dir(None, None) {
-                    Ok(report) => {
-                        let dir = bambu_protocol::default_config_dir();
-                        self.status = format!(
-                            "keys → {} · sign={} · {}",
-                            dir.display(),
-                            if report.credentials.can_sign() {
-                                "ready"
-                            } else {
-                                "missing slicer_key.pem"
-                            },
-                            report.notes.last().cloned().unwrap_or_default()
-                        );
-                    }
-                    Err(err) => self.status = format!("extract failed: {err}"),
+            Message::ExtractKeys => match bambu_protocol::extract_to_config_dir(None, None) {
+                Ok(report) => {
+                    let dir = bambu_protocol::default_config_dir();
+                    self.status = format!(
+                        "keys → {} · sign={} · {}",
+                        dir.display(),
+                        if report.credentials.can_sign() {
+                            "ready"
+                        } else {
+                            "missing slicer_key.pem"
+                        },
+                        report.notes.last().cloned().unwrap_or_default()
+                    );
                 }
-            }
+                Err(err) => self.status = format!("extract failed: {err}"),
+            },
             Message::Discover => {
                 self.status = "SSDP discover on UDP 2021…".into();
                 return Task::perform(
@@ -191,6 +210,10 @@ impl App {
                 self.status = "no printers on UDP 2021 (3s)".into();
             }
             Message::Discovered(Ok(list)) => {
+                if let Some(first) = list.first() {
+                    self.host = first.dev_ip.clone();
+                    self.serial = first.dev_id.clone();
+                }
                 self.status = list
                     .iter()
                     .map(|p| format!("{} {}", p.dev_ip, p.dev_name))
@@ -199,6 +222,47 @@ impl App {
             }
             Message::Discovered(Err(err)) => {
                 self.status = format!("discover failed: {err}");
+            }
+            Message::Host(s) => self.host = s,
+            Message::AccessCode(s) => self.access_code = s,
+            Message::Serial(s) => self.serial = s,
+            Message::Send => {
+                let Some(gcode) = self.last_gcode.clone() else {
+                    self.status = "slice before send".into();
+                    return Task::none();
+                };
+                if self.host.is_empty() || self.access_code.is_empty() {
+                    self.status = "printer IP and LAN access code required".into();
+                    return Task::none();
+                }
+                let host = self.host.clone();
+                let code = self.access_code.clone();
+                let serial = self.serial.clone();
+                self.status = format!("FTPS + MQTT to {host}…");
+                return Task::perform(
+                    async move {
+                        let creds =
+                            bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
+                                .unwrap_or_else(|_| Default::default());
+                        let backend = LanBackend::new(host, code)
+                            .with_serial(serial)
+                            .with_credentials(creds);
+                        backend
+                            .start_print(PrintJob {
+                                filename: "plater.gcode".into(),
+                                gcode,
+                            })
+                            .await
+                            .map_err(|err| err.to_string())
+                    },
+                    Message::Sent,
+                );
+            }
+            Message::Sent(Ok(())) => {
+                self.status = "print command sent".into();
+            }
+            Message::Sent(Err(err)) => {
+                self.status = format!("send failed: {err}");
             }
         }
         Task::none()
@@ -214,6 +278,12 @@ impl App {
             button("Reset camera").on_press(Message::ResetCamera),
             button("Extract keys").on_press(Message::ExtractKeys),
             button("Discover printers").on_press(Message::Discover),
+            text_input("printer IP", &self.host).on_input(Message::Host),
+            text_input("LAN access code", &self.access_code)
+                .secure(true)
+                .on_input(Message::AccessCode),
+            text_input("serial (optional)", &self.serial).on_input(Message::Serial),
+            button("Send last slice").on_press(Message::Send),
             text(&self.status).size(13),
             text("Drag: orbit · Scroll: zoom").size(12),
         ]
