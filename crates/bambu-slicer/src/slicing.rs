@@ -7,7 +7,9 @@
 //!
 //! Bambu `precise_z_height` redistributes the last five slabs so `print_z`
 //! lands on the object top. PrusaSlicer 3.0 leaves a FIXME for that align.
-//! Raft and Z shrinkage compensation are not applied yet.
+//! With a raft, the first object slab uses `layer_height` (the bed first-print
+//! height is the raft flange). Raft layers and the G-code Z lift are applied
+//! after contours exist. Z shrinkage compensation is not applied yet.
 
 use bambu_config::SliceSettings;
 use bambu_geom::TriangleMesh;
@@ -51,7 +53,7 @@ pub fn generate_object_layers(object_height_mm: f64, settings: &SliceSettings) -
         return Vec::new();
     }
 
-    let h0 = settings.first_layer_height_mm.max(1e-6);
+    let h0 = settings.first_object_layer_height_mm();
     let h = settings.layer_height_mm.max(1e-6);
     // C++ `SlicingParameters`: min layer height is clamped to not exceed `layer_height`.
     let min_h = settings.min_layer_height_mm.max(0.01).min(h);
@@ -222,6 +224,18 @@ mod tests {
         assert!(last.slice_z_mm < 20.0);
         assert!(last.print_z_mm < 20.0 + last.height_mm);
         assert!(plan.len() < 100);
+    }
+
+    #[test]
+    fn raft_uses_normal_height_for_first_object_slab() {
+        let mut settings = SliceSettings::default();
+        settings.first_layer_height_mm = 0.28;
+        settings.layer_height_mm = 0.2;
+        settings.raft_layers = 2;
+        let plan = generate_object_layers(20.0, &settings);
+        assert!((plan[0].height_mm - 0.2).abs() < 1e-9);
+        assert!((plan[0].print_z_mm - 0.2).abs() < 1e-9);
+        assert!((plan[1].print_z_mm - 0.4).abs() < 1e-9);
     }
 
     #[test]

@@ -505,6 +505,23 @@ mod tests {
     }
 
     #[test]
+    fn cube_gcode_raft_lifts_object() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.raft_layers = 2;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Support"));
+        assert!(gcode.contains("; FEATURE: Support interface"));
+        assert!(gcode.contains("G1 Z0.200 F600"));
+        assert!(gcode.contains("G1 Z0.800 F600"));
+        assert!(gcode.contains("; max_z_height: 20.60"));
+        let report = parse_gcode(&gcode);
+        assert!((report.z_min - 0.2).abs() < 1e-6, "z_min={}", report.z_min);
+        assert!((report.z_max - 20.6).abs() < 0.05, "z_max={}", report.z_max);
+    }
+
+    #[test]
     fn parse_does_not_double_count_layer_markers() {
         let gcode = "; CHANGE_LAYER\n;LAYER:0\nG1 Z0.200\n; FEATURE: Outer wall\nG1 X1 Y1 E0.1\n; CHANGE_LAYER\n;LAYER:1\nG1 Z0.400\n";
         let report = parse_gcode(gcode);

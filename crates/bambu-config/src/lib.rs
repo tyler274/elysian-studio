@@ -203,8 +203,18 @@ pub struct SliceSettings {
     pub skirt_loops: u32,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
     pub skirt_distance_mm: f64,
-    /// Outer brim width on layer 0 (0 disables).
+    /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
     pub brim_width_mm: f64,
+    /// Support-style layers under the object (`raft_layers`). 0 disables.
+    pub raft_layers: u32,
+    /// Air gap between raft contact and the first object layer (`raft_contact_distance`).
+    pub raft_contact_distance_mm: f64,
+    /// XY expansion of raft layers above the first (`raft_expansion`).
+    pub raft_expansion_mm: f64,
+    /// First raft layer XY expansion (`raft_first_layer_expansion`). Negative means auto (2 mm).
+    pub raft_first_layer_expansion_mm: f64,
+    /// First raft layer fill fraction (`raft_first_layer_density`, C++ percent).
+    pub raft_first_layer_density: f64,
     pub enable_support: bool,
     /// Maximum overhang angle from vertical that does not need support (degrees).
     pub support_threshold_angle_deg: f64,
@@ -260,6 +270,11 @@ impl Default for SliceSettings {
             skirt_loops: 2,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
+            raft_layers: 0,
+            raft_contact_distance_mm: 0.1,
+            raft_expansion_mm: 1.5,
+            raft_first_layer_expansion_mm: -1.0,
+            raft_first_layer_density: 0.90,
             enable_support: false,
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,
@@ -295,6 +310,16 @@ impl SliceSettings {
             self.first_layer_height_mm
         } else {
             self.layer_height_mm
+        }
+    }
+
+    /// First object slab height. With a raft, C++ consumes `initial_layer_print_height`
+    /// on the raft flange and prints the object with `layer_height`.
+    pub fn first_object_layer_height_mm(&self) -> f64 {
+        if self.raft_layers > 0 {
+            self.layer_height_mm.max(1e-6)
+        } else {
+            self.first_layer_height_mm.max(1e-6)
         }
     }
 

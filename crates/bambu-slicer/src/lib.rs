@@ -5,6 +5,7 @@ mod infill;
 mod ironing;
 mod perimeters;
 mod prepare_infill;
+mod raft;
 mod seams;
 mod skirt_brim;
 mod slice_plane;
@@ -153,10 +154,20 @@ pub fn slice_from_contours(
     prepare_infill::apply(&mut out, settings, mesh);
     ironing::apply(&mut out, settings);
     support::apply_classic(&mut out, settings);
+    raft::apply(&mut out, settings);
     if let Some(first) = out.first() {
-        let brim = skirt_brim::brim(&first.contours, settings);
+        let rafted = settings.raft_layers > 0;
+        let brim = if rafted {
+            Vec::new()
+        } else {
+            skirt_brim::brim(&first.contours, settings)
+        };
         let footprint = support::first_layer_footprint(first);
-        let skirt = skirt_brim::skirt(&footprint, settings);
+        let mut skirt_settings = settings.clone();
+        if rafted {
+            skirt_settings.brim_width_mm = 0.0;
+        }
+        let skirt = skirt_brim::skirt(&footprint, &skirt_settings);
         if let Some(first) = out.first_mut() {
             first.brim = brim;
             first.skirt = skirt;
@@ -498,6 +509,43 @@ mod tests {
             .map(contour_area_mm2)
             .sum::<f64>();
         assert!((a1 - b1).abs() < 1.0, "upper layers stay uncompensated");
+    }
+
+    #[test]
+    fn raft_prepends_layers_and_raises_object() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let plain = slice_mesh(&mesh, &settings).unwrap();
+        settings.raft_layers = 2;
+        let rafted = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(rafted.layers.len(), plain.layers.len() + 2);
+
+        let raft0 = &rafted.layers[0];
+        let raft1 = &rafted.layers[1];
+        assert!(raft0.outer_walls.is_empty());
+        assert!(raft1.outer_walls.is_empty());
+        assert!(!raft0.support.is_empty());
+        assert!(!raft1.support_interface.is_empty());
+        assert!((raft0.print_z_mm - 0.2).abs() < 1e-6);
+        assert!((raft1.print_z_mm - 0.5).abs() < 1e-6);
+        assert!(!raft0.skirt.is_empty());
+        assert!(raft0.brim.is_empty());
+
+        let object0 = &rafted.layers[2];
+        assert!(!object0.outer_walls.is_empty());
+        assert!((object0.print_z_mm - 0.8).abs() < 1e-6);
+        assert_eq!(object0.index, 2);
+
+        let raft_area: f64 = raft0.contours.iter().map(contour_area_mm2).sum();
+        let object_area: f64 = object0.contours.iter().map(contour_area_mm2).sum();
+        assert!(
+            raft_area > object_area + 10.0,
+            "raft flange should expand past the object: {raft_area} vs {object_area}"
+        );
+        let last = rafted.layers.last().unwrap();
+        let plain_last = plain.layers.last().unwrap();
+        assert!((last.print_z_mm - (plain_last.print_z_mm + 0.6)).abs() < 1e-6);
     }
 
     #[test]

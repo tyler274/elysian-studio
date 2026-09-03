@@ -113,6 +113,21 @@ fn settings_from_map(map: &serde_json::Map<String, Value>) -> SliceSettings {
     if let Some(v) = num(map, "brim_width") {
         s.brim_width_mm = v;
     }
+    if let Some(v) = u32_val(map, "raft_layers") {
+        s.raft_layers = v;
+    }
+    if let Some(v) = num(map, "raft_contact_distance") {
+        s.raft_contact_distance_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "raft_expansion") {
+        s.raft_expansion_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "raft_first_layer_expansion") {
+        s.raft_first_layer_expansion_mm = v;
+    }
+    if let Some(v) = percent(map, "raft_first_layer_density") {
+        s.raft_first_layer_density = v.clamp(0.10, 1.0);
+    }
     if let Some(v) = bool_val(map, "enable_support") {
         s.enable_support = v;
     }
@@ -352,6 +367,7 @@ mod tests {
         assert!(!s.precise_z_height);
         assert_eq!(s.top_surface_pattern, crate::SurfacePattern::MonotonicLine);
         assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
+        assert_eq!(s.raft_layers, 0);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);

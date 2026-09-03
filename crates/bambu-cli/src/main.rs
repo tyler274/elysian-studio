@@ -122,6 +122,9 @@ enum Commands {
         /// Bottom shell fill (`bottom_surface_pattern`).
         #[arg(long)]
         bottom_pattern: Option<String>,
+        /// Raft layers under the object (`raft_layers`). 0 disables.
+        #[arg(long)]
+        raft: Option<u32>,
         /// Bambu `precise_z_height`: retune the last five layers to the object top.
         #[arg(long)]
         precise_z: bool,
@@ -265,6 +268,7 @@ fn run() -> Result<(), CliError> {
             xy_hole,
             top_pattern,
             bottom_pattern,
+            raft,
             precise_z,
             cpu,
             gpu,
@@ -340,6 +344,9 @@ fn run() -> Result<(), CliError> {
             if let Some(name) = bottom_pattern {
                 slice_settings.bottom_surface_pattern =
                     SurfacePattern::from_name(&name).ok_or(CliError::SurfacePattern(name))?;
+            }
+            if let Some(n) = raft {
+                slice_settings.raft_layers = n;
             }
             if precise_z {
                 slice_settings.precise_z_height = true;
