@@ -9,7 +9,7 @@ use bambu_gpu::{
 };
 use bambu_io::load_stl;
 use iced::widget::{button, column, container, row, shader, text};
-use iced::{Color, Element, Fill, Theme};
+use iced::{Color, Element, Fill, Task, Theme};
 
 fn main() -> iced::Result {
     reexec_with_vulkan_if_needed();
@@ -81,6 +81,9 @@ enum Message {
     OpenStl,
     Slice,
     ResetCamera,
+    ExtractKeys,
+    Discover,
+    Discovered(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
 }
 
 impl From<ViewportEvent> for Message {
@@ -98,7 +101,7 @@ impl App {
         }
     }
 
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Viewport(ViewportEvent::Orbit { dx, dy }) => {
                 self.scene.camera.orbit(dx, dy);
@@ -152,7 +155,53 @@ impl App {
             Message::ResetCamera => {
                 self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(bambu_gpu::BED_MM);
             }
+            Message::ExtractKeys => {
+                match bambu_protocol::extract_to_config_dir(None, None) {
+                    Ok(report) => {
+                        let dir = bambu_protocol::default_config_dir();
+                        self.status = format!(
+                            "keys → {} · sign={} · {}",
+                            dir.display(),
+                            if report.credentials.can_sign() {
+                                "ready"
+                            } else {
+                                "missing slicer_key.pem"
+                            },
+                            report.notes.last().cloned().unwrap_or_default()
+                        );
+                    }
+                    Err(err) => self.status = format!("extract failed: {err}"),
+                }
+            }
+            Message::Discover => {
+                self.status = "SSDP discover on UDP 2021…".into();
+                return Task::perform(
+                    async {
+                        std::thread::spawn(|| {
+                            bambu_protocol::discover(std::time::Duration::from_secs(3))
+                                .map_err(|err| err.to_string())
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("discover thread panicked".into()))
+                    },
+                    Message::Discovered,
+                );
+            }
+            Message::Discovered(Ok(list)) if list.is_empty() => {
+                self.status = "no printers on UDP 2021 (3s)".into();
+            }
+            Message::Discovered(Ok(list)) => {
+                self.status = list
+                    .iter()
+                    .map(|p| format!("{} {}", p.dev_ip, p.dev_name))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+            }
+            Message::Discovered(Err(err)) => {
+                self.status = format!("discover failed: {err}");
+            }
         }
+        Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -163,6 +212,8 @@ impl App {
             button("Open STL").on_press(Message::OpenStl),
             button("Slice").on_press(Message::Slice),
             button("Reset camera").on_press(Message::ResetCamera),
+            button("Extract keys").on_press(Message::ExtractKeys),
+            button("Discover printers").on_press(Message::Discover),
             text(&self.status).size(13),
             text("Drag: orbit · Scroll: zoom").size(12),
         ]

@@ -26,6 +26,7 @@ bambu-gpu = { path = "crates/bambu-gpu" }
 bambu-device = { path = "crates/bambu-device" }
 bambu-protocol = { path = "crates/bambu-protocol" }
 
+base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 clipper2-rust = "1"
@@ -33,10 +34,13 @@ glam = "0.29"
 iced = { version = "0.14", features = ["tokio", "wgpu"] }
 pollster = "0.4"
 rfd = "0.15"
+rsa = { version = "0.9", features = ["pem", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = { version = "0.10", features = ["oid"] }
 stl_io = "0.8"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "27"
+x509-parser = "0.16"

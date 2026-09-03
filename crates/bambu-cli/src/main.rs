@@ -30,6 +30,8 @@ pub enum CliError {
     InfillPattern(String),
     #[error("unknown seam '{0}' (aligned|rear|nearest|random)")]
     Seam(String),
+    #[error("{0}")]
+    Message(String),
 }
 
 #[derive(Parser)]
@@ -89,6 +91,43 @@ enum Commands {
         /// Require Vulkan compute; error if the adapter is missing.
         #[arg(long, conflicts_with = "cpu")]
         gpu: bool,
+    },
+    /// Option B slicer credentials (extract / import / status).
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+    /// LAN printer discovery (SSDP UDP 2021).
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// Scan a local stock plugin / known config dirs and write slicer_*.pem.
+    Extract {
+        /// Path to libbambu_networking.so / bambu_networking.dll.
+        #[arg(long)]
+        plugin: Option<PathBuf>,
+        /// Destination directory (default: $XDG_CONFIG_HOME/bambu-studio-rs).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Show whether Option B PEMs are present.
+    Status {
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeviceCommand {
+    /// Listen for Bambu SSDP advertisements.
+    Discover {
+        #[arg(long, default_value_t = 3)]
+        timeout: u64,
     },
 }
 
@@ -181,6 +220,46 @@ fn run() -> Result<(), CliError> {
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
         }
+        Commands::Keys { command } => match command {
+            KeysCommand::Extract { plugin, out } => {
+                let report = bambu_protocol::extract_to_config_dir(
+                    plugin.as_deref(),
+                    out.as_deref(),
+                )
+                .map_err(|err| CliError::Message(err.to_string()))?;
+                for note in &report.notes {
+                    println!("{note}");
+                }
+                for line in report.credentials.status_lines() {
+                    println!("{line}");
+                }
+            }
+            KeysCommand::Status { dir } => {
+                let dir = dir.unwrap_or_else(bambu_protocol::default_config_dir);
+                let creds = bambu_protocol::load_from_dir(&dir)
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                println!("config dir: {}", dir.display());
+                for line in creds.status_lines() {
+                    println!("{line}");
+                }
+            }
+        },
+        Commands::Device { command } => match command {
+            DeviceCommand::Discover { timeout } => {
+                let printers = bambu_protocol::discover(std::time::Duration::from_secs(timeout))
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                if printers.is_empty() {
+                    println!("no printers advertised on UDP 2021 ({timeout}s)");
+                } else {
+                    for p in printers {
+                        println!(
+                            "{}  {}  {}  ({})",
+                            p.dev_id, p.dev_ip, p.dev_name, p.dev_type
+                        );
+                    }
+                }
+            }
+        },
     }
     Ok(())
 }

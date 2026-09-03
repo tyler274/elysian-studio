@@ -43,10 +43,7 @@ pub struct PrintJob {
 
 pub trait PrinterBackend {
     fn status(&self) -> impl Future<Output = Result<MachineState, DeviceError>> + Send;
-    fn start_print(
-        &self,
-        job: PrintJob,
-    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn start_print(&self, job: PrintJob) -> impl Future<Output = Result<(), DeviceError>> + Send;
     fn ams(&self) -> impl Future<Output = Result<AmsState, DeviceError>> + Send;
     fn camera_frame(&self) -> impl Future<Output = Result<Frame, DeviceError>> + Send;
 }

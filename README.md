@@ -1,8 +1,10 @@
 # Bambu Studio (Rust)
 
 AGPL-3.0-or-later rewrite of [Bambu Studio](https://github.com/bambulab/BambuStudio)
-in safe Rust. The C++ tree remains the behavioral oracle; this workspace does
-**not** load `libbambu_networking`.
+in safe Rust. This workspace does **not** dlopen proprietary `libbambu_networking`. Printer I/O is a
+safe-Rust port of [open-bamboo-networking](https://github.com/ClusterM/open-bamboo-networking)
+and [OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI): LAN SSDP, MQTT topics, and
+Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are never shipped.
 
 ## Workspace
 
@@ -17,7 +19,7 @@ in safe Rust. The C++ tree remains the behavioral oracle; this workspace does
 | `bambu-preview` | CPU toolpath buffers for the GPU |
 | `bambu-gpu` | wgpu Vulkan viewport + compute contours |
 | `bambu-device` | Printer / AMS / camera traits (no I/O) |
-| `bambu-protocol` | LAN MQTT/FTPS backend (stub) |
+| `bambu-protocol` | LAN SSDP, MQTT payloads, Option B RSA signing, credential extract |
 | `bambu-cli` | Headless slice |
 | `bambu-ui` | iced application |
 
@@ -53,6 +55,18 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode \
 ```
 
 `cargo test -p bambu-cli --test golden_cube` slices the 20 mm cube with that profile in Rust **and** with the upstream `bambu-studio --slice=0` CLI, then compares `CHANGE_LAYER` count, `FEATURE` roles, and the C++ `; CONFIG_BLOCK` values. The C++ binary is taken from `BAMBU_STUDIO` or `PATH`. Profiles come from `BAMBU_STUDIO_RESOURCES` or `../BambuStudio/resources`. Set `BAMBU_STUDIO_REQUIRE_ORACLE=1` to fail if the C++ CLI is missing.
+
+## Printer network (open-bamboo-networking)
+
+[Option A](https://github.com/ClusterM/open-bamboo-networking#option-a-developer-mode) is Developer Mode LAN (no signing keys). [Option B](https://github.com/ClusterM/open-bamboo-networking#option-b-cloud-mode-without-developer-mode) needs `slicer_cert.pem`, `slicer_key.pem`, and `slicer_crl.pem` extracted from the stock plugin **you already have**. Put them in `$XDG_CONFIG_HOME/bambu-studio-rs/` (never commit them).
+
+```bash
+cargo run -p bambu-cli -- keys extract --plugin /path/to/libbambu_networking.so
+cargo run -p bambu-cli -- keys status
+cargo run -p bambu-cli -- device discover --timeout 3
+```
+
+The UI **Extract keys** / **Discover printers** buttons run the same paths. C++ CLI leftovers such as `result.json` are gitignored.
 
 Nix:
 

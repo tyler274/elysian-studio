@@ -22,6 +22,19 @@
 .DS_Store
 Thumbs.db
 
-# Local slice output
+# Local slice output and C++ Bambu Studio CLI artifacts
+# (`bambu-studio --slice` writes result.json, plate_*.gcode, and optional plate thumbnails)
 *.gcode
+*.gcode.3mf
 !tests/golden/**
+result.json
+plate_*.png
+plate_*.jpg
+plate_*.jpeg
+
+# Option B slicer credentials (never commit)
+slicer_cert.pem
+slicer_key.pem
+slicer_crl.pem
+obn.auth.json
+obn.state.json

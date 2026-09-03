@@ -17,6 +17,7 @@ bambu-gpu.workspace = true
 bambu-io.workspace = true
 bambu-model.workspace = true
 bambu-slicer.workspace = true
+bambu-protocol.workspace = true
 clap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
