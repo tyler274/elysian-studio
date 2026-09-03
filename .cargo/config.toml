@@ -1,0 +1,16 @@
+# Link with the Wild linker rewrite (sibling ../wild, PATH, or nix develop).
+# rustc 1.90+ defaults to rust-lld on this target; disable it so cc's -B path
+# is used. GCC 15 has no -fuse-ld=wild; -B makes cc exec scripts/wild-bin/ld.
+[target.x86_64-unknown-linux-gnu]
+linker = "cc"
+rustflags = [
+    "-C", "linker-features=-lld",
+    "-C", "link-arg=-Bscripts/wild-bin",
+]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "cc"
+rustflags = [
+    "-C", "linker-features=-lld",
+    "-C", "link-arg=-Bscripts/wild-bin",
+]

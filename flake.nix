@@ -7,6 +7,15 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Path inputs copy gitignored rust/target; git+file does not.
+    mimalloc-rs = {
+      url = "git+file:///home/luluco/code/mimalloc";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    wild = {
+      url = "git+file:///home/luluco/code/wild";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +23,8 @@
       self,
       nixpkgs,
       rust-overlay,
+      mimalloc-rs,
+      wild,
     }:
     let
       systems = [
@@ -25,7 +36,11 @@
         system:
         import nixpkgs {
           inherit system;
-          overlays = [ rust-overlay.overlays.default ];
+          overlays = [
+            rust-overlay.overlays.default
+            wild.overlays.default
+            mimalloc-rs.overlays.default
+          ];
         };
       rustFor =
         pkgs:
@@ -42,7 +57,9 @@
           fileset = pkgs.lib.fileset.unions [
             ./Cargo.toml
             ./Cargo.lock
+            ./.cargo
             ./crates
+            ./scripts
             ./resources
             ./tests
             ./rust-toolchain.toml
@@ -50,6 +67,11 @@
             ./README.md
           ];
         };
+      placeMimalloc = ''
+        mkdir -p "$NIX_BUILD_TOP/mimalloc"
+        cp -a "${mimalloc-rs}/rust" "$NIX_BUILD_TOP/mimalloc/rust"
+        chmod -R u+w "$NIX_BUILD_TOP/mimalloc"
+      '';
     in
     {
       packages = forAllSystems (
@@ -80,6 +102,7 @@
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.makeWrapper
+              pkgs.wild
             ];
             buildInputs = gpuLibs ++ [
               pkgs.openssl
@@ -87,6 +110,7 @@
             env = {
               WGPU_BACKEND = "vulkan";
             };
+            postUnpack = placeMimalloc;
           };
           wrapVulkan =
             drv:
@@ -106,8 +130,18 @@
               common
               // {
                 pname = "bambu-cli";
-                cargoBuildFlags = [ "-p" "bambu-cli" ];
-                cargoTestFlags = [ "-p" "bambu-cli" "-p" "bambu-geom" "-p" "bambu-slicer" ];
+                cargoBuildFlags = [
+                  "-p"
+                  "bambu-cli"
+                ];
+                cargoTestFlags = [
+                  "-p"
+                  "bambu-cli"
+                  "-p"
+                  "bambu-geom"
+                  "-p"
+                  "bambu-slicer"
+                ];
                 doCheck = true;
               }
             )
@@ -117,7 +151,10 @@
               common
               // {
                 pname = "bambu-ui";
-                cargoBuildFlags = [ "-p" "bambu-ui" ];
+                cargoBuildFlags = [
+                  "-p"
+                  "bambu-ui"
+                ];
                 doCheck = false;
               }
             )
@@ -151,7 +188,9 @@
               rust
               pkgs.cargo-deny
               pkgs.pkg-config
-            ] ++ gpuLibs;
+              pkgs.wild
+            ]
+            ++ gpuLibs;
             WGPU_BACKEND = "vulkan";
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath gpuLibs;
           };

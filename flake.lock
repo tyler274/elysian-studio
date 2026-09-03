@@ -1,5 +1,40 @@
 {
   "nodes": {
+    "crane": {
+      "locked": {
+        "lastModified": 1774313767,
+        "narHash": "sha256-hy0XTQND6avzGEUFrJtYBBpFa/POiiaGBr2vpU6Y9tY=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "3d9df76e29656c679c744968b17fbaf28f0e923d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
+    "mimalloc-rs": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": "rust-overlay"
+      },
+      "locked": {
+        "dirtyRev": "7081e692d5031e2a96fc32408ee805884fa024fc-dirty",
+        "dirtyShortRev": "7081e69-dirty",
+        "lastModified": 1788404817,
+        "narHash": "sha256-BRwuH1GtLEKzjA0f4wvri4QjZbGb/cbfVbUKPDzMI3g=",
+        "type": "git",
+        "url": "file:///home/luluco/code/mimalloc"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:///home/luluco/code/mimalloc"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1788179007,
@@ -18,11 +53,34 @@
     },
     "root": {
       "inputs": {
+        "mimalloc-rs": "mimalloc-rs",
         "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay"
+        "rust-overlay": "rust-overlay_2",
+        "wild": "wild"
       }
     },
     "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "mimalloc-rs",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787993548,
+        "narHash": "sha256-+IAEnmmx5YIhUWo0lp15jLLHchnXo5yKgWsi6C6Cf+0=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "996e9b0b019a4a9eb9e9a5641aefa06d801b5895",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "rust-overlay_2": {
       "inputs": {
         "nixpkgs": [
           "nixpkgs"
@@ -40,6 +98,26 @@
         "owner": "oxalica",
         "repo": "rust-overlay",
         "type": "github"
+      }
+    },
+    "wild": {
+      "inputs": {
+        "crane": "crane",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "dirtyRev": "ff0396b1e7e7dad9989664f5a2ee14095f6621bd-dirty",
+        "dirtyShortRev": "ff0396b-dirty",
+        "lastModified": 1788426960,
+        "narHash": "sha256-N47SbfaeD3lJVS9CSsl+yYoFSDkFwKXxblp74+ET0jA=",
+        "type": "git",
+        "url": "file:///home/luluco/code/wild"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:///home/luluco/code/wild"
       }
     }
   },

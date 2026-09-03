@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use bambu_alloc as _;
 use std::path::PathBuf;
 
 use bambu_config::{

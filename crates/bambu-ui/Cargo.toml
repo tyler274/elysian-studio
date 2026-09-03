@@ -10,6 +10,7 @@ description = "iced GUI for Bambu Studio"
 workspace = true
 
 [dependencies]
+bambu-alloc.workspace = true
 bambu-config.workspace = true
 bambu-device.workspace = true
 bambu-gcode.workspace = true

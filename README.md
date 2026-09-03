@@ -10,6 +10,7 @@ Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are neve
 
 | Crate | Role |
 |-------|------|
+| `bambu-alloc` | Process `#[global_allocator]`: sibling mimalloc rewrite |
 | `bambu-geom` | Scaled integer geometry, clipper, meshes |
 | `bambu-config` | Slice / print settings |
 | `bambu-model` | Objects, instances, plates |
@@ -33,7 +34,10 @@ Vulkan compute when an adapter is present and fall back to CPU otherwise
 
 ## Build
 
-Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`).
+Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`). Check out the
+mimalloc rewrite and Wild linker as siblings (`../mimalloc`, `../wild`) and build Wild
+once (`cargo build --release -p wild-linker` in `../wild`). `cargo` links with Wild via
+`.cargo/config.toml`; `bambu-cli` / `bambu-ui` allocate with `mimalloc-core`.
 
 ```bash
 cargo test --workspace
@@ -89,3 +93,6 @@ Nix:
 nix build .#bambu-cli
 nix build .#bambu-ui
 ```
+
+The flake takes `git+file` inputs for `../mimalloc` and `../wild` so Nix builds
+link with that Wild and compile against that `mimalloc-core`.

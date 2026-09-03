@@ -25,6 +25,9 @@ bambu-preview = { path = "crates/bambu-preview" }
 bambu-gpu = { path = "crates/bambu-gpu" }
 bambu-device = { path = "crates/bambu-device" }
 bambu-protocol = { path = "crates/bambu-protocol" }
+bambu-alloc = { path = "crates/bambu-alloc" }
+# Sibling checkout of the mimalloc Rust rewrite (`../mimalloc`).
+mimalloc-core = { path = "../mimalloc/rust/crates/mimalloc-core" }
 
 base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }

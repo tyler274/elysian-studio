@@ -10,6 +10,7 @@ description = "Headless Bambu Studio slicer"
 workspace = true
 
 [dependencies]
+bambu-alloc.workspace = true
 bambu-config.workspace = true
 bambu-gcode.workspace = true
 bambu-geom.workspace = true
@@ -26,4 +27,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+bambu-alloc.workspace = true
 bambu-geom.workspace = true

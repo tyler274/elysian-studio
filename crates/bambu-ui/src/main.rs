@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use bambu_alloc as _;
 use std::process::Command;
 
 use bambu_config::SliceSettings;

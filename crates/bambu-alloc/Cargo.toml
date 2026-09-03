@@ -1,0 +1,13 @@
+[package]
+name = "bambu-alloc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Process allocator: mimalloc-core rewrite as GlobalAlloc"
+
+[lints]
+workspace = true
+
+[dependencies]
+mimalloc-core.workspace = true

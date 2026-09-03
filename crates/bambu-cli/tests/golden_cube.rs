@@ -1,5 +1,6 @@
 //! Golden cube: rewrite G-code vs upstream C++ Bambu Studio CLI.
 
+use bambu_alloc as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
