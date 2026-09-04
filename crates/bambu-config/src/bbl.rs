@@ -403,6 +403,56 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "machine_max_acceleration_x",
+        num_str(settings.machine_limits.acceleration_x_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_y",
+        num_str(settings.machine_limits.acceleration_y_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_z",
+        num_str(settings.machine_limits.acceleration_z_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_e",
+        num_str(settings.machine_limits.acceleration_e_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_extruding",
+        num_str(settings.machine_limits.acceleration_extruding_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_travel",
+        num_str(settings.machine_limits.acceleration_travel_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_speed_x",
+        num_str(settings.machine_limits.speed_x_mm_s),
+    );
+    insert(
+        &mut map,
+        "machine_max_speed_y",
+        num_str(settings.machine_limits.speed_y_mm_s),
+    );
+    insert(
+        &mut map,
+        "machine_max_speed_z",
+        num_str(settings.machine_limits.speed_z_mm_s),
+    );
+    insert(
+        &mut map,
+        "machine_max_speed_e",
+        num_str(settings.machine_limits.speed_e_mm_s),
+    );
+    insert(
+        &mut map,
         "filament_density",
         num_str(settings.filament_density_g_cm3),
     );
@@ -835,6 +885,12 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "machine_max_jerk_z",
         num_str(settings.z_jerk_mm_s),
     );
+    insert(
+        &mut map,
+        "machine_max_jerk_e",
+        num_str(settings.e_jerk_mm_s),
+    );
+    insert(&mut map, "gcode_flavor", settings.gcode_flavor.as_str());
     Ok(serde_json::to_string_pretty(&Value::Object(map))?)
 }
 
@@ -1317,6 +1373,56 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "machine_max_acceleration_retracting") {
         s.retract_acceleration_mm_s2 = v.max(0.0);
     }
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_x_mm_s2,
+        map,
+        "machine_max_acceleration_x",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_y_mm_s2,
+        map,
+        "machine_max_acceleration_y",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_z_mm_s2,
+        map,
+        "machine_max_acceleration_z",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_e_mm_s2,
+        map,
+        "machine_max_acceleration_e",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_extruding_mm_s2,
+        map,
+        "machine_max_acceleration_extruding",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.acceleration_travel_mm_s2,
+        map,
+        "machine_max_acceleration_travel",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.speed_x_mm_s,
+        map,
+        "machine_max_speed_x",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.speed_y_mm_s,
+        map,
+        "machine_max_speed_y",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.speed_z_mm_s,
+        map,
+        "machine_max_speed_z",
+    );
+    overlay_machine_limit(
+        &mut s.machine_limits.speed_e_mm_s,
+        map,
+        "machine_max_speed_e",
+    );
     if let Some(v) = num(map, "filament_density") {
         s.filament_density_g_cm3 = v.max(0.0);
     }
@@ -1408,6 +1514,14 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "machine_max_jerk_z") {
         s.z_jerk_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "machine_max_jerk_e") {
+        s.e_jerk_mm_s = v.max(0.0);
+    }
+    if let Some(name) = text(map, "gcode_flavor") {
+        if let Some(flavor) = crate::GCodeFlavor::from_name(&name) {
+            s.gcode_flavor = flavor;
+        }
     }
     if let Some(v) = text(map, "layer_change_gcode") {
         s.layer_change_gcode = v;
@@ -1671,6 +1785,12 @@ fn num(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
 fn overlay_temp_c(dst: &mut u16, map: &serde_json::Map<String, Value>, key: &str) {
     if let Some(v) = num(map, key) {
         *dst = v.round().clamp(0.0, 500.0) as u16;
+    }
+}
+
+fn overlay_machine_limit(dst: &mut f64, map: &serde_json::Map<String, Value>, key: &str) {
+    if let Some(v) = num(map, key) {
+        *dst = v.max(0.0);
     }
 }
 
@@ -2068,6 +2188,23 @@ mod tests {
         assert!(s.auxiliary_fan);
         assert!(!s.support_air_filtration);
         assert!((s.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
+        assert_eq!(s.gcode_flavor, crate::GCodeFlavor::Marlin);
+        assert!((s.machine_limits.acceleration_x_mm_s2 - 20000.0).abs() < 1.0);
+        assert!((s.machine_limits.acceleration_y_mm_s2 - 20000.0).abs() < 1.0);
+        assert!((s.machine_limits.acceleration_z_mm_s2 - 500.0).abs() < 1.0);
+        assert!((s.machine_limits.acceleration_e_mm_s2 - 5000.0).abs() < 1.0);
+        assert!((s.machine_limits.acceleration_extruding_mm_s2 - 20000.0).abs() < 1.0);
+        assert!((s.machine_limits.speed_x_mm_s - 1000.0).abs() < 1.0);
+        assert!((s.machine_limits.speed_y_mm_s - 1000.0).abs() < 1.0);
+        assert!((s.machine_limits.speed_z_mm_s - 30.0).abs() < 1.0);
+        assert!((s.machine_limits.speed_e_mm_s - 50.0).abs() < 1.0);
+        assert!((s.e_jerk_mm_s - 2.5).abs() < 1e-9);
+        assert_eq!(
+            s.print_machine_envelope().as_deref(),
+            Some(
+                "M201 X20000 Y20000 Z500 E5000\nM203 X1000 Y1000 Z30 E50\nM204 P20000 R5000 T20000\nM205 X9.00 Y9.00 Z3.00 E2.50\n"
+            )
+        );
         assert!(s.layer_change_gcode.contains("M73 L{layer_num+1}"));
         assert!(s.layer_change_gcode.contains("M991 S0 P{layer_num}"));
         assert!(s
@@ -2224,6 +2361,8 @@ mod tests {
         assert!(s.farthest_point_timelapse_enabled());
         s.printer_structure = String::from("i3");
         assert!(!s.farthest_point_timelapse_enabled());
+        s.gcode_flavor = crate::GCodeFlavor::Klipper;
+        assert!(s.print_machine_envelope().is_none());
     }
 
     #[test]

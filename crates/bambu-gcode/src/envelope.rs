@@ -52,6 +52,9 @@ impl Writer<'_> {
         &mut self,
         ctx: Option<&PlaceholderContext>,
     ) -> Result<(), GcodeError> {
+        if let Some(envelope) = self.settings.print_machine_envelope() {
+            self.out.push_str(&envelope);
+        }
         if self.settings.machine_start_gcode.is_empty() {
             writeln!(
                 self.out,

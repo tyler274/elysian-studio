@@ -404,6 +404,65 @@ impl SurfacePattern {
     }
 }
 
+/// C++ `gcode_flavor`. BBL profiles use Marlin (legacy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GCodeFlavor {
+    #[default]
+    Marlin,
+    Klipper,
+}
+
+impl GCodeFlavor {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "marlin" | "marlinlegacy" | "marlin(legacy)" | "marlin2" | "marlinfirmware" => {
+                Self::Marlin
+            }
+            "klipper" => Self::Klipper,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Marlin => "marlin",
+            Self::Klipper => "klipper",
+        }
+    }
+}
+
+/// C++ `machine_max_*` used by `GCode::print_machine_envelope`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineLimits {
+    pub acceleration_x_mm_s2: f64,
+    pub acceleration_y_mm_s2: f64,
+    pub acceleration_z_mm_s2: f64,
+    pub acceleration_e_mm_s2: f64,
+    pub speed_x_mm_s: f64,
+    pub speed_y_mm_s: f64,
+    pub speed_z_mm_s: f64,
+    pub speed_e_mm_s: f64,
+    pub acceleration_extruding_mm_s2: f64,
+    pub acceleration_travel_mm_s2: f64,
+}
+
+impl Default for MachineLimits {
+    fn default() -> Self {
+        Self {
+            acceleration_x_mm_s2: 1000.0,
+            acceleration_y_mm_s2: 1000.0,
+            acceleration_z_mm_s2: 500.0,
+            acceleration_e_mm_s2: 5000.0,
+            speed_x_mm_s: 500.0,
+            speed_y_mm_s: 500.0,
+            speed_z_mm_s: 12.0,
+            speed_e_mm_s: 120.0,
+            acceleration_extruding_mm_s2: 1500.0,
+            acceleration_travel_mm_s2: 1500.0,
+        }
+    }
+}
+
 /// C++ first- vs later-layer bed temperatures for one plate type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlateBedTemps {
@@ -568,6 +627,8 @@ pub struct SliceSettings {
     pub travel_short_distance_acceleration_mm_s2: f64,
     /// C++ `machine_max_acceleration_retracting`. 0 means 1500.
     pub retract_acceleration_mm_s2: f64,
+    /// C++ `machine_max_*` axis limits for Marlin M201/M203/M204.
+    pub machine_limits: MachineLimits,
     /// C++ `filament_density` (g/cm³). Generic PLA is 1.24.
     pub filament_density_g_cm3: f64,
     /// C++ `fan_min_speed` (percent).
@@ -664,6 +725,10 @@ pub struct SliceSettings {
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
     pub z_jerk_mm_s: f64,
+    /// C++ `machine_max_jerk_e` (mm/s).
+    pub e_jerk_mm_s: f64,
+    /// C++ `gcode_flavor`.
+    pub gcode_flavor: GCodeFlavor,
     /// C++ `layer_change_gcode`. Empty skips the custom block.
     pub layer_change_gcode: String,
     /// C++ `machine_end_gcode`. Empty keeps the generic Marlin footer.
@@ -825,6 +890,7 @@ impl Default for SliceSettings {
             initial_layer_travel_acceleration_mm_s2: 0.0,
             travel_short_distance_acceleration_mm_s2: 250.0,
             retract_acceleration_mm_s2: 0.0,
+            machine_limits: MachineLimits::default(),
             filament_density_g_cm3: 1.24,
             fan_min_speed: 20,
             fan_max_speed: 100,
@@ -875,6 +941,8 @@ impl Default for SliceSettings {
             bed_max_y: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
+            e_jerk_mm_s: 2.5,
+            gcode_flavor: GCodeFlavor::Marlin,
             layer_change_gcode: String::new(),
             machine_end_gcode: String::new(),
             filament_end_gcode: String::new(),
@@ -1050,6 +1118,34 @@ impl SliceSettings {
         } else {
             1500.0
         }
+    }
+
+    /// C++ `GCode::print_machine_envelope` for Marlin flavors.
+    pub fn print_machine_envelope(&self) -> Option<String> {
+        if self.gcode_flavor != GCodeFlavor::Marlin {
+            return None;
+        }
+        let lim = &self.machine_limits;
+        let p = round_machine_limit(lim.acceleration_extruding_mm_s2);
+        let r = round_machine_limit(self.retract_acceleration_or_default());
+        Some(format!(
+            "M201 X{} Y{} Z{} E{}\nM203 X{} Y{} Z{} E{}\nM204 P{} R{} T{}\nM205 X{:.2} Y{:.2} Z{:.2} E{:.2}\n",
+            round_machine_limit(lim.acceleration_x_mm_s2),
+            round_machine_limit(lim.acceleration_y_mm_s2),
+            round_machine_limit(lim.acceleration_z_mm_s2),
+            round_machine_limit(lim.acceleration_e_mm_s2),
+            round_machine_limit(lim.speed_x_mm_s),
+            round_machine_limit(lim.speed_y_mm_s),
+            round_machine_limit(lim.speed_z_mm_s),
+            round_machine_limit(lim.speed_e_mm_s),
+            p,
+            r,
+            p,
+            self.xy_jerk_mm_s,
+            self.xy_jerk_mm_s,
+            self.z_jerk_mm_s,
+            self.e_jerk_mm_s,
+        ))
     }
 
     /// Thin-feature extrusion floor (`min_bead_width` × nozzle).
@@ -1500,6 +1596,11 @@ impl SliceSettings {
             && center_y - radius >= self.bed_min_y - 1e-9
             && center_y + radius <= self.bed_max_y + 1e-9
     }
+}
+
+/// C++ `int(value + 0.5)` for Marlin machine-limit lines.
+fn round_machine_limit(v: f64) -> i32 {
+    (v.max(0.0) + 0.5).floor() as i32
 }
 
 /// C++ `match_physical_extruder_for_each_filament`: `out[map[i]] = filaments[i]`.

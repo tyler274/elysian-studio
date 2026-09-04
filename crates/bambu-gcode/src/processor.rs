@@ -6,8 +6,6 @@
 
 use bambu_config::SliceSettings;
 
-/// C++ `machine_max_jerk_e` on X1 Carbon.
-const E_JERK_MM_S: f64 = 2.5;
 const PREVIOUS_FEEDRATE_THRESHOLD: f64 = 1e-4;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,8 +375,8 @@ fn build_block(
     if dir[2].abs() * cruise > settings.z_jerk_mm_s {
         safe = safe.min(settings.z_jerk_mm_s);
     }
-    if abs_axis[2] > E_JERK_MM_S {
-        safe = safe.min(E_JERK_MM_S);
+    if abs_axis[2] > settings.e_jerk_mm_s {
+        safe = safe.min(settings.e_jerk_mm_s);
     }
 
     let mut vmax_junction = safe;
@@ -442,8 +440,8 @@ fn build_block(
             v_entry_e *= v_factor;
         }
         let e_jerk = axis_jerk(v_exit_e, v_entry_e);
-        if e_jerk > E_JERK_MM_S {
-            v_factor *= E_JERK_MM_S / e_jerk;
+        if settings.e_jerk_mm_s > 0.0 && e_jerk > settings.e_jerk_mm_s {
+            v_factor *= settings.e_jerk_mm_s / e_jerk;
             limited = true;
         }
         if limited {

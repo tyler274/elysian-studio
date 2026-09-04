@@ -844,6 +844,30 @@ fn h2c_emits_machine_start_gcode() {
     let header_end = exec.find("; CHANGE_LAYER").expect("layers");
     let header = &exec[..header_end];
     assert!(
+        header.contains("M201 X20000 Y20000 Z500 E5000"),
+        "Marlin machine accel limits\n{header}"
+    );
+    assert!(
+        header.contains("M203 X1000 Y1000 Z30 E50"),
+        "H2C 0.4 feedrate limits\n{header}"
+    );
+    assert!(
+        header.contains("M204 P20000 R5000 T20000"),
+        "Marlin legacy travel uses extruding accel\n{header}"
+    );
+    assert!(
+        header.contains("M205 X9.00 Y9.00 Z3.00 E2.50"),
+        "H2C jerk envelope\n{header}"
+    );
+    let envelope_at = header.find("M201 X20000").expect("envelope");
+    let start_at = header
+        .find(";===== machine: H2C =========================")
+        .expect("machine start");
+    assert!(
+        envelope_at < start_at,
+        "print_machine_envelope precedes machine start"
+    );
+    assert!(
         header.contains(";===== machine: H2C ========================="),
         "{header}"
     );
@@ -943,6 +967,9 @@ fn cube_gcode_has_bbl_envelope() {
     assert!(gcode.contains("; filament_density: 1.24"));
     assert!(gcode.contains("; filament_diameter: 1.75"));
     assert!(!gcode.contains("M981 "));
+    assert!(gcode.contains("M201 X1000 Y1000 Z500 E5000"));
+    assert!(gcode.contains("M203 X500 Y500 Z12 E120"));
+    assert!(gcode.contains("M204 P1500 R1500 T1500"));
 }
 
 #[test]
