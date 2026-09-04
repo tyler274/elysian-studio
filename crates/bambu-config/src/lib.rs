@@ -548,6 +548,8 @@ pub struct SliceSettings {
     pub slow_down_layer_time_s: f64,
     /// C++ `slow_down_for_layer_cooling`.
     pub slow_down_for_layer_cooling: bool,
+    /// C++ `no_slow_down_for_cooling_on_outwalls`.
+    pub no_slow_down_for_cooling_on_outwalls: bool,
     /// C++ `slow_down_min_speed` (mm/s). 0 means no floor.
     pub slow_down_min_speed_mm_s: f64,
     /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
@@ -606,6 +608,12 @@ pub struct SliceSettings {
     pub retract_lift_below_mm: f64,
     /// C++ `travel_speed_z` (mm/s). 0 means use travel speed.
     pub travel_speed_z_mm_s: f64,
+    /// Printable-area AABB. Invalid means C++ "no block" (any spiral I/J is allowed).
+    pub bed_bbox_valid: bool,
+    pub bed_min_x: f64,
+    pub bed_min_y: f64,
+    pub bed_max_x: f64,
+    pub bed_max_y: f64,
     /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
@@ -706,6 +714,7 @@ impl Default for SliceSettings {
             fan_cooling_layer_time_s: 60.0,
             slow_down_layer_time_s: 8.0,
             slow_down_for_layer_cooling: false,
+            no_slow_down_for_cooling_on_outwalls: false,
             slow_down_min_speed_mm_s: 10.0,
             reduce_fan_stop_start_freq: false,
             auxiliary_fan: false,
@@ -735,6 +744,11 @@ impl Default for SliceSettings {
             retract_lift_above_mm: 0.0,
             retract_lift_below_mm: 0.0,
             travel_speed_z_mm_s: 0.0,
+            bed_bbox_valid: false,
+            bed_min_x: 0.0,
+            bed_min_y: 0.0,
+            bed_max_x: 0.0,
+            bed_max_y: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
         }
@@ -899,6 +913,11 @@ impl SliceSettings {
             z_hop_mm: 0.4,
             z_hop_type: ZHopType::Spiral,
             retract_lift_below_mm: 319.0,
+            bed_bbox_valid: true,
+            bed_min_x: 0.0,
+            bed_min_y: 0.0,
+            bed_max_x: 325.0,
+            bed_max_y: 320.0,
             ..Self::default()
         }
     }
@@ -917,6 +936,17 @@ impl SliceSettings {
         } else {
             self.travel_speed_mm_s
         }
+    }
+
+    /// C++ `GCodeWriter::spiral_arc_within_bed`. Unknown bed never blocks.
+    pub fn spiral_arc_within_bed(&self, center_x: f64, center_y: f64, radius: f64) -> bool {
+        if !self.bed_bbox_valid {
+            return true;
+        }
+        center_x - radius >= self.bed_min_x - 1e-9
+            && center_x + radius <= self.bed_max_x + 1e-9
+            && center_y - radius >= self.bed_min_y - 1e-9
+            && center_y + radius <= self.bed_max_y + 1e-9
     }
 }
 

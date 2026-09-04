@@ -473,6 +473,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "slow_down_for_layer_cooling",
         settings.slow_down_for_layer_cooling,
     );
+    insert_bool(
+        &mut map,
+        "no_slow_down_for_cooling_on_outwalls",
+        settings.no_slow_down_for_cooling_on_outwalls,
+    );
     insert(
         &mut map,
         "slow_down_min_speed",
@@ -1008,6 +1013,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "slow_down_for_layer_cooling") {
         s.slow_down_for_layer_cooling = v;
     }
+    if let Some(v) = bool_val(map, "no_slow_down_for_cooling_on_outwalls") {
+        s.no_slow_down_for_cooling_on_outwalls = v;
+    }
     if let Some(v) = num(map, "slow_down_min_speed") {
         s.slow_down_min_speed_mm_s = v.max(0.0);
     }
@@ -1086,6 +1094,13 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "travel_speed_z") {
         s.travel_speed_z_mm_s = v.max(0.0);
+    }
+    if let Some((min_x, min_y, max_x, max_y)) = bed_bbox_from_map(map) {
+        s.bed_bbox_valid = true;
+        s.bed_min_x = min_x;
+        s.bed_min_y = min_y;
+        s.bed_max_x = max_x;
+        s.bed_max_y = max_y;
     }
 }
 
@@ -1175,6 +1190,58 @@ fn bool_val(map: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
         "0" | "false" | "no" => Some(false),
         _ => None,
     }
+}
+
+fn parse_xy_list(s: &str) -> Vec<(f64, f64)> {
+    s.split([',', ' '])
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            let mut it = p.trim().split('x');
+            let x = it.next()?.parse().ok()?;
+            let y = it.next()?.parse().ok()?;
+            Some((x, y))
+        })
+        .collect()
+}
+
+fn xy_points_from_value(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::String(s) => parse_xy_list(s),
+        Value::Array(a) => a.iter().flat_map(xy_points_from_value).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn bbox_of(pts: &[(f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    if pts.len() < 3 {
+        return None;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &(x, y) in pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, min_y, max_x, max_y))
+}
+
+/// Prefer the first extruder's printable area, else the whole-bed polygon.
+fn bed_bbox_from_map(map: &serde_json::Map<String, Value>) -> Option<(f64, f64, f64, f64)> {
+    if let Some(v) = map.get("extruder_printable_area") {
+        let pts = match v {
+            Value::Array(a) => a.first().map(xy_points_from_value).unwrap_or_default(),
+            other => xy_points_from_value(other),
+        };
+        if let Some(bb) = bbox_of(&pts) {
+            return Some(bb);
+        }
+    }
+    map.get("printable_area")
+        .and_then(|v| bbox_of(&xy_points_from_value(v)))
 }
 
 pub fn bbl_resources_dir() -> Option<PathBuf> {
@@ -1416,6 +1483,10 @@ mod tests {
         assert!((s.retract_lift_below_mm - 319.0).abs() < 1e-9);
         assert!(s.auxiliary_fan);
         assert!(!s.support_air_filtration);
+        assert!(s.bed_bbox_valid);
+        assert!((s.bed_min_x).abs() < 1e-9);
+        assert!((s.bed_max_x - 325.0).abs() < 1e-9);
+        assert!((s.bed_max_y - 320.0).abs() < 1e-9);
         overlay_bbl_profile(&mut s, &paths.filament).unwrap();
         assert!((s.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!((s.wipe_distance_mm - 1.0).abs() < 1e-9);
@@ -1425,6 +1496,8 @@ mod tests {
         assert!(baked.wipe);
         assert_eq!(baked.z_hop_type, crate::ZHopType::Spiral);
         assert!(baked.auxiliary_fan);
+        assert!(baked.bed_bbox_valid);
+        assert!((baked.bed_max_x - 325.0).abs() < 1e-9);
         assert_eq!(baked.additional_cooling_fan_speed, 75);
         assert!((baked.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);
@@ -1456,6 +1529,7 @@ mod tests {
         assert_eq!(loaded.fan_min_speed, 20);
         assert!(!loaded.reduce_fan_stop_start_freq);
         assert!(!loaded.slow_down_for_layer_cooling);
+        assert!(!loaded.no_slow_down_for_cooling_on_outwalls);
         assert!((loaded.flow_ratio - 1.0).abs() < 1e-9);
     }
 

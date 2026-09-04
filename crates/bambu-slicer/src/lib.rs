@@ -37,7 +37,7 @@ use bambu_model::{ModelVolume, TrianglePaint};
 use rayon::prelude::*;
 use thiserror::Error;
 
-pub use clip::{classify_overhang, classify_polyline, ClassifiedPath};
+pub use clip::{classify_overhang, classify_polyline, point_in_polygons, ClassifiedPath};
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
 pub use slicing::{generate_object_layers, layer_plan, layer_z_values, LayerSpec};
 pub use steps::{PrintObjectStep, PrintStep};

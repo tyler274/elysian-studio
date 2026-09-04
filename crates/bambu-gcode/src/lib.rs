@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use bambu_config::{Flow, SliceSettings, ZHopType};
 use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
-use bambu_slicer::{classify_overhang, SliceResult};
+use bambu_slicer::{classify_overhang, point_in_polygons, SliceResult};
 use thiserror::Error;
 
 pub use cooling::{
@@ -298,6 +298,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 },
             )?;
         }
+        state.prev_solid = layer.contours.clone();
     }
 
     writeln!(out, "M104 S0")?;
@@ -348,7 +349,7 @@ fn emit_paths(
     let print_f = settings.cap_extrude_feed_mm_min(print_f, mm3_per_mm);
     for path in paths {
         emit_one_path(
-            out, path, closed, e_per_mm, print_f, travel_f, settings, state,
+            out, path, closed, e_per_mm, print_f, travel_f, settings, state, false,
         )?;
     }
     Ok(())
@@ -505,6 +506,7 @@ fn emit_wall_paths(
                         travel_f,
                         settings,
                         state,
+                        supported_feature == "Outer wall",
                     )
                 },
             )?;
@@ -525,6 +527,8 @@ struct WriterState {
     /// C++ `m_to_lift`: hop height queued by `lazy_lift` until the next XY travel.
     to_lift: f64,
     to_lift_type: ZHopType,
+    /// Previous layer contours; Auto hop treats travel outside them as over air.
+    prev_solid: Vec<Polygon>,
 }
 
 const TRAVEL_EPS_MM: f64 = 1e-4;
@@ -700,15 +704,28 @@ fn apply_lazy_lift(
     };
     let dist = xy_dist(from, dest);
     if dist > TRAVEL_EPS_MM {
-        match state.to_lift_type {
-            ZHopType::Spiral | ZHopType::Auto => {
-                let (i, j) = spiral_ij(from, dest, spiral_radius(hop));
-                writeln!(out, "G17")?;
-                writeln!(
-                    out,
-                    "G2 Z{:.3} I{:.3} J{:.3} P1 F{:.0} ; spiral lift Z",
-                    hop_z, i, j, z_feed
-                )?;
+        let lift = match state.to_lift_type {
+            ZHopType::Auto => {
+                if travel_over_air(from, dest, hop, &state.prev_solid) {
+                    ZHopType::Spiral
+                } else {
+                    ZHopType::Slope
+                }
+            }
+            other => other,
+        };
+        match lift {
+            ZHopType::Spiral => {
+                if let Some((i, j)) = spiral_ij_on_bed(from, dest, spiral_radius(hop), settings) {
+                    writeln!(out, "G17")?;
+                    writeln!(
+                        out,
+                        "G2 Z{:.3} I{:.3} J{:.3} P1 F{:.0} ; spiral lift Z",
+                        hop_z, i, j, z_feed
+                    )?;
+                } else {
+                    writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", hop_z, z_feed)?;
+                }
             }
             ZHopType::Slope => {
                 if hop.atan2(dist) < SLOPE_THRESHOLD_RAD {
@@ -725,7 +742,7 @@ fn apply_lazy_lift(
                     )?;
                 }
             }
-            ZHopType::Normal => {
+            ZHopType::Normal | ZHopType::Auto => {
                 writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", hop_z, z_feed)?;
             }
         }
@@ -746,6 +763,41 @@ fn spiral_ij(from: (f64, f64), to: (f64, f64), radius: f64) -> (f64, f64) {
     let nx = dx / len;
     let ny = dy / len;
     (-ny * radius, nx * radius)
+}
+
+/// C++ `travel_to_xyz`: try CCW perp, then CW; otherwise no in-bed spiral.
+fn spiral_ij_on_bed(
+    from: (f64, f64),
+    to: (f64, f64),
+    radius: f64,
+    settings: &SliceSettings,
+) -> Option<(f64, f64)> {
+    let (i, j) = spiral_ij(from, to, radius);
+    if settings.spiral_arc_within_bed(from.0 + i, from.1 + j, radius) {
+        return Some((i, j));
+    }
+    if settings.spiral_arc_within_bed(from.0 - i, from.1 - j, radius) {
+        return Some((-i, -j));
+    }
+    None
+}
+
+/// C++ Auto hop: clipped travel over air/overhang → spiral, else slope.
+fn travel_over_air(from: (f64, f64), dest: (f64, f64), hop: f64, solid: &[Polygon]) -> bool {
+    if solid.is_empty() {
+        return false;
+    }
+    let dist = xy_dist(from, dest);
+    if dist <= TRAVEL_EPS_MM {
+        return false;
+    }
+    let clip = (hop / SLOPE_THRESHOLD_RAD.tan()).min(dist);
+    let t = (clip * 0.5) / dist;
+    let mid = (
+        from.0 + (dest.0 - from.0) * t,
+        from.1 + (dest.1 - from.1) * t,
+    );
+    !point_in_polygons(Point::from_mm(mid.0, mid.1), solid)
 }
 
 fn unlift(
@@ -830,6 +882,7 @@ fn emit_one_path(
     travel_f: f64,
     settings: &SliceSettings,
     state: &mut WriterState,
+    external_perimeter: bool,
 ) -> Result<(), GcodeError> {
     if path.len() < 2 {
         return Ok(());
@@ -841,6 +894,11 @@ fn emit_one_path(
     let n = pts.len();
     let end = if closed { n } else { n - 1 };
     let mut trail = vec![start];
+    let marker = if external_perimeter {
+        ";_EXTRUDE_SET_SPEED;_EXTERNAL_PERIMETER"
+    } else {
+        ""
+    };
     for i in 0..end {
         let a = pts[i];
         let b = pts[(i + 1) % n];
@@ -848,7 +906,7 @@ fn emit_one_path(
         state.e += dist * e_per_mm;
         writeln!(
             out,
-            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}",
+            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}{marker}",
             b.0, b.1, state.e, print_f
         )?;
         state.last = Some(b);
@@ -1703,5 +1761,85 @@ mod tests {
         assert!(gcode.contains("; slope lift Z"), "{gcode}");
         assert!(!gcode.contains("; spiral lift Z"));
         assert!(gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn spiral_falls_back_when_off_bed() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        settings.bed_min_x = 0.0;
+        settings.bed_min_y = 0.0;
+        settings.bed_max_x = 0.5;
+        settings.bed_max_y = 0.5;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; normal lift Z"), "{gcode}");
+        assert!(!gcode.contains("; spiral lift Z"), "{gcode}");
+        assert!(gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn auto_hop_cube_uses_slope() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.z_hop_type = bambu_config::ZHopType::Auto;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        settings.brim_width_mm = 0.0;
+        settings.skirt_loops = 0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; slope lift Z"), "{gcode}");
+        assert!(!gcode.contains("; spiral lift Z"), "{gcode}");
+        assert!(gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn auto_hop_over_air_uses_spiral() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.z_hop_type = bambu_config::ZHopType::Auto;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        settings.enable_support = false;
+        settings.brim_width_mm = 0.0;
+        settings.skirt_loops = 0;
+        settings.wipe = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains("; spiral lift Z"),
+            "travel over the table wing should spiral\n{gcode}"
+        );
+    }
+
+    #[test]
+    fn no_slow_down_keeps_outer_wall_feed() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.no_slow_down_for_cooling_on_outwalls = true;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains("_EXTERNAL_PERIMETER"),
+            "outer walls should carry the C++ cooling marker\n{gcode}"
+        );
+        let outer_kept = gcode
+            .lines()
+            .any(|line| line.contains("_EXTERNAL_PERIMETER") && line.contains(" F12000"));
+        assert!(
+            outer_kept,
+            "200 mm/s outer walls should not be stretched\n{gcode}"
+        );
+        let fast_inner = gcode.lines().any(|line| {
+            line.contains(" F18000") && !line.contains("_WIPE") && !line.contains("retract")
+        });
+        assert!(
+            !fast_inner,
+            "inner walls should still stretch for layer cooling"
+        );
     }
 }

@@ -91,8 +91,8 @@ pub fn set_exhaust_fan_gcode(percent: u32) -> String {
 /// Stretch extrusion `F` when a layer is shorter than `slow_down_layer_time`.
 ///
 /// C++ `CoolingBuffer` uses cruise time (`length / feedrate`). Travel and
-/// Z-only moves stay at their original feeds. External-perimeter exceptions
-/// (`no_slow_down_for_cooling_on_outwalls`) are not applied.
+/// Z-only moves stay at their original feeds. Outer walls marked
+/// `_EXTERNAL_PERIMETER` skip stretch when `no_slow_down_for_cooling_on_outwalls`.
 pub fn apply_layer_cooling_slowdown(gcode: &str, settings: &SliceSettings) -> String {
     if !settings.slow_down_for_layer_cooling || settings.slow_down_layer_time_s <= 0.0 {
         return gcode.to_string();
@@ -165,7 +165,13 @@ fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> Str
         };
         let feed_mm_s = f_mm_min / 60.0;
         let has_e = parse_axis(&upper, b'E').is_some();
-        let is_adj = is_g1 && has_e && length > 1e-9 && feed_mm_s > 1e-9 && !line.contains("_WIPE");
+        let is_adj = is_g1
+            && has_e
+            && length > 1e-9
+            && feed_mm_s > 1e-9
+            && !line.contains("_WIPE")
+            && !(settings.no_slow_down_for_cooling_on_outwalls
+                && line.contains("_EXTERNAL_PERIMETER"));
         if is_adj {
             adjustable.push(AdjMove {
                 idx,
@@ -634,6 +640,22 @@ mod tests {
         let gcode = "; CHANGE_LAYER\n;LAYER:1\nG1 X400 Y0 E10 F12000\n";
         let out = apply_layer_cooling_slowdown(gcode, &s);
         assert!(out.contains(" F12000"), "{out}");
+    }
+
+    #[test]
+    fn cooling_skips_outer_walls_when_flag_set() {
+        let mut s = SliceSettings::default();
+        s.slow_down_for_layer_cooling = true;
+        s.slow_down_layer_time_s = 8.0;
+        s.slow_down_min_speed_mm_s = 20.0;
+        s.no_slow_down_for_cooling_on_outwalls = true;
+        let gcode = "; CHANGE_LAYER\n;LAYER:1\nG1 X400 Y0 E10 F12000;_EXTRUDE_SET_SPEED;_EXTERNAL_PERIMETER\nG1 X400 Y400 E20 F18000\n";
+        let out = apply_layer_cooling_slowdown(gcode, &s);
+        assert!(
+            out.contains(" F12000"),
+            "outer wall feed should stay\n{out}"
+        );
+        assert!(!out.contains(" F18000"), "inner wall should stretch\n{out}");
     }
 
     #[test]
