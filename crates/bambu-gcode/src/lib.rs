@@ -44,13 +44,16 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let first_f = settings.first_layer_speed_mm_s * 60.0;
     let first_infill_f = settings.first_layer_infill_speed_mm_s * 60.0;
     let infill_f = settings.infill_speed_mm_s * 60.0;
+    let gap_f = settings.gap_infill_speed_mm_s * 60.0;
     let solid_f = settings.solid_infill_speed_mm_s * 60.0;
     let support_f = settings.support_speed_mm_s * 60.0;
     let support_interface_f = settings.support_interface_speed_mm_s * 60.0;
 
-    let mut e = 0.0_f64;
-    let mut last: Option<(f64, f64)> = None;
+    let mut state = WriterState::default();
     for (layer_i, layer) in sliced.layers.iter().enumerate() {
+        if layer_i > 0 && settings.retract_when_changing_layer {
+            retract(&mut out, settings, &mut state)?;
+        }
         writeln!(out, "; CHANGE_LAYER")?;
         writeln!(out, ";LAYER:{}", layer.index)?;
         writeln!(out, "; LAYER_HEIGHT:{}", layer.height_mm)?;
@@ -62,6 +65,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         let wall_f = if first { first_f } else { outer_f };
         let inner_wall_f = if first { first_f } else { inner_f };
         let sparse_f = if first { first_infill_f } else { infill_f };
+        let gap_layer_f = if first { first_f } else { gap_f };
         let solid_layer_f = if first { first_f } else { solid_f };
         let support_layer_f = if first { first_f } else { support_f };
         let support_interface_layer_f = if first { first_f } else { support_interface_f };
@@ -87,13 +91,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.skirt,
                 true,
-                &mut e,
                 e_per_mm,
                 wall_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.brim.is_empty() {
@@ -102,13 +105,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.brim,
                 true,
-                &mut e,
                 e_per_mm,
                 wall_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.support.is_empty() {
@@ -117,13 +119,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.support,
                 false,
-                &mut e,
                 e_per_mm,
                 support_layer_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.support_interface.is_empty() {
@@ -132,13 +133,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.support_interface,
                 false,
-                &mut e,
                 e_per_mm,
                 support_interface_layer_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         emit_wall_paths(
@@ -146,7 +146,6 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             "Outer wall",
             &layer.outer_walls,
             true,
-            &mut e,
             e_per_mm,
             wall_f,
             settings,
@@ -155,14 +154,13 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             settings.enable_overhang_speed,
             !first,
             mm3_per_mm,
-            &mut last,
+            &mut state,
         )?;
         emit_wall_paths(
             &mut out,
             "Inner wall",
             &layer.inner_walls,
             true,
-            &mut e,
             e_per_mm,
             inner_wall_f,
             settings,
@@ -171,21 +169,34 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             settings.enable_overhang_speed,
             !first,
             mm3_per_mm,
-            &mut last,
+            &mut state,
         )?;
+        if !layer.gap_infill.is_empty() {
+            writeln!(out, "; FEATURE: Gap infill")?;
+            emit_paths(
+                &mut out,
+                &layer.gap_infill,
+                false,
+                e_per_mm,
+                gap_layer_f,
+                travel_f,
+                settings,
+                mm3_per_mm,
+                &mut state,
+            )?;
+        }
         if !layer.infill.is_empty() {
             writeln!(out, "; FEATURE: Sparse infill")?;
             emit_paths(
                 &mut out,
                 &layer.infill,
                 false,
-                &mut e,
                 e_per_mm,
                 sparse_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.solid_infill.is_empty() {
@@ -194,13 +205,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.solid_infill,
                 false,
-                &mut e,
                 e_per_mm,
                 solid_layer_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.bridge.is_empty() {
@@ -215,13 +225,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         o,
                         &layer.bridge,
                         false,
-                        &mut e,
                         e_per_mm,
                         bridge_layer_f,
                         travel_f,
                         settings,
                         mm3_per_mm,
-                        &mut last,
+                        &mut state,
                     )
                 },
             )?;
@@ -232,13 +241,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.bottom_surface,
                 false,
-                &mut e,
                 e_per_mm,
                 wall_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.top_surface.is_empty() {
@@ -247,13 +255,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut out,
                 &layer.top_surface,
                 false,
-                &mut e,
                 e_per_mm,
                 top_layer_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
-                &mut last,
+                &mut state,
             )?;
         }
         if !layer.ironing.is_empty() {
@@ -273,13 +280,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         o,
                         &layer.ironing,
                         iron_closed,
-                        &mut e,
                         iron_e,
                         iron_f,
                         travel_f,
                         settings,
                         iron_flow.mm3_per_mm(),
-                        &mut last,
+                        &mut state,
                     )
                 },
             )?;
@@ -319,17 +325,18 @@ fn emit_paths(
     out: &mut String,
     paths: &[Polyline],
     closed: bool,
-    e: &mut f64,
     e_per_mm: f64,
     print_f: f64,
     travel_f: f64,
     settings: &SliceSettings,
     mm3_per_mm: f64,
-    last: &mut Option<(f64, f64)>,
+    state: &mut WriterState,
 ) -> Result<(), GcodeError> {
     let print_f = settings.cap_extrude_feed_mm_min(print_f, mm3_per_mm);
     for path in paths {
-        emit_one_path(out, path, closed, e, e_per_mm, print_f, travel_f, last)?;
+        emit_one_path(
+            out, path, closed, e_per_mm, print_f, travel_f, settings, state,
+        )?;
     }
     Ok(())
 }
@@ -423,7 +430,6 @@ fn emit_wall_paths(
     supported_feature: &str,
     paths: &[Polyline],
     closed: bool,
-    e: &mut f64,
     e_per_mm: f64,
     print_f: f64,
     settings: &SliceSettings,
@@ -432,7 +438,7 @@ fn emit_wall_paths(
     slow_overhang: bool,
     apply_small: bool,
     mm3_per_mm: f64,
-    last: &mut Option<(f64, f64)>,
+    state: &mut WriterState,
 ) -> Result<(), GcodeError> {
     if paths.is_empty() {
         return Ok(());
@@ -481,11 +487,11 @@ fn emit_wall_paths(
                         o,
                         &run.path,
                         closed && single,
-                        e,
                         e_per_mm,
                         feed,
                         travel_f,
-                        last,
+                        settings,
+                        state,
                     )
                 },
             )?;
@@ -494,34 +500,227 @@ fn emit_wall_paths(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct WriterState {
+    e: f64,
+    retracted: f64,
+    last: Option<(f64, f64)>,
+    wipe: Vec<(f64, f64)>,
+    last_print_f: f64,
+}
+
+const TRAVEL_EPS_MM: f64 = 1e-4;
+
+fn xy_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
+    ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
+}
+
+fn xy_len(path: &[(f64, f64)]) -> f64 {
+    path.windows(2).map(|w| xy_dist(w[0], w[1])).sum()
+}
+
+fn clip_prefix(path: &[(f64, f64)], max_len: f64) -> Vec<(f64, f64)> {
+    if path.len() < 2 || max_len <= TRAVEL_EPS_MM {
+        return Vec::new();
+    }
+    let mut out = vec![path[0]];
+    let mut remaining = max_len;
+    for window in path.windows(2) {
+        let d = xy_dist(window[0], window[1]);
+        if d <= remaining {
+            out.push(window[1]);
+            remaining -= d;
+            if remaining <= TRAVEL_EPS_MM {
+                break;
+            }
+        } else {
+            let t = remaining / d;
+            out.push((
+                window[0].0 + (window[1].0 - window[0].0) * t,
+                window[0].1 + (window[1].1 - window[0].1) * t,
+            ));
+            break;
+        }
+    }
+    out
+}
+
+fn wipe_feed_mm_min(settings: &SliceSettings, state: &WriterState) -> f64 {
+    if settings.role_base_wipe_speed && state.last_print_f > 1e-9 {
+        state.last_print_f
+    } else {
+        settings.travel_speed_mm_s * settings.wipe_speed_percent / 100.0 * 60.0
+    }
+}
+
+fn emit_retract_e(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+    amount: f64,
+) -> Result<(), GcodeError> {
+    if amount <= 1e-9 {
+        return Ok(());
+    }
+    state.e -= amount;
+    state.retracted += amount;
+    writeln!(
+        out,
+        "G1 E{:.5} F{:.0} ; retract",
+        state.e,
+        settings.retraction_speed_mm_s * 60.0
+    )?;
+    Ok(())
+}
+
+fn wipe(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+    remaining: f64,
+) -> Result<(), GcodeError> {
+    if remaining <= 1e-9 || state.wipe.len() < 2 {
+        return Ok(());
+    }
+    let path_len = xy_len(&state.wipe);
+    if path_len <= TRAVEL_EPS_MM {
+        return Ok(());
+    }
+    let mut wipe_dist = settings.wipe_distance_mm;
+    if path_len < wipe_dist {
+        wipe_dist = path_len;
+    }
+    wipe_dist = wipe_dist.max(1e-9);
+    let clipped = clip_prefix(&state.wipe, wipe_dist);
+    if clipped.len() < 2 {
+        return Ok(());
+    }
+    let actual = xy_len(&clipped).max(1e-9);
+    writeln!(out, "; WIPE_START")?;
+    let wipe_f = wipe_feed_mm_min(settings, state);
+    for window in clipped.windows(2) {
+        let seg = xy_dist(window[0], window[1]);
+        let d_e = remaining * (seg / actual) * 0.95;
+        state.e -= d_e;
+        state.retracted += d_e;
+        writeln!(
+            out,
+            "G1 X{:.3} Y{:.3} E{:.5} F{:.0} ;_WIPE",
+            window[1].0, window[1].1, state.e, wipe_f
+        )?;
+        state.last = Some(window[1]);
+    }
+    writeln!(out, "; WIPE_END")?;
+    Ok(())
+}
+
+fn retract(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+) -> Result<(), GcodeError> {
+    let length = settings.retraction_length_mm;
+    if length <= 1e-9 {
+        state.wipe.clear();
+        return Ok(());
+    }
+    let remaining = (length - state.retracted).max(0.0);
+    if remaining <= 1e-9 {
+        state.wipe.clear();
+        return Ok(());
+    }
+    let can_wipe = settings.wipe && settings.wipe_distance_mm > 1e-9 && state.wipe.len() >= 2;
+    if can_wipe {
+        let before = remaining * settings.retract_before_wipe.clamp(0.0, 1.0);
+        emit_retract_e(out, settings, state, before)?;
+        let leftover = (length - state.retracted).max(0.0);
+        wipe(out, settings, state, leftover)?;
+        let still = (length - state.retracted).max(0.0);
+        emit_retract_e(out, settings, state, still)?;
+    } else {
+        emit_retract_e(out, settings, state, remaining)?;
+    }
+    state.wipe.clear();
+    Ok(())
+}
+
+fn unretract(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+) -> Result<(), GcodeError> {
+    if state.retracted <= 1e-9 {
+        return Ok(());
+    }
+    let d_e = state.retracted + settings.retract_restart_extra_mm;
+    state.e += d_e;
+    state.retracted = 0.0;
+    writeln!(
+        out,
+        "G1 E{:.5} F{:.0} ; unretract",
+        state.e,
+        settings.deretract_speed_mm_s() * 60.0
+    )?;
+    Ok(())
+}
+
+fn travel_to(
+    out: &mut String,
+    dest: (f64, f64),
+    travel_f: f64,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+) -> Result<(), GcodeError> {
+    if let Some(prev) = state.last {
+        let dist = xy_dist(prev, dest);
+        if dist < TRAVEL_EPS_MM {
+            return Ok(());
+        }
+        if dist + 1e-9 >= settings.retraction_minimum_travel_mm {
+            retract(out, settings, state)?;
+        }
+    }
+    writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", dest.0, dest.1, travel_f)?;
+    state.last = Some(dest);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_one_path(
     out: &mut String,
     path: &[Point],
     closed: bool,
-    e: &mut f64,
     e_per_mm: f64,
     print_f: f64,
     travel_f: f64,
-    last: &mut Option<(f64, f64)>,
+    settings: &SliceSettings,
+    state: &mut WriterState,
 ) -> Result<(), GcodeError> {
     if path.len() < 2 {
         return Ok(());
     }
     let pts: Vec<(f64, f64)> = path.iter().copied().map(xy).collect();
     let start = pts[0];
-    writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", start.0, start.1, travel_f)?;
-    *last = Some(start);
+    travel_to(out, start, travel_f, settings, state)?;
+    unretract(out, settings, state)?;
     let n = pts.len();
     let end = if closed { n } else { n - 1 };
+    let mut trail = vec![start];
     for i in 0..end {
         let a = pts[i];
         let b = pts[(i + 1) % n];
-        let dist = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-        *e += dist * e_per_mm;
-        writeln!(out, "G1 X{:.3} Y{:.3} E{:.5} F{:.0}", b.0, b.1, *e, print_f)?;
-        *last = Some(b);
+        let dist = xy_dist(a, b);
+        state.e += dist * e_per_mm;
+        writeln!(
+            out,
+            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}",
+            b.0, b.1, state.e, print_f
+        )?;
+        state.last = Some(b);
+        trail.push(b);
     }
+    state.last_print_f = print_f;
+    state.wipe = trail.into_iter().rev().collect();
     Ok(())
 }
 
@@ -1097,8 +1296,11 @@ mod tests {
         settings.filament_max_volumetric_speed_mm3_s = 0.0;
         let sliced = slice_mesh(&mesh, &settings).unwrap();
         let gcode = write_gcode(&settings, &sliced).unwrap();
+        let fast_inner = gcode.lines().any(|line| {
+            line.contains(" F18000") && !line.contains("_WIPE") && !line.contains("retract")
+        });
         assert!(
-            !gcode.contains(" F18000"),
+            !fast_inner,
             "300 mm/s inner walls should be stretched for layer cooling"
         );
     }
@@ -1114,6 +1316,22 @@ mod tests {
         let first_fan = gcode.find("M106 S0\n").expect("closed fan");
         let full_fan = gcode.find("M106 S255\n").expect("full fan");
         assert!(first_fan < full_fan);
+    }
+
+    #[test]
+    fn thin_wall_emits_gap_infill() {
+        let mesh = TriangleMesh::box_mm(0.7, 20.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.wall_loops = 2;
+        settings.gap_infill_speed_mm_s = 45.0;
+        settings.first_layer_speed_mm_s = 20.0;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(sliced.layers.iter().any(|l| !l.gap_infill.is_empty()));
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Gap infill"));
+        assert!(gcode.contains(" F2700"), "gap infill 45 mm/s");
     }
 
     #[test]
@@ -1163,5 +1381,69 @@ mod tests {
         assert!(!gcode.contains(";_IRONING_FAN"));
         assert!(gcode.contains("M106 S102\n"), "ironing 40%\n{gcode}");
         assert!(gcode.contains("M106 S255\n"), "layer 100%");
+    }
+
+    #[test]
+    fn long_travel_emits_retract_and_unretract() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.wipe = false;
+        settings.retract_when_changing_layer = false;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; retract"), "{gcode}");
+        assert!(gcode.contains("; unretract"));
+        assert!(
+            gcode.contains("G1 E") && gcode.contains(" F1800"),
+            "30 mm/s retract"
+        );
+        assert!(!gcode.contains("; WIPE_START"));
+    }
+
+    #[test]
+    fn short_travel_skips_retract() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.retraction_minimum_travel_mm = 1.0e6;
+        settings.retract_when_changing_layer = false;
+        settings.wipe = false;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(!gcode.contains("; retract"), "{gcode}");
+        assert!(!gcode.contains("; unretract"));
+    }
+
+    #[test]
+    fn zero_retract_length_disables() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.retraction_length_mm = 0.0;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(!gcode.contains("; retract"));
+        assert!(!gcode.contains("; WIPE_START"));
+    }
+
+    #[test]
+    fn bbl_wipe_uses_reverse_path() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; WIPE_START"));
+        assert!(gcode.contains("; WIPE_END"));
+        assert!(gcode.contains(";_WIPE"));
+        assert!(gcode.contains("; unretract"));
+        let start = gcode.find("; WIPE_START").unwrap();
+        let end = gcode.find("; WIPE_END").unwrap();
+        assert!(start < end);
+        let wipe = &gcode[start..end];
+        assert!(wipe.contains("G1 X"), "wipe travels along the last path");
     }
 }

@@ -297,6 +297,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "gap_infill_speed",
+        num_str(settings.gap_infill_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filter_out_gap_fill",
+        num_str(settings.filter_out_gap_fill_mm),
+    );
+    insert(
+        &mut map,
         "travel_speed",
         num_str(settings.travel_speed_mm_s),
     );
@@ -434,6 +444,57 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "retraction_length",
+        num_str(settings.retraction_length_mm),
+    );
+    insert(
+        &mut map,
+        "retraction_speed",
+        num_str(settings.retraction_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "deretraction_speed",
+        num_str(settings.deretraction_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "retraction_minimum_travel",
+        num_str(settings.retraction_minimum_travel_mm),
+    );
+    insert_bool(
+        &mut map,
+        "retract_when_changing_layer",
+        settings.retract_when_changing_layer,
+    );
+    insert_bool(&mut map, "wipe", settings.wipe);
+    insert(
+        &mut map,
+        "wipe_distance",
+        num_str(settings.wipe_distance_mm),
+    );
+    insert(
+        &mut map,
+        "retract_before_wipe",
+        format!("{}%", num_str(settings.retract_before_wipe * 100.0)),
+    );
+    insert(
+        &mut map,
+        "wipe_speed",
+        format!("{}%", num_str(settings.wipe_speed_percent)),
+    );
+    insert_bool(
+        &mut map,
+        "role_base_wipe_speed",
+        settings.role_base_wipe_speed,
+    );
+    insert(
+        &mut map,
+        "retract_restart_extra",
+        num_str(settings.retract_restart_extra_mm),
+    );
+    insert(
+        &mut map,
         "machine_max_jerk_x",
         num_str(settings.xy_jerk_mm_s),
     );
@@ -529,6 +590,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "small_perimeter_speed"
             | "small_perimeter_threshold"
             | "sparse_infill_speed"
+            | "gap_infill_speed"
             | "internal_solid_infill_speed"
             | "ironing_type"
             | "ironing_pattern"
@@ -763,6 +825,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "sparse_infill_speed") {
         s.infill_speed_mm_s = v;
     }
+    if let Some(v) = num(map, "gap_infill_speed") {
+        s.gap_infill_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filter_out_gap_fill") {
+        s.filter_out_gap_fill_mm = v.max(0.0);
+    }
     if let Some(v) = num(map, "travel_speed") {
         s.travel_speed_mm_s = v;
     }
@@ -862,6 +930,53 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "machine_max_jerk_z") {
         s.z_jerk_mm_s = v.max(0.0);
     }
+    if let Some(v) = filament_or_printer(map, "filament_retraction_length", "retraction_length") {
+        s.retraction_length_mm = v.max(0.0);
+    }
+    if let Some(v) = filament_or_printer(map, "filament_retraction_speed", "retraction_speed") {
+        s.retraction_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = filament_or_printer(map, "filament_deretraction_speed", "deretraction_speed") {
+        s.deretraction_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = filament_or_printer(
+        map,
+        "filament_retraction_minimum_travel",
+        "retraction_minimum_travel",
+    ) {
+        s.retraction_minimum_travel_mm = v.max(0.0);
+    }
+    if let Some(v) = filament_or_printer_bool(
+        map,
+        "filament_retract_when_changing_layer",
+        "retract_when_changing_layer",
+    ) {
+        s.retract_when_changing_layer = v;
+    }
+    if let Some(v) = filament_or_printer_bool(map, "filament_wipe", "wipe") {
+        s.wipe = v;
+    }
+    if let Some(v) = filament_or_printer(map, "filament_wipe_distance", "wipe_distance") {
+        s.wipe_distance_mm = v.max(0.0);
+    }
+    if let Some(v) =
+        filament_or_printer_percent(map, "filament_retract_before_wipe", "retract_before_wipe")
+    {
+        s.retract_before_wipe = v.clamp(0.0, 1.0);
+    }
+    if let Some((v, _)) = float_or_percent(map, "wipe_speed") {
+        s.wipe_speed_percent = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "role_base_wipe_speed") {
+        s.role_base_wipe_speed = v;
+    }
+    if let Some(v) = filament_or_printer(
+        map,
+        "filament_retract_restart_extra",
+        "retract_restart_extra",
+    ) {
+        s.retract_restart_extra_mm = v;
+    }
 }
 
 fn text(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -881,6 +996,31 @@ fn value_text(v: &Value) -> Option<String> {
 fn num(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
     let raw = text(map, key)?;
     raw.trim_end_matches('%').trim().parse().ok()
+}
+
+/// Filament JSON uses `"nil"` to inherit the printer value.
+fn filament_or_printer(
+    map: &serde_json::Map<String, Value>,
+    filament: &str,
+    printer: &str,
+) -> Option<f64> {
+    num(map, filament).or_else(|| num(map, printer))
+}
+
+fn filament_or_printer_bool(
+    map: &serde_json::Map<String, Value>,
+    filament: &str,
+    printer: &str,
+) -> Option<bool> {
+    bool_val(map, filament).or_else(|| bool_val(map, printer))
+}
+
+fn filament_or_printer_percent(
+    map: &serde_json::Map<String, Value>,
+    filament: &str,
+    printer: &str,
+) -> Option<f64> {
+    percent(map, filament).or_else(|| percent(map, printer))
 }
 
 fn float_or_percent(map: &serde_json::Map<String, Value>, key: &str) -> Option<(f64, bool)> {
@@ -1061,6 +1201,7 @@ mod tests {
         assert!((s.small_perimeter_speed_mm_s() - 100.0).abs() < 1e-9);
         assert!((s.support_speed_mm_s - 150.0).abs() < 1e-9);
         assert!((s.support_interface_speed_mm_s - 80.0).abs() < 1e-9);
+        assert!((s.gap_infill_speed_mm_s - 250.0).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
@@ -1130,6 +1271,26 @@ mod tests {
             crate::OverhangFanThreshold::ThreeFour
         );
         assert_eq!(s.ironing_fan_speed, -1);
+    }
+
+    #[test]
+    fn p1s_machine_sets_retraction() {
+        let paths = bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mut s = SliceSettings::default();
+        overlay_bbl_profile(&mut s, &paths.machine).unwrap();
+        assert!((s.retraction_length_mm - 0.8).abs() < 1e-9);
+        assert!((s.retraction_speed_mm_s - 30.0).abs() < 1e-9);
+        assert!((s.deretraction_speed_mm_s - 30.0).abs() < 1e-9);
+        assert!((s.retraction_minimum_travel_mm - 1.0).abs() < 1e-9);
+        assert!(s.retract_when_changing_layer);
+        assert!(s.wipe);
+        assert!((s.wipe_distance_mm - 2.0).abs() < 1e-9);
+        assert!(s.retract_before_wipe.abs() < 1e-9);
+        let baked = SliceSettings::bbl_0_20();
+        assert!((baked.retraction_length_mm - 0.8).abs() < 1e-9);
+        assert!(baked.wipe);
+        assert!(baked.retract_when_changing_layer);
+        assert!((baked.retraction_minimum_travel_mm - 1.0).abs() < 1e-9);
     }
 
     #[test]

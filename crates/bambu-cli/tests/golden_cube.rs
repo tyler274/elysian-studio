@@ -68,6 +68,7 @@ fn cube_matches_cpp_bambu_studio() {
     write_flattened_bbl_profile(&profiles.filament, &filament_flat).expect("flatten filament");
 
     let mut settings = load_bbl_process(&profiles.process).expect("load BBL process");
+    overlay_bbl_profile(&mut settings, &profiles.machine).expect("overlay machine");
     overlay_bbl_profile(&mut settings, &profiles.filament).expect("overlay filament");
     assert_eq!(settings.wall_loops, 2);
     assert!((settings.infill_density - 0.15).abs() < 1e-9);

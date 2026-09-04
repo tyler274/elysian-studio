@@ -308,6 +308,7 @@ fn run() -> Result<(), CliError> {
             } else if bbl_0_20 {
                 if let Some(paths) = bbl_oracle_paths() {
                     let mut s = load_bbl_process(&paths.process)?;
+                    overlay_bbl_profile(&mut s, &paths.machine)?;
                     overlay_bbl_profile(&mut s, &paths.filament)?;
                     s
                 } else {

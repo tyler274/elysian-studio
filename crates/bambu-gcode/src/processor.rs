@@ -63,10 +63,16 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
     let mut e = 0.0_f64;
     let mut f_mm_min = 0.0_f64;
     let mut filament_mm = 0.0_f64;
+    let mut wiping = false;
     let mut blocks = Vec::new();
     let mut prev_state: Option<PrevMove> = None;
 
     for line in gcode.lines() {
+        if line.contains("WIPE_START") {
+            wiping = true;
+        } else if line.contains("WIPE_END") {
+            wiping = false;
+        }
         let trimmed = strip_comment(line).trim();
         if trimmed.is_empty() {
             continue;
@@ -110,10 +116,10 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         let dy = ny - y;
         let dz = nz - z;
         let de = ne - e;
-        if de > 0.0 {
+        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        if de > 0.0 && !wiping && distance > 1e-9 {
             filament_mm += de;
         }
-        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
         x = nx;
         y = ny;
         z = nz;

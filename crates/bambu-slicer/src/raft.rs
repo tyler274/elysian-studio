@@ -130,6 +130,7 @@ fn raft_layer(
         contours,
         outer_walls: Vec::new(),
         inner_walls: Vec::new(),
+        gap_infill: Vec::new(),
         infill_region: Vec::new(),
         infill: Vec::new(),
         solid_infill: Vec::new(),

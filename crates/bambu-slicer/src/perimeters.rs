@@ -24,6 +24,7 @@ pub struct PerimeterResult {
     pub outer: Vec<Polyline>,
     pub inner: Vec<Polyline>,
     pub infill_region: Vec<Polygon>,
+    pub gap_infill: Vec<Polyline>,
     pub seam_hint: Option<bambu_geom::Point>,
 }
 
@@ -62,6 +63,7 @@ fn classic_perimeters(
 
     let wall_n = if one_wall_layer { 1 } else { loops };
     let mut infill_region = offset_polygons(contours, -w * (wall_n as f64 + 0.5));
+    let mut gap_infill = Vec::new();
 
     if !one_wall_layer && loops > 1 && settings.top_one_wall == TopOneWallType::AllTop {
         if let Some(upper) = upper {
@@ -79,10 +81,20 @@ fn classic_perimeters(
         }
     }
 
+    if settings.gap_infill_speed_mm_s > 0.0 {
+        let areas = collect_gap_areas(contours, wall_n, w);
+        gap_infill = centerline_gaps(&areas, w, settings, &mut hint);
+        if !areas.is_empty() && !infill_region.is_empty() {
+            let covered = offset_polygons(&areas, w * 0.5);
+            infill_region = difference_polygons(&infill_region, &covered);
+        }
+    }
+
     PerimeterResult {
         outer,
         inner,
         infill_region,
+        gap_infill,
         seam_hint: hint,
     }
 }
@@ -125,6 +137,7 @@ fn arachne_perimeters(
         outer,
         inner,
         infill_region,
+        gap_infill: Vec::new(),
         seam_hint: hint,
     }
 }
@@ -302,6 +315,56 @@ fn offset_keep(contours: &[Polygon], inset_mm: f64) -> Option<Vec<Polygon>> {
     }
 }
 
+/// C++ `INSET_OVERLAP_TOLERANCE` in `libslic3r.h`.
+const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
+
+/// Collapsed leftover between successive onions (`PerimeterGenerator` `gaps`).
+fn collect_gap_areas(contours: &[Polygon], loops: u32, w: f64) -> Vec<Polygon> {
+    let min_spacing = w * (1.0 - INSET_OVERLAP_TOLERANCE);
+    let mut last = contours.to_vec();
+    let mut gaps = Vec::new();
+    for _ in 0..loops.max(1) {
+        let shrunk = offset_polygons(&last, -(w + min_spacing * 0.5));
+        let offsets = offset_polygons(&shrunk, min_spacing * 0.5);
+        let inner_half = offset_polygons(&last, -0.5 * w);
+        let grown_next = offset_polygons(&offsets, 0.5 * w);
+        gaps.extend(difference_polygons(&inner_half, &grown_next));
+        last = offsets;
+        if last.is_empty() {
+            break;
+        }
+    }
+    gaps
+}
+
+fn centerline_gaps(
+    gaps: &[Polygon],
+    w: f64,
+    settings: &SliceSettings,
+    hint: &mut Option<bambu_geom::Point>,
+) -> Vec<Polyline> {
+    let min = 0.2 * w * (1.0 - INSET_OVERLAP_TOLERANCE);
+    let max = 2.0 * w;
+    let mut opened = offset_polygons(gaps, -min * 0.5);
+    opened.retain(|g| g.len() >= 3);
+    if opened.is_empty() {
+        return Vec::new();
+    }
+    let Some(rings) = deepest_inset(&opened, 0.0, (max * 0.5).min(w)) else {
+        return Vec::new();
+    };
+    let mut paths = seam_rings(rings, settings, hint);
+    let min_len = settings.filter_out_gap_fill_mm;
+    if min_len > 0.0 {
+        paths.retain(|p| polyline_len_mm(p) >= min_len);
+    }
+    paths
+}
+
+fn polyline_len_mm(path: &[bambu_geom::Point]) -> f64 {
+    path.windows(2).map(|w| w[0].distance_mm(w[1])).sum()
+}
+
 fn seam_rings(
     mut rings: Vec<Polygon>,
     settings: &SliceSettings,
@@ -380,6 +443,11 @@ mod tests {
         let b = generate(&contours, &arachne, None, None);
         assert_eq!(a.outer.len(), 1);
         assert!(a.inner.is_empty(), "classic cannot fit a second wall");
+        assert!(
+            !a.gap_infill.is_empty(),
+            "classic leftover should be gap fill"
+        );
+        assert!(b.gap_infill.is_empty(), "arachne leftover is a wall");
         assert_eq!(b.outer.len(), 1);
         assert!(
             !b.inner.is_empty(),

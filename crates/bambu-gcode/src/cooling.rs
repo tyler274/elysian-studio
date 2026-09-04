@@ -127,7 +127,7 @@ fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> Str
         let length = ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt();
         let feed_mm_s = f_mm_min / 60.0;
         let has_e = parse_axis(&upper, b'E').is_some();
-        let is_adj = is_g1 && has_e && length > 1e-9 && feed_mm_s > 1e-9;
+        let is_adj = is_g1 && has_e && length > 1e-9 && feed_mm_s > 1e-9 && !line.contains("_WIPE");
         if is_adj {
             adjustable.push(AdjMove {
                 idx,

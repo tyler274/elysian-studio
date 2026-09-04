@@ -409,6 +409,10 @@ pub struct SliceSettings {
     /// C++ `initial_layer_infill_speed`.
     pub first_layer_infill_speed_mm_s: f64,
     pub infill_speed_mm_s: f64,
+    /// C++ `gap_infill_speed`. 0 disables gap fill.
+    pub gap_infill_speed_mm_s: f64,
+    /// C++ `filter_out_gap_fill` (mm). Drop shorter gap polylines.
+    pub filter_out_gap_fill_mm: f64,
     pub travel_speed_mm_s: f64,
     pub support_speed_mm_s: f64,
     /// C++ `support_interface_speed`.
@@ -519,6 +523,28 @@ pub struct SliceSettings {
     pub reduce_fan_stop_start_freq: bool,
     /// C++ `filament_max_volumetric_speed` (mm³/s). 0 disables the cap.
     pub filament_max_volumetric_speed_mm3_s: f64,
+    /// C++ `retraction_length` (mm). 0 disables retraction.
+    pub retraction_length_mm: f64,
+    /// C++ `retraction_speed` (mm/s).
+    pub retraction_speed_mm_s: f64,
+    /// C++ `deretraction_speed` (mm/s). 0 means use retraction speed.
+    pub deretraction_speed_mm_s: f64,
+    /// C++ `retraction_minimum_travel` (mm).
+    pub retraction_minimum_travel_mm: f64,
+    /// C++ `retract_when_changing_layer`.
+    pub retract_when_changing_layer: bool,
+    /// C++ `wipe` (wipe along the last path while retracting).
+    pub wipe: bool,
+    /// C++ `wipe_distance` (mm).
+    pub wipe_distance_mm: f64,
+    /// C++ `retract_before_wipe` as a 0–1 factor.
+    pub retract_before_wipe: f64,
+    /// C++ `wipe_speed` percent of travel (when not role-based).
+    pub wipe_speed_percent: f64,
+    /// C++ `role_base_wipe_speed`.
+    pub role_base_wipe_speed: bool,
+    /// C++ `retract_restart_extra` (mm extra on unretract).
+    pub retract_restart_extra_mm: f64,
     /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
@@ -559,6 +585,8 @@ impl Default for SliceSettings {
             first_layer_speed_mm_s: 50.0,
             first_layer_infill_speed_mm_s: 80.0,
             infill_speed_mm_s: 80.0,
+            gap_infill_speed_mm_s: 30.0,
+            filter_out_gap_fill_mm: 0.0,
             travel_speed_mm_s: 120.0,
             support_speed_mm_s: 80.0,
             support_interface_speed_mm_s: 80.0,
@@ -620,6 +648,17 @@ impl Default for SliceSettings {
             slow_down_min_speed_mm_s: 10.0,
             reduce_fan_stop_start_freq: false,
             filament_max_volumetric_speed_mm3_s: 0.0,
+            retraction_length_mm: 0.8,
+            retraction_speed_mm_s: 30.0,
+            deretraction_speed_mm_s: 0.0,
+            retraction_minimum_travel_mm: 2.0,
+            retract_when_changing_layer: false,
+            wipe: false,
+            wipe_distance_mm: 2.0,
+            retract_before_wipe: 1.0,
+            wipe_speed_percent: 80.0,
+            role_base_wipe_speed: true,
+            retract_restart_extra_mm: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
         }
@@ -680,6 +719,15 @@ impl SliceSettings {
         }
     }
 
+    /// C++ `Extruder::deretract_speed`: zero deretraction uses retraction speed.
+    pub fn deretract_speed_mm_s(&self) -> f64 {
+        if self.deretraction_speed_mm_s > 0.0 {
+            self.deretraction_speed_mm_s
+        } else {
+            self.retraction_speed_mm_s
+        }
+    }
+
     /// Cap an extrusion feed (mm/min) with `filament_max_volumetric_speed`.
     pub fn cap_extrude_feed_mm_min(&self, print_f: f64, mm3_per_mm: f64) -> f64 {
         let max = self.filament_max_volumetric_speed_mm3_s;
@@ -734,6 +782,7 @@ impl SliceSettings {
             first_layer_speed_mm_s: 50.0,
             first_layer_infill_speed_mm_s: 105.0,
             infill_speed_mm_s: 270.0,
+            gap_infill_speed_mm_s: 250.0,
             solid_infill_speed_mm_s: 250.0,
             support_speed_mm_s: 150.0,
             support_interface_speed_mm_s: 80.0,
@@ -756,6 +805,14 @@ impl SliceSettings {
             slow_down_min_speed_mm_s: 20.0,
             reduce_fan_stop_start_freq: true,
             filament_max_volumetric_speed_mm3_s: 12.0,
+            retraction_length_mm: 0.8,
+            retraction_speed_mm_s: 30.0,
+            deretraction_speed_mm_s: 30.0,
+            retraction_minimum_travel_mm: 1.0,
+            retract_when_changing_layer: true,
+            wipe: true,
+            wipe_distance_mm: 2.0,
+            retract_before_wipe: 0.0,
             ..Self::default()
         }
     }

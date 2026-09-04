@@ -61,6 +61,8 @@ pub struct Layer {
     pub contours: Vec<Polygon>,
     pub outer_walls: Vec<Polyline>,
     pub inner_walls: Vec<Polyline>,
+    /// C++ `erGapFill` leftover between walls.
+    pub gap_infill: Vec<Polyline>,
     pub infill_region: Vec<Polygon>,
     pub infill: Vec<Polyline>,
     pub solid_infill: Vec<Polyline>,
@@ -454,6 +456,7 @@ fn slice_prepared(
             LayerToolpaths {
                 outer_walls,
                 inner_walls,
+                gap_infill: peri.gap_infill,
                 infill_region: peri.infill_region,
                 region_infill: Vec::new(),
                 region_settings: Vec::new(),
@@ -469,6 +472,7 @@ fn slice_prepared(
             contours: prepared[i].contours.clone(),
             outer_walls: paths.outer_walls,
             inner_walls: paths.inner_walls,
+            gap_infill: paths.gap_infill,
             infill_region: paths.infill_region,
             infill: Vec::new(),
             solid_infill: Vec::new(),
@@ -518,6 +522,7 @@ fn slice_prepared(
 struct LayerToolpaths {
     outer_walls: Vec<Polyline>,
     inner_walls: Vec<Polyline>,
+    gap_infill: Vec<Polyline>,
     infill_region: Vec<Polygon>,
     region_infill: Vec<Vec<Polygon>>,
     region_settings: Vec<SliceSettings>,
@@ -533,6 +538,7 @@ fn layer_region_perimeters(
     let n = prepared[i].regions.len();
     let mut outer_walls = Vec::new();
     let mut inner_walls = Vec::new();
+    let mut gap_infill = Vec::new();
     let mut infill_acc = Vec::new();
     let mut region_infill = Vec::with_capacity(n);
     for r in 0..n {
@@ -561,12 +567,14 @@ fn layer_region_perimeters(
         );
         outer_walls.extend(outer);
         inner_walls.extend(inner);
+        gap_infill.extend(peri.gap_infill);
         infill_acc.extend(peri.infill_region.iter().cloned());
         region_infill.push(peri.infill_region);
     }
     LayerToolpaths {
         outer_walls,
         inner_walls,
+        gap_infill,
         infill_region: union_polygons(&infill_acc),
         region_infill,
         region_settings: prepared[i].region_settings.clone(),
@@ -714,6 +722,11 @@ mod tests {
         let mid_b = &b.layers[b.layers.len() / 2];
         assert_eq!(mid_a.outer_walls.len(), 1);
         assert!(mid_a.inner_walls.is_empty());
+        assert!(
+            !mid_a.gap_infill.is_empty(),
+            "classic leftover should be gap fill"
+        );
+        assert!(mid_b.gap_infill.is_empty());
         assert_eq!(mid_b.outer_walls.len(), 1);
         assert!(
             !mid_b.inner_walls.is_empty(),
@@ -1348,6 +1361,7 @@ mod tests {
             assert_eq!(a.contours, b.contours);
             assert_eq!(a.outer_walls, b.outer_walls);
             assert_eq!(a.inner_walls, b.inner_walls);
+            assert_eq!(a.gap_infill, b.gap_infill);
             assert_eq!(a.infill, b.infill);
             assert_eq!(a.solid_infill, b.solid_infill);
             assert_eq!(a.top_surface, b.top_surface);

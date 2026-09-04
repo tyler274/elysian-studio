@@ -105,6 +105,10 @@ impl TriangleMesh {
         Self::aabb_box(Vec3::ZERO, Vec3::splat(size))
     }
 
+    pub fn box_mm(x: f32, y: f32, z: f32) -> Self {
+        Self::aabb_box(Vec3::ZERO, Vec3::new(x, y, z))
+    }
+
     pub fn append(&mut self, other: &Self) {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&other.vertices);
