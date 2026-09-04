@@ -522,6 +522,9 @@ struct WriterState {
     last_print_f: f64,
     z: f64,
     lifted: f64,
+    /// C++ `m_to_lift`: hop height queued by `lazy_lift` until the next XY travel.
+    to_lift: f64,
+    to_lift_type: ZHopType,
 }
 
 const TRAVEL_EPS_MM: f64 = 1e-4;
@@ -654,41 +657,95 @@ fn retract(
         }
     }
     state.wipe.clear();
-    lift(out, settings, state)?;
+    queue_lift(settings, state);
     Ok(())
 }
 
 /// C++ `GCodeWriter::slope_threshold` (3°).
 const SLOPE_THRESHOLD_RAD: f64 = 3.0 * std::f64::consts::PI / 180.0;
 
-fn lift(
+fn spiral_radius(hop: f64) -> f64 {
+    hop / (2.0 * std::f64::consts::PI * SLOPE_THRESHOLD_RAD.atan())
+}
+
+/// C++ `lazy_lift`: remember the hop until the next XY travel.
+fn queue_lift(settings: &SliceSettings, state: &mut WriterState) {
+    if state.lifted > 1e-9 || state.to_lift > 1e-9 || !settings.z_hop_in_range(state.z) {
+        return;
+    }
+    state.to_lift = settings.z_hop_mm;
+    state.to_lift_type = settings.z_hop_type;
+}
+
+/// C++ `travel_to_xyz` hop that was delayed by `lazy_lift`.
+fn apply_lazy_lift(
     out: &mut String,
+    dest: (f64, f64),
+    travel_f: f64,
     settings: &SliceSettings,
     state: &mut WriterState,
 ) -> Result<(), GcodeError> {
-    if state.lifted > 1e-9 || !settings.z_hop_in_range(state.z) {
+    if state.to_lift <= 1e-9 {
         return Ok(());
     }
-    let hop = settings.z_hop_mm;
-    let dest_z = state.z + hop;
-    let feed = settings.z_travel_speed_mm_s() * 60.0;
-    match settings.z_hop_type {
-        ZHopType::Spiral | ZHopType::Auto => {
-            let radius = hop / (2.0 * std::f64::consts::PI * SLOPE_THRESHOLD_RAD.atan());
-            writeln!(out, "G17")?;
-            writeln!(
-                out,
-                "G2 Z{:.3} I{:.3} J0 P1 F{:.0} ; spiral lift Z",
-                dest_z, radius, feed
-            )?;
-        }
-        ZHopType::Normal | ZHopType::Slope => {
-            writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", dest_z, feed)?;
-        }
-    }
-    state.z = dest_z;
+    let hop = state.to_lift;
+    let hop_z = state.z + hop;
+    state.to_lift = 0.0;
     state.lifted = hop;
+    let z_feed = settings.z_travel_speed_mm_s() * 60.0;
+    let Some(from) = state.last else {
+        writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", hop_z, z_feed)?;
+        state.z = hop_z;
+        return Ok(());
+    };
+    let dist = xy_dist(from, dest);
+    if dist > TRAVEL_EPS_MM {
+        match state.to_lift_type {
+            ZHopType::Spiral | ZHopType::Auto => {
+                let (i, j) = spiral_ij(from, dest, spiral_radius(hop));
+                writeln!(out, "G17")?;
+                writeln!(
+                    out,
+                    "G2 Z{:.3} I{:.3} J{:.3} P1 F{:.0} ; spiral lift Z",
+                    hop_z, i, j, z_feed
+                )?;
+            }
+            ZHopType::Slope => {
+                if hop.atan2(dist) < SLOPE_THRESHOLD_RAD {
+                    let run = hop / SLOPE_THRESHOLD_RAD.tan();
+                    let ux = (dest.0 - from.0) / dist;
+                    let uy = (dest.1 - from.1) / dist;
+                    writeln!(
+                        out,
+                        "G1 X{:.3} Y{:.3} Z{:.3} F{:.0} ; slope lift Z",
+                        from.0 + ux * run,
+                        from.1 + uy * run,
+                        hop_z,
+                        travel_f
+                    )?;
+                }
+            }
+            ZHopType::Normal => {
+                writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", hop_z, z_feed)?;
+            }
+        }
+    } else {
+        writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", hop_z, z_feed)?;
+    }
+    state.z = hop_z;
     Ok(())
+}
+
+fn spiral_ij(from: (f64, f64), to: (f64, f64), radius: f64) -> (f64, f64) {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= TRAVEL_EPS_MM {
+        return (radius, 0.0);
+    }
+    let nx = dx / len;
+    let ny = dy / len;
+    (-ny * radius, nx * radius)
 }
 
 fn unlift(
@@ -697,10 +754,12 @@ fn unlift(
     state: &mut WriterState,
 ) -> Result<(), GcodeError> {
     if state.lifted <= 1e-9 {
+        state.to_lift = 0.0;
         return Ok(());
     }
     state.z -= state.lifted;
     state.lifted = 0.0;
+    state.to_lift = 0.0;
     writeln!(
         out,
         "G1 Z{:.3} F{:.0} ; restore layer Z",
@@ -746,8 +805,17 @@ fn travel_to(
         if dist + 1e-9 >= settings.retraction_minimum_travel_mm {
             retract(out, settings, state)?;
         }
+        apply_lazy_lift(out, dest, travel_f, settings, state)?;
     }
-    writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", dest.0, dest.1, travel_f)?;
+    if state.lifted > 1e-9 {
+        writeln!(
+            out,
+            "G0 X{:.3} Y{:.3} Z{:.3} F{:.0}",
+            dest.0, dest.1, state.z, travel_f
+        )?;
+    } else {
+        writeln!(out, "G0 X{:.3} Y{:.3} F{:.0}", dest.0, dest.1, travel_f)?;
+    }
     state.last = Some(dest);
     Ok(())
 }
@@ -1526,6 +1594,33 @@ mod tests {
         assert!(gcode.contains("; spiral lift Z"));
         assert!(gcode.contains("; restore layer Z"));
         assert!(gcode.contains("G2 Z") && gcode.contains(" P1 F"));
+        let lines: Vec<&str> = gcode.lines().collect();
+        assert!(
+            lines
+                .windows(2)
+                .any(|w| { w[0].contains("; spiral lift Z") && w[1].starts_with("G0 X") }),
+            "lazy spiral should sit on the following XY travel\n{gcode}"
+        );
+        let mut saw_perp = false;
+        for line in &lines {
+            if !line.contains("; spiral lift Z") {
+                continue;
+            }
+            let upper = line.to_ascii_uppercase();
+            let i = parse_axis(&upper, b'I').unwrap_or(0.0);
+            let j = parse_axis(&upper, b'J').unwrap_or(0.0);
+            if j.abs() > 1e-6 {
+                saw_perp = true;
+            }
+            assert!(
+                (i * i + j * j).sqrt() > 0.5,
+                "spiral radius should match 0.4 mm hop\n{line}"
+            );
+        }
+        assert!(
+            saw_perp,
+            "lazy spiral I/J should follow travel, not +X only\n{gcode}"
+        );
     }
 
     #[test]
@@ -1592,6 +1687,20 @@ mod tests {
         let sliced = slice_mesh(&mesh, &settings).unwrap();
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains("; normal lift Z"));
+        assert!(!gcode.contains("; spiral lift Z"));
+        assert!(gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn slope_lift_emits_diagonal() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.z_hop_type = bambu_config::ZHopType::Slope;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; slope lift Z"), "{gcode}");
         assert!(!gcode.contains("; spiral lift Z"));
         assert!(gcode.contains("; restore layer Z"));
     }

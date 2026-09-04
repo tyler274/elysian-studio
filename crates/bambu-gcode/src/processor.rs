@@ -102,7 +102,8 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         }
         let is_travel = upper.starts_with("G0");
         let is_linear = is_travel || upper.starts_with("G1");
-        if !is_linear {
+        let is_arc = is_arc_cmd(&upper);
+        if !is_linear && !is_arc {
             continue;
         }
         if let Some(v) = parse_axis(&upper, b'F') {
@@ -116,7 +117,11 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         let dy = ny - y;
         let dz = nz - z;
         let de = ne - e;
-        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+        let distance = if is_arc {
+            arc_move_length(&upper, dx, dy, dz)
+        } else {
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        };
         if de > 0.0 && !wiping && distance > 1e-9 {
             filament_mm += de;
         }
@@ -133,7 +138,7 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         }
         let inv = 1.0 / distance;
         let dir = [dx * inv, dy * inv, dz * inv];
-        let accel = if is_travel {
+        let accel = if is_travel || is_arc {
             settings.travel_acceleration_mm_s2
         } else {
             settings.default_acceleration_mm_s2
@@ -174,6 +179,24 @@ fn strip_comment(line: &str) -> &str {
     match line.find(';') {
         Some(i) => &line[..i],
         None => line,
+    }
+}
+
+fn is_arc_cmd(upper: &str) -> bool {
+    matches!(upper.split_whitespace().next(), Some("G2" | "G3"))
+}
+
+/// C++ `GCodeProcessor::process_G2_G3` length. `P1` is a full XY circle.
+fn arc_move_length(upper: &str, dx: f64, dy: f64, dz: f64) -> f64 {
+    let i = parse_axis(upper, b'I').unwrap_or(0.0);
+    let j = parse_axis(upper, b'J').unwrap_or(0.0);
+    if i.abs() <= 1e-12 && j.abs() <= 1e-12 {
+        return (dx * dx + dy * dy + dz * dz).sqrt();
+    }
+    if parse_axis(upper, b'P').is_some_and(|p| (p - 1.0).abs() < 1e-9) {
+        2.0 * std::f64::consts::PI * (i * i + j * j).sqrt()
+    } else {
+        (dx * dx + dy * dy + dz * dz).sqrt()
     }
 }
 
@@ -488,6 +511,20 @@ mod tests {
         let area = std::f64::consts::PI * (1.75_f64 * 0.5).powi(2);
         assert!((stats.filament_cm3 - 2.0 * area * 0.001).abs() < 1e-9);
         assert!((stats.filament_g - stats.filament_cm3 * 1.24).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spiral_p1_counts_full_circle_time() {
+        let settings = SliceSettings::default();
+        let gcode = "G90\nG0 X0 Y0 F6000\nG17\nG2 Z0.400 I1.000 J0.000 P1 F600\n";
+        let stats = process_gcode(gcode, &settings);
+        let expect = 2.0 * std::f64::consts::PI / 10.0;
+        assert_eq!(stats.move_count, 1);
+        assert!(
+            (stats.time_s - expect).abs() < 0.05,
+            "expected ~{expect}s for 2π mm at 10 mm/s, got {}",
+            stats.time_s
+        );
     }
 
     #[test]

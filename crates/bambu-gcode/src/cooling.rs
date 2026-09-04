@@ -148,7 +148,8 @@ fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> Str
         let upper = strip_comment(line).to_ascii_uppercase();
         let is_g0 = upper.starts_with("G0");
         let is_g1 = upper.starts_with("G1");
-        if !is_g0 && !is_g1 {
+        let is_arc = is_arc_move(&upper);
+        if !is_g0 && !is_g1 && !is_arc {
             continue;
         }
         if let Some(v) = parse_axis(&upper, b'F') {
@@ -157,7 +158,11 @@ fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> Str
         let nx = parse_axis(&upper, b'X').unwrap_or(x);
         let ny = parse_axis(&upper, b'Y').unwrap_or(y);
         let nz = parse_axis(&upper, b'Z').unwrap_or(z);
-        let length = ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt();
+        let length = if is_arc {
+            cooling_arc_length(&upper, x, y, z, nx, ny, nz)
+        } else {
+            ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt()
+        };
         let feed_mm_s = f_mm_min / 60.0;
         let has_e = parse_axis(&upper, b'E').is_some();
         let is_adj = is_g1 && has_e && length > 1e-9 && feed_mm_s > 1e-9 && !line.contains("_WIPE");
@@ -240,6 +245,20 @@ fn cruise_time(length: f64, feed_mm_s: f64) -> f64 {
         0.0
     } else {
         length / feed_mm_s
+    }
+}
+
+fn is_arc_move(upper: &str) -> bool {
+    matches!(upper.split_whitespace().next(), Some("G2" | "G3"))
+}
+
+fn cooling_arc_length(upper: &str, x: f64, y: f64, z: f64, nx: f64, ny: f64, nz: f64) -> f64 {
+    let i = parse_axis(upper, b'I').unwrap_or(0.0);
+    let j = parse_axis(upper, b'J').unwrap_or(0.0);
+    if parse_axis(upper, b'P').is_some_and(|p| (p - 1.0).abs() < 1e-9) {
+        2.0 * std::f64::consts::PI * (i * i + j * j).sqrt()
+    } else {
+        ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt()
     }
 }
 
@@ -474,10 +493,8 @@ fn line_cruise_times(lines: &[&str]) -> Vec<f64> {
         .iter()
         .map(|line| {
             let upper = strip_comment(line).to_ascii_uppercase();
-            let is_move = upper.starts_with("G0")
-                || upper.starts_with("G1")
-                || upper.starts_with("G2")
-                || upper.starts_with("G3");
+            let is_arc = is_arc_move(&upper);
+            let is_move = upper.starts_with("G0") || upper.starts_with("G1") || is_arc;
             if !is_move {
                 return 0.0;
             }
@@ -487,7 +504,11 @@ fn line_cruise_times(lines: &[&str]) -> Vec<f64> {
             let nx = parse_axis(&upper, b'X').unwrap_or(x);
             let ny = parse_axis(&upper, b'Y').unwrap_or(y);
             let nz = parse_axis(&upper, b'Z').unwrap_or(z);
-            let length = ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt();
+            let length = if is_arc {
+                cooling_arc_length(&upper, x, y, z, nx, ny, nz)
+            } else {
+                ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt()
+            };
             x = nx;
             y = ny;
             z = nz;
