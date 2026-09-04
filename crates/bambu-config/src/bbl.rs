@@ -389,6 +389,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "filament_max_volumetric_speed",
+        num_str(settings.filament_max_volumetric_speed_mm3_s),
+    );
+    insert(
+        &mut map,
         "machine_max_jerk_x",
         num_str(settings.xy_jerk_mm_s),
     );
@@ -782,6 +787,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "reduce_fan_stop_start_freq") {
         s.reduce_fan_stop_start_freq = v;
     }
+    if let Some(v) = num(map, "filament_max_volumetric_speed") {
+        s.filament_max_volumetric_speed_mm3_s = v.max(0.0);
+    }
     if let Some(v) = num(map, "machine_max_jerk_x").or_else(|| num(map, "machine_max_jerk_y")) {
         s.xy_jerk_mm_s = v.max(0.0);
     }
@@ -1044,6 +1052,7 @@ mod tests {
         assert!((s.fan_cooling_layer_time_s - 100.0).abs() < 1e-9);
         assert!((s.slow_down_layer_time_s - 8.0).abs() < 1e-9);
         assert!((s.filament_density_g_cm3 - 1.24).abs() < 1e-9);
+        assert!((s.filament_max_volumetric_speed_mm3_s - 12.0).abs() < 1e-9);
     }
 
     #[test]

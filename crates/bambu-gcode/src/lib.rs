@@ -54,6 +54,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(out, "G1 Z{:.3} F600", layer.print_z_mm)?;
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
+        let mm3_per_mm = flow.mm3_per_mm();
         let first = layer_i == 0;
         let wall_f = if first { first_f } else { outer_f };
         let inner_wall_f = if first { first_f } else { inner_f };
@@ -86,6 +87,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 wall_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -99,6 +102,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 wall_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -112,6 +117,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 support_layer_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -125,6 +132,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 support_layer_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -141,6 +150,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             support_polys.as_deref(),
             settings.enable_overhang_speed,
             !first,
+            mm3_per_mm,
             &mut last,
         )?;
         emit_wall_paths(
@@ -156,6 +166,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             support_polys.as_deref(),
             settings.enable_overhang_speed,
             !first,
+            mm3_per_mm,
             &mut last,
         )?;
         if !layer.infill.is_empty() {
@@ -168,6 +179,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 sparse_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -181,6 +194,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 solid_layer_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -194,6 +209,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 bridge_layer_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -207,6 +224,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 wall_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
@@ -220,13 +239,16 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 e_per_mm,
                 top_layer_f,
                 travel_f,
+                settings,
+                mm3_per_mm,
                 &mut last,
             )?;
         }
         if !layer.ironing.is_empty() {
             writeln!(out, "; FEATURE: Ironing")?;
-            let iron_height = layer.height_mm * settings.ironing_flow.max(0.0);
-            let iron_e = Flow::from_settings(settings, iron_height).e_per_mm();
+            let iron_flow =
+                Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
+            let iron_e = iron_flow.e_per_mm();
             let iron_f = settings.ironing_speed_mm_s * 60.0;
             let iron_closed = layer.ironing.iter().any(|p| p.len() > 2);
             emit_paths(
@@ -237,6 +259,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 iron_e,
                 iron_f,
                 travel_f,
+                settings,
+                iron_flow.mm3_per_mm(),
                 &mut last,
             )?;
         }
@@ -261,8 +285,11 @@ fn emit_paths(
     e_per_mm: f64,
     print_f: f64,
     travel_f: f64,
+    settings: &SliceSettings,
+    mm3_per_mm: f64,
     last: &mut Option<(f64, f64)>,
 ) -> Result<(), GcodeError> {
+    let print_f = settings.cap_extrude_feed_mm_min(print_f, mm3_per_mm);
     for path in paths {
         emit_one_path(out, path, closed, e, e_per_mm, print_f, travel_f, last)?;
     }
@@ -366,6 +393,7 @@ fn emit_wall_paths(
     support: Option<&[Vec<Polygon>]>,
     slow_overhang: bool,
     apply_small: bool,
+    mm3_per_mm: f64,
     last: &mut Option<(f64, f64)>,
 ) -> Result<(), GcodeError> {
     if paths.is_empty() {
@@ -402,6 +430,7 @@ fn emit_wall_paths(
             if apply_small {
                 feed = small_perimeter_feed(settings, path, closed, feed);
             }
+            feed = settings.cap_extrude_feed_mm_min(feed, mm3_per_mm);
             emit_one_path(
                 out,
                 &run.path,
@@ -854,11 +883,32 @@ mod tests {
     #[test]
     fn bbl_inner_walls_faster_than_outer() {
         let mesh = TriangleMesh::cube(20.0);
-        let settings = SliceSettings::bbl_0_20();
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
         let sliced = slice_mesh(&mesh, &settings).unwrap();
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains(" F12000"), "outer walls should use 200 mm/s");
         assert!(gcode.contains(" F18000"), "inner walls should use 300 mm/s");
+    }
+
+    #[test]
+    fn volumetric_cap_slows_bbl_walls() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::bbl_0_20();
+        let mm3 = settings.line_width_mm * settings.layer_height_mm * settings.flow_ratio;
+        let cap_f = settings.cap_extrude_feed_mm_min(12_000.0, mm3);
+        assert!(cap_f < 12_000.0, "12 mm³/s should cap 200 mm/s walls");
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        let token = format!(" F{cap_f:.0}");
+        assert!(
+            gcode.contains(&token),
+            "expected capped feed {token} in gcode"
+        );
+        assert!(
+            !gcode.contains(" F18000"),
+            "inner 300 mm/s should not survive the volumetric cap"
+        );
     }
 
     #[test]

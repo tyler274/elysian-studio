@@ -451,6 +451,8 @@ pub struct SliceSettings {
     pub slow_down_layer_time_s: f64,
     /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
     pub reduce_fan_stop_start_freq: bool,
+    /// C++ `filament_max_volumetric_speed` (mm³/s). 0 disables the cap.
+    pub filament_max_volumetric_speed_mm3_s: f64,
     /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
@@ -544,6 +546,7 @@ impl Default for SliceSettings {
             fan_cooling_layer_time_s: 60.0,
             slow_down_layer_time_s: 8.0,
             reduce_fan_stop_start_freq: false,
+            filament_max_volumetric_speed_mm3_s: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
         }
@@ -604,6 +607,16 @@ impl SliceSettings {
         }
     }
 
+    /// Cap an extrusion feed (mm/min) with `filament_max_volumetric_speed`.
+    pub fn cap_extrude_feed_mm_min(&self, print_f: f64, mm3_per_mm: f64) -> f64 {
+        let max = self.filament_max_volumetric_speed_mm3_s;
+        if max <= 0.0 || mm3_per_mm <= 1e-12 {
+            print_f
+        } else {
+            print_f.min(max / mm3_per_mm * 60.0)
+        }
+    }
+
     /// Thin-feature extrusion floor (`min_bead_width` × nozzle).
     pub fn min_bead_width_mm(&self) -> f64 {
         let frac = if self.min_bead_width > 0.0 {
@@ -649,6 +662,7 @@ impl SliceSettings {
             fan_cooling_layer_time_s: 100.0,
             slow_down_layer_time_s: 8.0,
             reduce_fan_stop_start_freq: true,
+            filament_max_volumetric_speed_mm3_s: 12.0,
             ..Self::default()
         }
     }
