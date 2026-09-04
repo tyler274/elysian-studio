@@ -30,6 +30,42 @@ impl ProcessorResult {
             self.filament_g, self.filament_cm3, self.filament_mm
         )
     }
+
+    /// C++ `GCodeProcessor` replacement of `;_GP_*` tags after time estimation.
+    pub fn fill_placeholders(&self, gcode: &mut String, layer_count: usize) {
+        let clock = format_time_dhms(self.time_s);
+        let minutes = ((self.time_s + 0.5) / 60.0) as i32;
+        let replacements = [
+            (
+                ";_GP_ESTIMATED_PRINTING_TIME_PLACEHOLDER",
+                format!("; model printing time: {clock}; total estimated time: {clock}"),
+            ),
+            (
+                ";_GP_TOTAL_LAYER_NUMBER_PLACEHOLDER",
+                format!("; total layer number: {layer_count}"),
+            ),
+            (
+                ";_GP_FILAMENT_USED_LENGTH_PLACEHOLDER",
+                format!("; total filament length [mm] : {:.2}", self.filament_mm),
+            ),
+            (
+                ";_GP_FILAMENT_USED_VOLUME_PLACEHOLDER",
+                format!("; total filament volume [cm^3] : {:.2}", self.filament_cm3),
+            ),
+            (
+                ";_GP_FILAMENT_USED_WEIGHT_PLACEHOLDER",
+                format!("; total filament weight [g] : {:.2}", self.filament_g),
+            ),
+            (
+                ";_GP_FIRST_LINE_M73_PLACEHOLDER",
+                format!("M73 P0 R{minutes}"),
+            ),
+            (";_GP_LAST_LINE_M73_PLACEHOLDER", "M73 P100 R0".to_string()),
+        ];
+        for (tag, value) in replacements {
+            *gcode = gcode.replace(tag, &value);
+        }
+    }
 }
 
 /// C++ `Slic3r::get_time_dhms`.

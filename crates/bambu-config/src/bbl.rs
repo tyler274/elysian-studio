@@ -645,6 +645,24 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
             settings.filament_start_gcode.clone(),
         );
     }
+    if !settings.time_lapse_gcode.is_empty() {
+        insert(
+            &mut map,
+            "time_lapse_gcode",
+            settings.time_lapse_gcode.clone(),
+        );
+    }
+    insert(
+        &mut map,
+        "timelapse_type",
+        settings.timelapse_type.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "farthest_point_timelapse",
+        settings.farthest_point_timelapse,
+    );
+    insert_bool(&mut map, "spiral_mode", settings.spiral_mode);
     insert(&mut map, "filament_type", settings.filament_type.clone());
     insert(
         &mut map,
@@ -703,6 +721,53 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.z_jerk_mm_s),
     );
     Ok(serde_json::to_string_pretty(&Value::Object(map))?)
+}
+
+/// C++ `GCode::append_full_config` as `; key = value` comments for printer firmware.
+pub fn config_block_gcode(settings: &SliceSettings) -> Result<String, ConfigError> {
+    let json = project_settings_json(settings)?;
+    let value: Value = serde_json::from_str(&json)?;
+    let Value::Object(map) = value else {
+        return Err(ConfigError::Message(
+            "project settings is not a JSON object".into(),
+        ));
+    };
+    let mut out = String::from("; CONFIG_BLOCK_START\n");
+    for (k, v) in &map {
+        if matches!(k.as_str(), "version" | "name" | "from") {
+            continue;
+        }
+        let Some(text) = config_comment_value(v) else {
+            continue;
+        };
+        out.push_str("; ");
+        out.push_str(k);
+        out.push_str(" = ");
+        out.push_str(&text);
+        out.push('\n');
+    }
+    out.push_str("; CONFIG_BLOCK_END\n");
+    Ok(out)
+}
+
+fn config_comment_value(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => None,
+        Value::Bool(b) => Some(if *b { "1".into() } else { "0".into() }),
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) => Some(escape_config_comment(s)),
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().filter_map(config_comment_value).collect();
+            Some(parts.join(","))
+        }
+        Value::Object(_) => None,
+    }
+}
+
+fn escape_config_comment(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "")
 }
 
 fn insert(map: &mut serde_json::Map<String, Value>, key: &str, value: impl Into<String>) {
@@ -1266,6 +1331,18 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = text(map, "filament_start_gcode") {
         s.filament_start_gcode = v;
     }
+    if let Some(v) = text(map, "time_lapse_gcode") {
+        s.time_lapse_gcode = v;
+    }
+    if let Some(v) = num(map, "timelapse_type") {
+        s.timelapse_type = v.round().clamp(0.0, 1.0) as u8;
+    }
+    if let Some(v) = bool_val(map, "farthest_point_timelapse") {
+        s.farthest_point_timelapse = v;
+    }
+    if let Some(v) = bool_val(map, "spiral_mode") {
+        s.spiral_mode = v;
+    }
     if let Some(v) = text(map, "filament_type") {
         s.filament_type = v;
     }
@@ -1752,6 +1829,13 @@ mod tests {
             .machine_start_gcode
             .contains(";===== machine: H2C ========================="));
         assert!(s
+            .time_lapse_gcode
+            .contains(";===== machine: H2C timelapse ====="));
+        assert!(s.time_lapse_gcode.contains("SKIPTYPE: timelapse"));
+        assert!(s.farthest_point_timelapse);
+        assert_eq!(s.timelapse_type, 0);
+        assert!(!s.spiral_mode);
+        assert!(s
             .machine_end_gcode
             .contains("{if long_retraction_when_cut}"));
         assert!(s.long_retraction_when_cut);
@@ -1817,6 +1901,32 @@ mod tests {
         assert!(!loaded.slow_down_for_layer_cooling);
         assert!(!loaded.no_slow_down_for_cooling_on_outwalls);
         assert!((loaded.flow_ratio - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn config_block_gcode_emits_understood_keys() {
+        let mut src = SliceSettings::default();
+        src.wall_loops = 3;
+        src.layer_height_mm = 0.2;
+        src.machine_start_gcode = "{if 1}G28{endif}\nnext".into();
+        let block = crate::config_block_gcode(&src).unwrap();
+        assert!(block.starts_with("; CONFIG_BLOCK_START\n"));
+        assert!(block.contains("; CONFIG_BLOCK_END\n"));
+        assert!(block.contains("; wall_loops = 3\n"));
+        assert!(block.contains("; layer_height = 0.2\n"));
+        assert!(
+            block.contains("; machine_start_gcode = {if 1}G28{endif}\\nnext"),
+            "{block}"
+        );
+        assert_eq!(
+            block
+                .lines()
+                .filter(|l| l.starts_with("; machine_start_gcode = "))
+                .count(),
+            1
+        );
+        assert!(block.lines().all(|l| l.starts_with(';')));
+        assert!(!block.contains("\n; version = "));
     }
 
     #[test]

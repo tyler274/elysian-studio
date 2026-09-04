@@ -266,11 +266,27 @@ impl Val {
 fn eval_value(expr: &str, ctx: &PlaceholderContext) -> Option<Val> {
     let toks = tokenize(expr)?;
     let mut i = 0;
-    let v = parse_or(&toks, &mut i, ctx)?;
+    let v = parse_ternary(&toks, &mut i, ctx)?;
     if i != toks.len() {
         return None;
     }
     Some(v)
+}
+
+/// C++ `PlaceholderParser` ternary (`cond ? a : b`), right-associative over `||`.
+fn parse_ternary(toks: &[Tok], i: &mut usize, ctx: &PlaceholderContext) -> Option<Val> {
+    let cond = parse_or(toks, i, ctx)?;
+    if !matches!(toks.get(*i), Some(Tok::Question)) {
+        return Some(cond);
+    }
+    *i += 1;
+    let then_v = parse_ternary(toks, i, ctx)?;
+    if !matches!(toks.get(*i), Some(Tok::Colon)) {
+        return None;
+    }
+    *i += 1;
+    let else_v = parse_ternary(toks, i, ctx)?;
+    Some(if truthy(&cond) { then_v } else { else_v })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -297,6 +313,8 @@ enum Tok {
     RBrack,
     Comma,
     Not,
+    Question,
+    Colon,
 }
 
 fn tokenize(s: &str) -> Option<Vec<Tok>> {
@@ -392,6 +410,8 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
             b']' => Tok::RBrack,
             b',' => Tok::Comma,
             b'!' => Tok::Not,
+            b'?' => Tok::Question,
+            b':' => Tok::Colon,
             _ => return None,
         });
         i += 1;
@@ -544,7 +564,7 @@ fn parse_primary(toks: &[Tok], i: &mut usize, ctx: &PlaceholderContext) -> Optio
         }
         Some(Tok::LParen) => {
             *i += 1;
-            let v = parse_or(toks, i, ctx)?;
+            let v = parse_ternary(toks, i, ctx)?;
             if !matches!(toks.get(*i), Some(Tok::RParen)) {
                 return None;
             }
@@ -724,5 +744,51 @@ mod tests {
     fn unary_plus_zero() {
         let ctx = PlaceholderContext::new();
         assert_eq!(expand_placeholders("Z{+0.0}", &ctx), "Z0");
+    }
+
+    #[test]
+    fn ternary_picks_then_or_else() {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("farthest_point_timelapse_enabled", 1);
+        ctx.set("layer_z", 0.2);
+        assert_eq!(
+            expand_placeholders(
+                "Z{layer_z + (farthest_point_timelapse_enabled ? 0.0 : 0.4)}",
+                &ctx,
+            ),
+            "Z0.2"
+        );
+        ctx.set("farthest_point_timelapse_enabled", 0);
+        assert_eq!(
+            expand_placeholders(
+                "Z{layer_z + (farthest_point_timelapse_enabled ? 0.0 : 0.4)}",
+                &ctx,
+            ),
+            "Z0.6"
+        );
+    }
+
+    #[test]
+    fn h2c_timelapse_traditional_no_safe_pos() {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("spiral_mode", 0);
+        ctx.set("timelapse_inline_photo", 0);
+        ctx.set("has_timelapse_safe_pos", 0);
+        ctx.set("most_used_physical_extruder_id", 0);
+        ctx.set("curr_physical_extruder_id", 0);
+        ctx.set("timelapse_type", 0);
+        ctx.set("farthest_point_timelapse_enabled", 1);
+        ctx.set("layer_z", 0.2);
+        ctx.set("max_layer_z", 20);
+        let out = expand_placeholders(
+            "{if !spiral_mode && !timelapse_inline_photo}\nM993 A2 B2 C2\n{endif}\n{if !spiral_mode && !(has_timelapse_safe_pos) }\n{if most_used_physical_extruder_id!= curr_physical_extruder_id || timelapse_type == 1}\nM83\nG1 Z{max_layer_z + 0.4} F1200\n{endif}\n{endif}\n{if timelapse_inline_photo}\nM971 S11\n{elsif has_timelapse_safe_pos && !spiral_mode}\nM9711 U\n{else}\n{if spiral_mode}\nM971 S11\n{else}\nM9711 M{timelapse_type} E{most_used_physical_extruder_id} Z{layer_z + (farthest_point_timelapse_enabled ? 0.0 : 0.4)} S11 C10 O0 T3000\n{endif}\n{endif}\n",
+            &ctx,
+        );
+        assert!(out.contains("M993 A2 B2 C2"), "{out}");
+        assert!(out.contains("M9711 M0 E0 Z0.2 S11 C10 O0 T3000"), "{out}");
+        assert!(!out.contains("M83"), "{out}");
+        assert!(!out.contains("G1 Z20.4"), "{out}");
+        assert!(!out.contains("{if"), "{out}");
+        assert!(!out.contains("?"), "{out}");
     }
 }

@@ -6,9 +6,10 @@ mod placeholder;
 use serde::{Deserialize, Serialize};
 
 pub use bbl::{
-    apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, flatten_bbl_profile, is_region_key,
-    load_bbl_process, overlay_bbl_profile, project_settings_json, settings_from_json,
-    write_flattened_bbl_profile, BblOraclePaths, ConfigError,
+    apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, config_block_gcode,
+    flatten_bbl_profile, is_region_key, load_bbl_process, overlay_bbl_profile,
+    project_settings_json, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
+    ConfigError,
 };
 pub use placeholder::{expand_placeholders, PlaceholderContext};
 
@@ -680,6 +681,14 @@ pub struct SliceSettings {
     pub curr_bed_type: String,
     /// C++ `nozzle_temperature_range_high` (flush-temp fallback).
     pub nozzle_temperature_range_high: u16,
+    /// C++ `time_lapse_gcode`. Empty skips per-layer insert.
+    pub time_lapse_gcode: String,
+    /// C++ `timelapse_type`: 0 traditional, 1 smooth.
+    pub timelapse_type: u8,
+    /// C++ `farthest_point_timelapse`.
+    pub farthest_point_timelapse: bool,
+    /// C++ `spiral_mode`.
+    pub spiral_mode: bool,
 }
 
 impl Default for SliceSettings {
@@ -838,6 +847,10 @@ impl Default for SliceSettings {
             cooling_filter_enabled: false,
             curr_bed_type: String::from("Cool Plate"),
             nozzle_temperature_range_high: 240,
+            time_lapse_gcode: String::new(),
+            timelapse_type: 0,
+            farthest_point_timelapse: false,
+            spiral_mode: false,
         }
     }
 }
@@ -1185,6 +1198,33 @@ impl SliceSettings {
         ctx.set_list(
             "first_layer_print_size",
             [first_layer_size.0, first_layer_size.1],
+        );
+        ctx
+    }
+
+    /// C++ `generate_timelapse_gcode` placeholder extras on top of print config.
+    pub fn placeholder_timelapse_context(
+        &self,
+        layer_num: usize,
+        layer_z: f64,
+        max_layer_z: f64,
+    ) -> PlaceholderContext {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("layer_num", layer_num);
+        ctx.set("layer_z", layer_z);
+        ctx.set("max_layer_z", max_layer_z);
+        ctx.set("spiral_mode", i32::from(self.spiral_mode));
+        ctx.set("timelapse_type", self.timelapse_type);
+        ctx.set("timelapse_inline_photo", 0);
+        ctx.set("has_timelapse_safe_pos", 0);
+        ctx.set("timelapse_pos_x", 0);
+        ctx.set("timelapse_pos_y", 0);
+        ctx.set("most_used_physical_extruder_id", 0);
+        ctx.set("curr_physical_extruder_id", 0);
+        ctx.set("clear_to_x0", 0);
+        ctx.set(
+            "farthest_point_timelapse_enabled",
+            i32::from(self.farthest_point_timelapse && self.timelapse_type == 0),
         );
         ctx
     }
