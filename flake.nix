@@ -9,7 +9,7 @@
     };
     # Path inputs copy gitignored rust/target; git+file does not.
     mimalloc-rs = {
-      url = "git+file:///home/luluco/code/mimalloc?ref=rust3write";
+      url = "git+file:///home/luluco/code/mimalloc";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     wild = {
