@@ -205,17 +205,25 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.bridge.is_empty() {
             writeln!(out, "; FEATURE: Bridge")?;
-            emit_paths(
+            emit_marked(
                 &mut out,
-                &layer.bridge,
-                false,
-                &mut e,
-                e_per_mm,
-                bridge_layer_f,
-                travel_f,
-                settings,
-                mm3_per_mm,
-                &mut last,
+                settings.overhang_fan_applies(5, true, false),
+                ";_OVERHANG_FAN_START",
+                ";_OVERHANG_FAN_END",
+                |o| {
+                    emit_paths(
+                        o,
+                        &layer.bridge,
+                        false,
+                        &mut e,
+                        e_per_mm,
+                        bridge_layer_f,
+                        travel_f,
+                        settings,
+                        mm3_per_mm,
+                        &mut last,
+                    )
+                },
             )?;
         }
         if !layer.bottom_surface.is_empty() {
@@ -255,17 +263,25 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             let iron_e = iron_flow.e_per_mm();
             let iron_f = settings.ironing_speed_mm_s * 60.0;
             let iron_closed = layer.ironing.iter().any(|p| p.len() > 2);
-            emit_paths(
+            emit_marked(
                 &mut out,
-                &layer.ironing,
-                iron_closed,
-                &mut e,
-                iron_e,
-                iron_f,
-                travel_f,
-                settings,
-                iron_flow.mm3_per_mm(),
-                &mut last,
+                settings.ironing_fan_speed >= 0,
+                ";_IRONING_FAN_START",
+                ";_IRONING_FAN_END",
+                |o| {
+                    emit_paths(
+                        o,
+                        &layer.ironing,
+                        iron_closed,
+                        &mut e,
+                        iron_e,
+                        iron_f,
+                        travel_f,
+                        settings,
+                        iron_flow.mm3_per_mm(),
+                        &mut last,
+                    )
+                },
             )?;
         }
     }
@@ -279,6 +295,23 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let stats = process_gcode(&out, settings);
     out.push_str(&stats.footer_lines());
     Ok(out)
+}
+
+fn emit_marked(
+    out: &mut String,
+    mark: bool,
+    start: &str,
+    end: &str,
+    body: impl FnOnce(&mut String) -> Result<(), GcodeError>,
+) -> Result<(), GcodeError> {
+    if mark {
+        writeln!(out, "{start}")?;
+    }
+    body(out)?;
+    if mark {
+        writeln!(out, "{end}")?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -436,15 +469,25 @@ fn emit_wall_paths(
                 feed = small_perimeter_feed(settings, path, closed, feed);
             }
             feed = settings.cap_extrude_feed_mm_min(feed, mm3_per_mm);
-            emit_one_path(
+            let boost =
+                settings.overhang_fan_applies(run.degree, false, supported_feature == "Outer wall");
+            emit_marked(
                 out,
-                &run.path,
-                closed && single,
-                e,
-                e_per_mm,
-                feed,
-                travel_f,
-                last,
+                boost,
+                ";_OVERHANG_FAN_START",
+                ";_OVERHANG_FAN_END",
+                |o| {
+                    emit_one_path(
+                        o,
+                        &run.path,
+                        closed && single,
+                        e,
+                        e_per_mm,
+                        feed,
+                        travel_f,
+                        last,
+                    )
+                },
             )?;
         }
     }
@@ -1081,5 +1124,44 @@ mod tests {
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains("M106 S0\n"));
         assert!(gcode.contains("M106 S"));
+    }
+
+    #[test]
+    fn overhang_table_boosts_part_fan() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        settings.fan_min_speed = 20;
+        settings.fan_max_speed = 20;
+        settings.close_fan_the_first_x_layers = 0;
+        settings.reduce_fan_stop_start_freq = true;
+        settings.overhang_fan_speed = 100;
+        settings.overhang_fan_threshold = bambu_config::OverhangFanThreshold::Bridge;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Overhang wall") || gcode.contains("; FEATURE: Bridge"));
+        assert!(!gcode.contains(";_OVERHANG_FAN"));
+        assert!(gcode.contains("M106 S51\n"), "layer fan 20%\n{gcode}");
+        assert!(gcode.contains("M106 S255\n"), "overhang fan 100%");
+    }
+
+    #[test]
+    fn ironing_uses_ironing_fan_speed() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        settings.fan_min_speed = 100;
+        settings.fan_max_speed = 100;
+        settings.close_fan_the_first_x_layers = 1;
+        settings.reduce_fan_stop_start_freq = true;
+        settings.ironing_fan_speed = 40;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Ironing"));
+        assert!(!gcode.contains(";_IRONING_FAN"));
+        assert!(gcode.contains("M106 S102\n"), "ironing 40%\n{gcode}");
+        assert!(gcode.contains("M106 S255\n"), "layer 100%");
     }
 }

@@ -119,6 +119,57 @@ impl WallGenerator {
     }
 }
 
+/// C++ `OverhangFanThreshold` (`overhang_fan_threshold`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum OverhangFanThreshold {
+    /// `0%`: boost every outer wall.
+    None = 0,
+    /// `10%`.
+    OneFour = 1,
+    /// `25%`.
+    TwoFour = 2,
+    /// `50%`. Generic PLA.
+    ThreeFour = 3,
+    /// `75%`.
+    FourFour = 4,
+    /// `95%`: only 100% overhang walls and bridges. C++ default.
+    #[default]
+    Bridge = 5,
+}
+
+impl OverhangFanThreshold {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim() {
+            "0%" | "0" | "none" => Self::None,
+            "10%" | "10" | "1/4" => Self::OneFour,
+            "25%" | "25" | "2/4" => Self::TwoFour,
+            "50%" | "50" | "3/4" => Self::ThreeFour,
+            "75%" | "75" | "4/4" => Self::FourFour,
+            "95%" | "95" | "bridge" => Self::Bridge,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "0%",
+            Self::OneFour => "10%",
+            Self::TwoFour => "25%",
+            Self::ThreeFour => "50%",
+            Self::FourFour => "75%",
+            Self::Bridge => "95%",
+        }
+    }
+
+    fn compare_degree(self) -> u8 {
+        match self {
+            Self::None => 0,
+            other => other as u8 - 1,
+        }
+    }
+}
+
 /// C++ `support_type` (`normal(auto)` vs `tree(auto)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SupportType {
@@ -442,6 +493,14 @@ pub struct SliceSettings {
     pub fan_min_speed: u32,
     /// C++ `fan_max_speed` (percent).
     pub fan_max_speed: u32,
+    /// C++ `enable_overhang_bridge_fan`.
+    pub enable_overhang_bridge_fan: bool,
+    /// C++ `overhang_fan_speed` (percent).
+    pub overhang_fan_speed: u32,
+    /// C++ `overhang_fan_threshold`.
+    pub overhang_fan_threshold: OverhangFanThreshold,
+    /// C++ `ironing_fan_speed` (percent). `-1` disables.
+    pub ironing_fan_speed: i32,
     /// C++ `close_fan_the_first_x_layers`.
     pub close_fan_the_first_x_layers: u32,
     /// C++ `first_x_layer_part_fan_speed` (percent). Default 0.
@@ -548,6 +607,10 @@ impl Default for SliceSettings {
             filament_density_g_cm3: 1.24,
             fan_min_speed: 20,
             fan_max_speed: 100,
+            enable_overhang_bridge_fan: true,
+            overhang_fan_speed: 100,
+            overhang_fan_threshold: OverhangFanThreshold::Bridge,
+            ironing_fan_speed: -1,
             close_fan_the_first_x_layers: 1,
             first_x_layer_part_fan_speed: 0,
             full_fan_speed_layer: 0,
@@ -637,6 +700,21 @@ impl SliceSettings {
         frac * self.nozzle_diameter_mm
     }
 
+    /// C++ `GCode.cpp` overhang/bridge fan marker predicate.
+    pub fn overhang_fan_applies(&self, degree: u8, is_bridge: bool, is_external: bool) -> bool {
+        if !self.enable_overhang_bridge_fan {
+            return false;
+        }
+        if is_bridge {
+            return true;
+        }
+        let none = self.overhang_fan_threshold == OverhangFanThreshold::None;
+        if none && is_external {
+            return true;
+        }
+        degree > self.overhang_fan_threshold.compare_degree()
+    }
+
     /// Bambu `fdm_process_single_0.20` over `fdm_process_common`.
     pub fn bbl_0_20() -> Self {
         Self {
@@ -671,6 +749,7 @@ impl SliceSettings {
             fan_max_speed: 100,
             close_fan_the_first_x_layers: 1,
             flow_ratio: 0.98,
+            overhang_fan_threshold: OverhangFanThreshold::ThreeFour,
             fan_cooling_layer_time_s: 100.0,
             slow_down_layer_time_s: 8.0,
             slow_down_for_layer_cooling: true,

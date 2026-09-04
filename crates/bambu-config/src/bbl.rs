@@ -7,8 +7,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    FuzzySkinType, InfillPattern, IroningPattern, IroningType, SeamPosition, SliceSettings,
-    SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+    FuzzySkinType, InfillPattern, IroningPattern, IroningType, OverhangFanThreshold, SeamPosition,
+    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
 };
 
 #[derive(Debug, Error)]
@@ -361,6 +361,26 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "fan_max_speed",
         settings.fan_max_speed.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "enable_overhang_bridge_fan",
+        settings.enable_overhang_bridge_fan,
+    );
+    insert(
+        &mut map,
+        "overhang_fan_speed",
+        settings.overhang_fan_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "overhang_fan_threshold",
+        settings.overhang_fan_threshold.as_str(),
+    );
+    insert(
+        &mut map,
+        "ironing_fan_speed",
+        settings.ironing_fan_speed.to_string(),
     );
     insert(
         &mut map,
@@ -792,6 +812,20 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = u32_val(map, "fan_max_speed") {
         s.fan_max_speed = v.min(100);
     }
+    if let Some(v) = bool_val(map, "enable_overhang_bridge_fan") {
+        s.enable_overhang_bridge_fan = v;
+    }
+    if let Some(v) = u32_val(map, "overhang_fan_speed") {
+        s.overhang_fan_speed = v.min(100);
+    }
+    if let Some(name) = text(map, "overhang_fan_threshold") {
+        if let Some(t) = OverhangFanThreshold::from_name(&name) {
+            s.overhang_fan_threshold = t;
+        }
+    }
+    if let Some(v) = num(map, "ironing_fan_speed") {
+        s.ironing_fan_speed = v.round() as i32;
+    }
     if let Some(v) = u32_val(map, "close_fan_the_first_x_layers") {
         s.close_fan_the_first_x_layers = v;
     }
@@ -1090,6 +1124,12 @@ mod tests {
         assert!((s.flow_ratio - 0.98).abs() < 1e-9);
         assert!(s.slow_down_for_layer_cooling);
         assert!((s.slow_down_min_speed_mm_s - 20.0).abs() < 1e-9);
+        assert_eq!(s.overhang_fan_speed, 100);
+        assert_eq!(
+            s.overhang_fan_threshold,
+            crate::OverhangFanThreshold::ThreeFour
+        );
+        assert_eq!(s.ironing_fan_speed, -1);
     }
 
     #[test]
