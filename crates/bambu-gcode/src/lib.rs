@@ -6,7 +6,9 @@ mod processor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, PrintAccel, SliceSettings, ZHopType};
+use bambu_config::{
+    expand_placeholders, Flow, PlaceholderContext, PrintAccel, SliceSettings, ZHopType,
+};
 use bambu_geom::{intersect_polygons, offset_polygons, unscale, Point, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
@@ -77,6 +79,23 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(out, "G1 Z{:.3} F600", layer.print_z_mm)?;
         state.z = layer.print_z_mm;
         state.lifted = 0.0;
+        if !settings.layer_change_gcode.is_empty() {
+            let mut ctx = PlaceholderContext::new();
+            ctx.set("layer_num", layer_i);
+            ctx.set("total_layer_count", sliced.layers.len());
+            ctx.set("layer_z", layer.print_z_mm);
+            if let Some(last) = sliced.layers.last() {
+                ctx.set("max_layer_z", last.print_z_mm);
+            }
+            let custom = expand_placeholders(&settings.layer_change_gcode, &ctx);
+            out.push_str(custom.trim_end());
+            out.push('\n');
+        }
+        if layer_i == 1 && !settings.layer_change_gcode.is_empty() {
+            writeln!(out, "; open powerlost recovery")?;
+            writeln!(out, "M1003 S1")?;
+        }
+        writeln!(out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
         let mm3_per_mm = flow.mm3_per_mm();
@@ -1970,5 +1989,42 @@ mod tests {
             "short hop to an outer wall should use 250\n{}",
             &gcode[layer1..]
         );
+    }
+
+    #[test]
+    fn h2c_emits_layer_change_gcode() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        let n = sliced.layers.len();
+        assert!(
+            gcode.contains(&format!("; layer num/total_layer_count: 1/{n}")),
+            "{gcode}"
+        );
+        assert!(gcode.contains("M73 L1"), "{gcode}");
+        assert!(gcode.contains("M991 S0 P0 ;notify layer change"), "{gcode}");
+        assert!(gcode.contains("M73 L2"), "{gcode}");
+        assert!(gcode.contains("M991 S0 P1 ;notify layer change"), "{gcode}");
+        assert!(gcode.contains("; open powerlost recovery"));
+        assert!(gcode.contains("M1003 S1"));
+        let layer1 = gcode.find(";LAYER:1").expect("layer 1");
+        assert!(
+            !gcode[..layer1].contains("M1003 S1"),
+            "power-loss recovery opens on the second layer"
+        );
+        assert!(gcode.contains(";_SET_FAN_SPEED_CHANGING_LAYER"));
+    }
+
+    #[test]
+    fn default_cube_skips_layer_change_gcode() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(!gcode.contains("M991 S0 P"));
+        assert!(!gcode.contains("M1003 S1"));
     }
 }

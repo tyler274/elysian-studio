@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod bbl;
+mod placeholder;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +10,7 @@ pub use bbl::{
     load_bbl_process, overlay_bbl_profile, project_settings_json, settings_from_json,
     write_flattened_bbl_profile, BblOraclePaths, ConfigError,
 };
+pub use placeholder::{expand_placeholders, PlaceholderContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InfillPattern {
@@ -646,6 +648,8 @@ pub struct SliceSettings {
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
     pub z_jerk_mm_s: f64,
+    /// C++ `layer_change_gcode`. Empty skips the custom block.
+    pub layer_change_gcode: String,
 }
 
 impl Default for SliceSettings {
@@ -788,6 +792,7 @@ impl Default for SliceSettings {
             bed_max_y: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
+            layer_change_gcode: String::new(),
         }
     }
 }
@@ -1031,6 +1036,9 @@ impl SliceSettings {
             bed_min_y: 0.0,
             bed_max_x: 325.0,
             bed_max_y: 320.0,
+            layer_change_gcode: String::from(
+                "; layer num/total_layer_count: {layer_num+1}/[total_layer_count]\n; update layer progress\nM73 L{layer_num+1}\nM991 S0 P{layer_num} ;notify layer change",
+            ),
             ..Self::default()
         }
     }

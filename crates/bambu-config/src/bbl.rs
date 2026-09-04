@@ -590,6 +590,13 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(&mut map, "z_hop", num_str(settings.z_hop_mm));
     insert(&mut map, "z_hop_types", settings.z_hop_type.as_str());
+    if !settings.layer_change_gcode.is_empty() {
+        insert(
+            &mut map,
+            "layer_change_gcode",
+            settings.layer_change_gcode.clone(),
+        );
+    }
     insert(
         &mut map,
         "retract_lift_above",
@@ -642,27 +649,68 @@ fn pct_str(frac: f64) -> String {
 fn load_inherited(dir: &Path, path: &Path) -> Result<serde_json::Map<String, Value>, ConfigError> {
     let text = std::fs::read_to_string(path)?;
     let value: Value = serde_json::from_str(&text)?;
-    let Value::Object(mut map) = value else {
+    let Value::Object(mut own) = value else {
         return Err(ConfigError::Message(format!(
             "{} is not a JSON object",
             path.display()
         )));
     };
-    if let Some(parent) = map.get("inherits").and_then(Value::as_str) {
+    let includes = take_includes(&mut own);
+    let mut out = if let Some(parent) = own.remove("inherits").and_then(|v| match v {
+        Value::String(s) => Some(s),
+        _ => None,
+    }) {
         let parent_path = dir.join(format!("{parent}.json"));
         if parent_path.is_file() {
-            let mut base = load_inherited(dir, &parent_path)?;
-            for (k, v) in map {
-                if k == "inherits" {
-                    continue;
-                }
-                base.insert(k, v);
+            load_inherited(dir, &parent_path)?
+        } else {
+            serde_json::Map::new()
+        }
+    } else {
+        serde_json::Map::new()
+    };
+    for name in includes {
+        let include_path = dir.join(format!("{name}.json"));
+        if !include_path.is_file() {
+            continue;
+        }
+        let included = load_inherited(dir, &include_path)?;
+        for (k, v) in included {
+            if is_profile_metadata(&k) {
+                continue;
             }
-            return Ok(base);
+            out.insert(k, v);
         }
     }
-    map.remove("inherits");
-    Ok(map)
+    for (k, v) in own {
+        out.insert(k, v);
+    }
+    Ok(out)
+}
+
+fn take_includes(map: &mut serde_json::Map<String, Value>) -> Vec<String> {
+    match map.remove("include") {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        Some(Value::String(s)) => vec![s],
+        _ => Vec::new(),
+    }
+}
+
+fn is_profile_metadata(key: &str) -> bool {
+    matches!(
+        key,
+        "name"
+            | "type"
+            | "from"
+            | "inherits"
+            | "include"
+            | "instantiation"
+            | "setting_id"
+            | "filament_id"
+    )
 }
 
 /// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
@@ -1099,6 +1147,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "machine_max_jerk_z") {
         s.z_jerk_mm_s = v.max(0.0);
+    }
+    if let Some(v) = text(map, "layer_change_gcode") {
+        s.layer_change_gcode = v;
     }
     if let Some(v) = filament_or_printer(map, "filament_retraction_length", "retraction_length") {
         s.retraction_length_mm = v.max(0.0);
@@ -1556,6 +1607,8 @@ mod tests {
         assert!(s.auxiliary_fan);
         assert!(!s.support_air_filtration);
         assert!((s.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
+        assert!(s.layer_change_gcode.contains("M73 L{layer_num+1}"));
+        assert!(s.layer_change_gcode.contains("M991 S0 P{layer_num}"));
         assert!(s.bed_bbox_valid);
         assert!((s.bed_min_x).abs() < 1e-9);
         assert!((s.bed_max_x - 325.0).abs() < 1e-9);
@@ -1568,6 +1621,7 @@ mod tests {
         assert!((baked.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!(baked.wipe);
         assert_eq!(baked.z_hop_type, crate::ZHopType::Spiral);
+        assert!(baked.layer_change_gcode.contains("M73 L{layer_num+1}"));
         assert!(baked.auxiliary_fan);
         assert!(baked.bed_bbox_valid);
         assert!((baked.bed_max_x - 325.0).abs() < 1e-9);
