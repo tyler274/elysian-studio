@@ -670,6 +670,17 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "nozzle_diameter",
+        settings
+            .nozzle_diameters_mm
+            .iter()
+            .copied()
+            .map(num_str)
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    insert(
+        &mut map,
         "filament_map",
         settings
             .filament_map
@@ -678,7 +689,28 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
             .collect::<Vec<_>>()
             .join(","),
     );
+    insert(
+        &mut map,
+        "physical_extruder_map",
+        settings
+            .physical_extruder_map
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     insert_bool(&mut map, "scan_first_layer", settings.scan_first_layer);
+    insert(
+        &mut map,
+        "printer_structure",
+        settings.printer_structure.clone(),
+    );
+    insert(&mut map, "print_sequence", settings.print_sequence.clone());
+    insert(
+        &mut map,
+        "printable_height",
+        num_str(settings.printable_height_mm),
+    );
     if !settings.wrapping_detection_gcode.is_empty() {
         insert(
             &mut map,
@@ -1039,6 +1071,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "line_width") {
         s.line_width_mm = v;
+    }
+    if let Some(v) = nums(map, "nozzle_diameter") {
+        s.nozzle_diameters_mm = v;
+        if let Some(&first) = s.nozzle_diameters_mm.first() {
+            s.nozzle_diameter_mm = first;
+        }
     }
     if let Some(v) = u32_val(map, "wall_loops") {
         s.wall_loops = v.max(1);
@@ -1435,8 +1473,20 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = ints(map, "filament_map") {
         s.filament_map = v;
     }
+    if let Some(v) = ints(map, "physical_extruder_map") {
+        s.physical_extruder_map = v;
+    }
     if let Some(v) = bool_val(map, "scan_first_layer") {
         s.scan_first_layer = v;
+    }
+    if let Some(v) = text(map, "printer_structure") {
+        s.printer_structure = v;
+    }
+    if let Some(v) = text(map, "print_sequence") {
+        s.print_sequence = v;
+    }
+    if let Some(v) = num(map, "printable_height") {
+        s.printable_height_mm = v.max(0.0);
     }
     if let Some(v) = text(map, "filament_type") {
         s.filament_type = v;
@@ -1563,6 +1613,32 @@ fn ints(map: &serde_json::Map<String, Value>, key: &str) -> Option<Vec<i32>> {
                 .collect();
             (!v.is_empty()).then_some(v)
         }
+    }
+}
+
+fn nums(map: &serde_json::Map<String, Value>, key: &str) -> Option<Vec<f64>> {
+    match map.get(key)? {
+        Value::Array(items) => {
+            let v: Vec<f64> = items.iter().filter_map(num_from_value).collect();
+            (!v.is_empty()).then_some(v)
+        }
+        other => {
+            let raw = value_text(other)?;
+            let v: Vec<f64> = raw
+                .split([',', ';', ' '])
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| p.trim_end_matches('%').trim().parse().ok())
+                .collect();
+            (!v.is_empty()).then_some(v)
+        }
+    }
+}
+
+fn num_from_value(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim_end_matches('%').trim().parse().ok(),
+        _ => None,
     }
 }
 
@@ -2011,7 +2087,17 @@ mod tests {
         assert!(s.wrapping_detection_gcode.contains("G39"));
         assert!(s.wrapping_detection_gcode.contains("layer_num == 3"));
         assert_eq!(s.filament_map, vec![1]);
+        assert_eq!(s.physical_extruder_map, vec![1, 0]);
+        assert_eq!(s.physical_extruder_id(0), 1);
+        assert_eq!(s.nozzle_diameters_mm, vec![0.4, 0.4]);
+        assert_eq!(s.nozzle_count(), 2);
+        assert_eq!(s.first_filaments(), vec![-1, 0]);
+        assert_eq!(s.first_non_support_filaments(), vec![-1, 0]);
+        assert_eq!(s.first_non_support_hotends(), vec![-1, 0]);
         assert!(!s.scan_first_layer);
+        assert_eq!(s.printer_structure, "corexy");
+        assert_eq!(s.print_sequence, "by layer");
+        assert!((s.printable_height_mm - 325.0).abs() < 1e-9);
         assert!(s
             .machine_end_gcode
             .contains("{if long_retraction_when_cut}"));
@@ -2038,6 +2124,7 @@ mod tests {
         assert_eq!(s.temperature_initial_layer_c, 220);
         assert_eq!(s.bed_temperature_c, 35);
         assert_eq!(s.bed_temperature_initial_layer_c, 35);
+        assert!(s.farthest_point_timelapse_enabled());
         let baked = SliceSettings::bbl_0_20();
         assert!((baked.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!(baked.wipe);
@@ -2053,6 +2140,90 @@ mod tests {
         assert!((baked.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);
         assert!((baked.flow_ratio - 0.99).abs() < 1e-9);
+    }
+
+    #[test]
+    fn start_gcode_context_sets_cpp_export_keys() {
+        let mut s = SliceSettings::default();
+        s.during_print_exhaust_fan_speed = 70;
+        s.activate_air_filtration = true;
+        s.support_air_filtration = true;
+        s.filament_max_volumetric_speed_mm3_s = 12.0;
+        s.print_speed_mm_s = 200.0;
+        let ctx = s.placeholder_custom_gcode_context(0, 1, 20.0, (0.0, 0.0), (20.0, 20.0));
+        assert_eq!(
+            crate::expand_placeholders("{first_layer_center_no_wipe_tower[1]}", &ctx),
+            "10"
+        );
+        assert_eq!(
+            crate::expand_placeholders("{during_print_exhaust_fan_speed_num}", &ctx),
+            "178"
+        );
+        assert_eq!(
+            crate::expand_placeholders(
+                "{if activate_air_filtration && support_air_filtration}ON{else}OFF{endif}",
+                &ctx
+            ),
+            "ON"
+        );
+        assert_eq!(
+            crate::expand_placeholders("{print_sequence}", &ctx),
+            "by layer"
+        );
+        assert_eq!(
+            crate::expand_placeholders("{printer_structure}", &ctx),
+            "undefine"
+        );
+        assert!((s.outer_wall_volumetric_speed() - 12.0).abs() < 1e-9);
+        assert_eq!(
+            crate::expand_placeholders("{first_non_support_filaments[0]}", &ctx),
+            "0"
+        );
+        assert_eq!(
+            crate::expand_placeholders(
+                "{if (first_non_support_filaments[0] != -1)}yes{else}no{endif}",
+                &ctx
+            ),
+            "yes"
+        );
+    }
+
+    #[test]
+    fn h2c_first_non_support_filaments_skip_physical_slot_0() {
+        let paths = bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mut s = SliceSettings::default();
+        overlay_bbl_profile(&mut s, &paths.machine).unwrap();
+        let ctx = s.placeholder_custom_gcode_context(0, 1, 20.0, (0.0, 0.0), (20.0, 20.0));
+        assert_eq!(
+            crate::expand_placeholders("{first_non_support_filaments[0]}", &ctx),
+            "-1"
+        );
+        assert_eq!(
+            crate::expand_placeholders("{first_non_support_filaments[1]}", &ctx),
+            "0"
+        );
+        assert_eq!(
+            crate::expand_placeholders("{first_non_support_hotend[0]}", &ctx),
+            "-1"
+        );
+        assert_eq!(
+            crate::expand_placeholders(
+                "{if (first_non_support_filaments[0] != -1)}yes{else}no{endif}",
+                &ctx
+            ),
+            "no"
+        );
+    }
+
+    #[test]
+    fn i3_disables_farthest_point_timelapse() {
+        let mut s = SliceSettings::default();
+        s.farthest_point_timelapse = true;
+        s.timelapse_type = 0;
+        s.printer_structure = String::from("corexy");
+        assert!(s.farthest_point_timelapse_enabled());
+        s.printer_structure = String::from("i3");
+        assert!(!s.farthest_point_timelapse_enabled());
     }
 
     #[test]

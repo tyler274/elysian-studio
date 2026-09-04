@@ -448,6 +448,8 @@ pub struct SliceSettings {
     /// Apply jitter on object layer 0 (`fuzzy_skin_first_layer`).
     pub fuzzy_skin_first_layer: bool,
     pub nozzle_diameter_mm: f64,
+    /// C++ `nozzle_diameter` (one entry per logical nozzle).
+    pub nozzle_diameters_mm: Vec<f64>,
     pub filament_diameter_mm: f64,
     /// C++ `filament_flow_ratio`. Generic PLA @ H2C 0.4 is 0.99.
     pub flow_ratio: f64,
@@ -718,8 +720,16 @@ pub struct SliceSettings {
     pub wrapping_detection_gcode: String,
     /// C++ `filament_map` (1-based extruder ids). Default is left nozzle.
     pub filament_map: Vec<i32>,
+    /// C++ `physical_extruder_map` (logical filament id → physical nozzle).
+    pub physical_extruder_map: Vec<i32>,
     /// C++ `scan_first_layer`: nozzle-cam inspect on the second layer.
     pub scan_first_layer: bool,
+    /// C++ `printer_structure` (`corexy`, `i3`, …).
+    pub printer_structure: String,
+    /// C++ `print_sequence` (`by layer` / `by object`).
+    pub print_sequence: String,
+    /// C++ `printable_height` (placeholder `max_print_height`).
+    pub printable_height_mm: f64,
 }
 
 impl Default for SliceSettings {
@@ -747,6 +757,7 @@ impl Default for SliceSettings {
             fuzzy_skin_point_distance_mm: 0.8,
             fuzzy_skin_first_layer: false,
             nozzle_diameter_mm: 0.4,
+            nozzle_diameters_mm: vec![0.4],
             filament_diameter_mm: 1.75,
             flow_ratio: 1.0,
             temperature_c: 220,
@@ -892,7 +903,11 @@ impl Default for SliceSettings {
             enable_wrapping_detection: false,
             wrapping_detection_gcode: String::new(),
             filament_map: vec![1],
+            physical_extruder_map: vec![0],
             scan_first_layer: false,
+            printer_structure: String::from("undefine"),
+            print_sequence: String::from("by layer"),
+            printable_height_mm: 250.0,
         }
     }
 }
@@ -1087,6 +1102,87 @@ impl SliceSettings {
         }
     }
 
+    /// C++ `PrinterStructure::psI3`.
+    pub fn is_i3(&self) -> bool {
+        self.printer_structure.eq_ignore_ascii_case("i3")
+    }
+
+    /// C++ `m_farthest_point_timelapse.enabled` (toggle + traditional + not I3).
+    pub fn farthest_point_timelapse_enabled(&self) -> bool {
+        self.farthest_point_timelapse && self.timelapse_type == 0 && !self.is_i3()
+    }
+
+    /// C++ `during_print_exhaust_fan_speed_num` (percent → 0–255 PWM).
+    pub fn during_print_exhaust_fan_speed_num(&self) -> i32 {
+        (f64::from(self.during_print_exhaust_fan_speed) / 100.0 * 255.0) as i32
+    }
+
+    /// C++ `get_outer_wall_volumetric_speed` (stadium flow, no flow ratio).
+    pub fn outer_wall_volumetric_speed(&self) -> f64 {
+        let width = if self.line_width_mm > 0.0 {
+            self.line_width_mm
+        } else {
+            self.filament_diameter_mm
+        };
+        let h = self.layer_height_mm;
+        let mm3_per_mm = h * (width - h * (1.0 - 0.25 * std::f64::consts::PI));
+        let mut vol = self.print_speed_mm_s * mm3_per_mm.max(0.0);
+        if self.filament_max_volumetric_speed_mm3_s > 0.0 {
+            vol = vol.min(self.filament_max_volumetric_speed_mm3_s);
+        }
+        vol
+    }
+
+    /// C++ `physical_extruder_map.get_at(filament_id)`.
+    pub fn physical_extruder_id(&self, filament_id: usize) -> i32 {
+        match self.physical_extruder_map.as_slice() {
+            [] => 0,
+            map => map[filament_id.min(map.len() - 1)],
+        }
+    }
+
+    /// C++ `nozzle_diameter.size()`.
+    pub fn nozzle_count(&self) -> usize {
+        self.nozzle_diameters_mm.len().max(1)
+    }
+
+    /// C++ `first_filaments` after `match_physical_extruder_for_each_filament`.
+    pub fn first_filaments(&self) -> Vec<i32> {
+        remap_filaments_to_physical(
+            &self.first_filaments_by_logical_slot(),
+            &self.physical_extruder_map,
+        )
+    }
+
+    /// C++ `first_non_support_filaments` after the same physical remap.
+    pub fn first_non_support_filaments(&self) -> Vec<i32> {
+        self.first_filaments()
+    }
+
+    /// C++ `first_non_support_hotend` (group id, or -1 when the slot is unused).
+    pub fn first_non_support_hotends(&self) -> Vec<i32> {
+        self.first_non_support_filaments()
+            .into_iter()
+            .map(|id| if id < 0 { -1 } else { 0 })
+            .collect()
+    }
+
+    fn first_filaments_by_logical_slot(&self) -> Vec<i32> {
+        let n = self.nozzle_count();
+        let mut first = vec![-1; n];
+        let Some(&mapped) = self.filament_map.first() else {
+            return first;
+        };
+        let extruder_id = mapped - 1;
+        if extruder_id >= 0 {
+            let e = extruder_id as usize;
+            if e < n {
+                first[e] = 0;
+            }
+        }
+        first
+    }
+
     /// Bambu `0.20mm Standard @BBL H2C` plus H2C 0.4 nozzle and Generic PLA @ H2C 0.4.
     pub fn bbl_0_20() -> Self {
         Self {
@@ -1187,6 +1283,7 @@ impl SliceSettings {
         ctx.set("current_hotend", 0);
         ctx.set("filament_extruder_id", 0);
         ctx.set("current_extruder_id", 0);
+        ctx.set("current_extruder", 0);
         ctx.set("current_nozzle_id", 0);
         ctx.set("initial_nozzle_id", 0);
         ctx.set("initial_no_support_filament_id", 0);
@@ -1237,7 +1334,6 @@ impl SliceSettings {
             self.temperature_initial_layer_c,
         );
         ctx.set("first_layer_temperature", self.temperature_initial_layer_c);
-        ctx.set("nozzle_diameter_at_nozzle_id", self.nozzle_diameter_mm);
         ctx.set("filament_type", self.filament_type.clone());
         ctx.set(
             "is_all_bbl_filament",
@@ -1270,9 +1366,45 @@ impl SliceSettings {
         ctx.set("wipe_tower_center_pos_valid", 0);
         ctx.set("wipe_tower_center_pos_x", 0);
         ctx.set("wipe_tower_center_pos_y", 0);
-        ctx.set("has_tpu_in_first_layer", 0);
-        ctx.set("first_non_support_filaments", 0);
-        ctx.set("first_non_support_hotend", 0);
+        ctx.set(
+            "has_tpu_in_first_layer",
+            i32::from(self.filament_type.eq_ignore_ascii_case("TPU")),
+        );
+        let first_filaments = self.first_filaments();
+        let first_non_support = self.first_non_support_filaments();
+        let first_hotends = self.first_non_support_hotends();
+        ctx.set_list("first_tools", first_filaments.iter().copied());
+        ctx.set_list("first_filaments", first_filaments);
+        ctx.set_list("first_non_support_tools", first_non_support.iter().copied());
+        ctx.set_list("first_non_support_filaments", first_non_support);
+        ctx.set_list("first_non_support_hotend", first_hotends);
+        if self.nozzle_diameters_mm.is_empty() {
+            ctx.set("nozzle_diameter_at_nozzle_id", self.nozzle_diameter_mm);
+        } else {
+            ctx.set_list(
+                "nozzle_diameter_at_nozzle_id",
+                self.nozzle_diameters_mm.iter().copied(),
+            );
+        }
+        ctx.set(
+            "activate_air_filtration",
+            i32::from(self.activate_air_filtration),
+        );
+        ctx.set(
+            "support_air_filtration",
+            i32::from(self.support_air_filtration),
+        );
+        ctx.set(
+            "during_print_exhaust_fan_speed_num",
+            self.during_print_exhaust_fan_speed_num(),
+        );
+        ctx.set(
+            "outer_wall_volumetric_speed",
+            self.outer_wall_volumetric_speed(),
+        );
+        ctx.set("printer_structure", self.printer_structure.clone());
+        ctx.set("print_sequence", self.print_sequence.clone());
+        ctx.set("max_print_height", self.printable_height_mm.round() as i64);
         ctx.set_list(
             "first_layer_print_min",
             [first_layer_min.0, first_layer_min.1],
@@ -1280,6 +1412,13 @@ impl SliceSettings {
         ctx.set_list(
             "first_layer_print_size",
             [first_layer_size.0, first_layer_size.1],
+        );
+        ctx.set_list(
+            "first_layer_center_no_wipe_tower",
+            [
+                first_layer_min.0 + first_layer_size.0 * 0.5,
+                first_layer_min.1 + first_layer_size.1 * 0.5,
+            ],
         );
         ctx
     }
@@ -1301,12 +1440,16 @@ impl SliceSettings {
         ctx.set("has_timelapse_safe_pos", 0);
         ctx.set("timelapse_pos_x", 0);
         ctx.set("timelapse_pos_y", 0);
-        ctx.set("most_used_physical_extruder_id", 0);
-        ctx.set("curr_physical_extruder_id", 0);
+        ctx.set(
+            "most_used_physical_extruder_id",
+            self.physical_extruder_id(0),
+        );
+        ctx.set("curr_physical_extruder_id", self.physical_extruder_id(0));
         ctx.set("clear_to_x0", 0);
+        ctx.set("print_sequence", self.print_sequence.clone());
         ctx.set(
             "farthest_point_timelapse_enabled",
-            i32::from(self.farthest_point_timelapse && self.timelapse_type == 0),
+            i32::from(self.farthest_point_timelapse_enabled()),
         );
         ctx
     }
@@ -1323,8 +1466,11 @@ impl SliceSettings {
         ctx.set("layer_z", layer_z);
         ctx.set("max_layer_z", max_layer_z);
         ctx.set("spiral_mode", i32::from(self.spiral_mode));
-        ctx.set("most_used_physical_extruder_id", 0);
-        ctx.set("curr_physical_extruder_id", 0);
+        ctx.set(
+            "most_used_physical_extruder_id",
+            self.physical_extruder_id(0),
+        );
+        ctx.set("curr_physical_extruder_id", self.physical_extruder_id(0));
         ctx
     }
 
@@ -1354,6 +1500,25 @@ impl SliceSettings {
             && center_y - radius >= self.bed_min_y - 1e-9
             && center_y + radius <= self.bed_max_y + 1e-9
     }
+}
+
+/// C++ `match_physical_extruder_for_each_filament`: `out[map[i]] = filaments[i]`.
+fn remap_filaments_to_physical(filaments: &[i32], map: &[i32]) -> Vec<i32> {
+    let n = filaments.len();
+    let mut out = vec![0; n];
+    for (extruder_id, &fil) in filaments.iter().enumerate() {
+        let p = match map {
+            [] => 0,
+            m => m[extruder_id.min(m.len() - 1)],
+        };
+        if p >= 0 {
+            let i = p as usize;
+            if i < n {
+                out[i] = fil;
+            }
+        }
+    }
+    out
 }
 
 /// Extrusion volume helpers (Slic3r `Flow`).

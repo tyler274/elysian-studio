@@ -896,6 +896,14 @@ fn h2c_emits_machine_start_gcode() {
         !filament.contains("M106 P3 S255") && !filament.contains("M106 P3 S180"),
         "Cool Plate 35 skips filament chamber-fan branches\n{filament}"
     );
+    assert!(
+        header.contains("M640.1 S") && header.contains("M640.4"),
+        "H2C always arms the AMS before the first-filament gate\n{header}"
+    );
+    assert!(
+        !header.contains("M640.8") && !header.contains("M640.7 U") && !header.contains("M640.2 R1"),
+        "H2C physical remap leaves first_non_support_filaments[0] == -1\n{header}"
+    );
 }
 
 #[test]
@@ -1001,8 +1009,8 @@ fn h2c_emits_time_lapse_gcode_each_layer() {
     assert_eq!(shots, n, "one timelapse insert per layer, got {shots}");
     assert!(exec.contains(";===== machine: H2C timelapse ====="));
     assert!(
-        exec.contains("M9711 M0 E0 Z"),
-        "traditional no-safe-pos shutter\n{}",
+        exec.contains("M9711 M0 E1 Z"),
+        "H2C physical_extruder_map[0] is 1\n{}",
         exec.lines()
             .filter(|l| l.contains("M9711"))
             .take(3)
@@ -1020,6 +1028,73 @@ fn h2c_emits_time_lapse_gcode_each_layer() {
     assert!(
         last_layer < last_tl && last_tl < close,
         "timelapse should close each layer before spaghetti off"
+    );
+    let zs = m9711_z_values(exec);
+    assert!(!zs.is_empty(), "missing M9711 Z");
+    assert!(
+        (zs[0] - sliced.layers[0].print_z_mm).abs() < 1e-3,
+        "corexy farthest-point uses layer_z, got {}\n{}",
+        zs[0],
+        exec.lines()
+            .filter(|l| l.contains("M9711"))
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn h2c_i3_timelapse_adds_legacy_z_offset() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    settings.printer_structure = String::from("i3");
+    assert!(!settings.farthest_point_timelapse_enabled());
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let zs = m9711_z_values(exec);
+    assert!(!zs.is_empty(), "missing M9711 Z");
+    assert!(
+        (zs[0] - (sliced.layers[0].print_z_mm + 0.4)).abs() < 1e-3,
+        "I3 farthest-point off uses layer_z + 0.4, got {}\n{}",
+        zs[0],
+        exec.lines()
+            .filter(|l| l.contains("M9711"))
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn h2c_filament_start_emits_exhaust_pwm_when_filtration_on() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    settings.support_air_filtration = true;
+    settings.activate_air_filtration = true;
+    settings.during_print_exhaust_fan_speed = 70;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let header_end = exec.find("; CHANGE_LAYER").expect("layers");
+    let header = &exec[..header_end];
+    let filament = header
+        .split_once("; MACHINE_START_GCODE_END")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    assert!(
+        filament.contains("M106 P3 S178"),
+        "filament start uses during_print_exhaust_fan_speed_num\n{filament}"
     );
 }
 
@@ -1261,6 +1336,17 @@ fn layer_block(exec: &str, layer: usize) -> Option<&str> {
         .map(|i| start + tag.len() + i)
         .unwrap_or(exec.len());
     Some(&exec[start..end])
+}
+
+fn m9711_z_values(exec: &str) -> Vec<f64> {
+    exec.lines()
+        .filter(|l| l.contains("M9711 "))
+        .filter_map(|l| {
+            l.split_whitespace()
+                .find(|w| w.starts_with('Z') && w.len() > 1)
+                .and_then(|w| w[1..].parse().ok())
+        })
+        .collect()
 }
 
 fn wrapping_g39_layers(exec: &str) -> Vec<usize> {
