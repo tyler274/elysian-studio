@@ -259,6 +259,17 @@ impl TopOneWallType {
     }
 }
 
+/// C++ extrusion-role acceleration pick in `GCode::extrude`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintAccel {
+    #[default]
+    Default,
+    OuterWall,
+    InnerWall,
+    TopSurface,
+    SparseInfill,
+}
+
 /// C++ `FuzzySkinType` (`fuzzy_skin`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FuzzySkinType {
@@ -520,8 +531,23 @@ pub struct SliceSettings {
     pub ironing_speed_mm_s: f64,
     /// C++ `default_acceleration` (mm/s²). Used by the G-code time estimator.
     pub default_acceleration_mm_s2: f64,
+    /// C++ `outer_wall_acceleration`. 0 means use default.
+    pub outer_wall_acceleration_mm_s2: f64,
+    /// C++ `inner_wall_acceleration`. 0 means use default.
+    pub inner_wall_acceleration_mm_s2: f64,
+    /// C++ `initial_layer_acceleration`. 0 means use default.
+    pub initial_layer_acceleration_mm_s2: f64,
+    /// C++ `top_surface_acceleration`. 0 means use default.
+    pub top_surface_acceleration_mm_s2: f64,
+    /// C++ `sparse_infill_acceleration` (mm/s² or percent of default).
+    pub sparse_infill_acceleration: f64,
+    pub sparse_infill_acceleration_is_percent: bool,
     /// C++ `travel_acceleration` (mm/s²).
     pub travel_acceleration_mm_s2: f64,
+    /// C++ `initial_layer_travel_acceleration`. 0 means use travel acceleration.
+    pub initial_layer_travel_acceleration_mm_s2: f64,
+    /// C++ `machine_max_acceleration_retracting`. 0 means 1500.
+    pub retract_acceleration_mm_s2: f64,
     /// C++ `filament_density` (g/cm³). Generic PLA is 1.24.
     pub filament_density_g_cm3: f64,
     /// C++ `fan_min_speed` (percent).
@@ -700,7 +726,15 @@ impl Default for SliceSettings {
             ironing_inset_mm: 0.21,
             ironing_speed_mm_s: 30.0,
             default_acceleration_mm_s2: 10000.0,
+            outer_wall_acceleration_mm_s2: 0.0,
+            inner_wall_acceleration_mm_s2: 0.0,
+            initial_layer_acceleration_mm_s2: 0.0,
+            top_surface_acceleration_mm_s2: 0.0,
+            sparse_infill_acceleration: 0.0,
+            sparse_infill_acceleration_is_percent: false,
             travel_acceleration_mm_s2: 10000.0,
+            initial_layer_travel_acceleration_mm_s2: 0.0,
+            retract_acceleration_mm_s2: 0.0,
             filament_density_g_cm3: 1.24,
             fan_min_speed: 20,
             fan_max_speed: 100,
@@ -828,6 +862,56 @@ impl SliceSettings {
         }
     }
 
+    fn sparse_infill_acceleration_mm_s2(&self) -> f64 {
+        let v = self.sparse_infill_acceleration;
+        if v <= 0.0 {
+            0.0
+        } else if self.sparse_infill_acceleration_is_percent {
+            v / 100.0 * self.default_acceleration_mm_s2
+        } else {
+            v
+        }
+    }
+
+    /// C++ `GCode::extrude` acceleration for a path role.
+    pub fn print_acceleration_mm_s2(&self, first_layer: bool, kind: PrintAccel) -> f64 {
+        if first_layer && self.initial_layer_acceleration_mm_s2 > 0.0 {
+            return self.initial_layer_acceleration_mm_s2;
+        }
+        let role = match kind {
+            PrintAccel::Default => 0.0,
+            PrintAccel::OuterWall => self.outer_wall_acceleration_mm_s2,
+            PrintAccel::InnerWall => self.inner_wall_acceleration_mm_s2,
+            PrintAccel::TopSurface => self.top_surface_acceleration_mm_s2,
+            PrintAccel::SparseInfill => self.sparse_infill_acceleration_mm_s2(),
+        };
+        if role > 0.0 {
+            role
+        } else {
+            self.default_acceleration_mm_s2
+        }
+    }
+
+    /// C++ travel acceleration, including the first-layer override.
+    pub fn travel_acceleration_for_layer(&self, first_layer: bool) -> f64 {
+        if first_layer && self.initial_layer_travel_acceleration_mm_s2 > 0.0 {
+            self.initial_layer_travel_acceleration_mm_s2
+        } else if self.travel_acceleration_mm_s2 > 0.0 {
+            self.travel_acceleration_mm_s2
+        } else {
+            self.default_acceleration_mm_s2
+        }
+    }
+
+    /// C++ `get_retract_acceleration`: machine limit, else 1500.
+    pub fn retract_acceleration_or_default(&self) -> f64 {
+        if self.retract_acceleration_mm_s2 > 0.0 {
+            self.retract_acceleration_mm_s2
+        } else {
+            1500.0
+        }
+    }
+
     /// Thin-feature extrusion floor (`min_bead_width` × nozzle).
     pub fn min_bead_width_mm(&self) -> f64 {
         let frac = if self.min_bead_width > 0.0 {
@@ -885,6 +969,14 @@ impl SliceSettings {
             bridge_speed_mm_s: 50.0,
             top_surface_speed_mm_s: 200.0,
             default_acceleration_mm_s2: 8000.0,
+            outer_wall_acceleration_mm_s2: 5000.0,
+            initial_layer_acceleration_mm_s2: 500.0,
+            top_surface_acceleration_mm_s2: 2000.0,
+            sparse_infill_acceleration: 100.0,
+            sparse_infill_acceleration_is_percent: true,
+            travel_acceleration_mm_s2: 10000.0,
+            initial_layer_travel_acceleration_mm_s2: 6000.0,
+            retract_acceleration_mm_s2: 5000.0,
             ironing_flow: 0.15,
             fan_min_speed: 100,
             fan_max_speed: 100,

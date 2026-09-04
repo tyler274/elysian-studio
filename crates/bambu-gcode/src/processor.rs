@@ -66,6 +66,9 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
     let mut wiping = false;
     let mut blocks = Vec::new();
     let mut prev_state: Option<PrevMove> = None;
+    let mut print_accel = settings.default_acceleration_mm_s2.max(1.0);
+    let mut travel_accel = settings.travel_acceleration_mm_s2.max(1.0);
+    let mut retract_accel = settings.retract_acceleration_or_default().max(1.0);
 
     for line in gcode.lines() {
         if line.contains("WIPE_START") {
@@ -78,6 +81,15 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
             continue;
         }
         let upper = trimmed.to_ascii_uppercase();
+        if upper.starts_with("M204") {
+            apply_m204(
+                &upper,
+                &mut print_accel,
+                &mut travel_accel,
+                &mut retract_accel,
+            );
+            continue;
+        }
         if upper.starts_with("G28") {
             x = 0.0;
             y = 0.0;
@@ -117,12 +129,14 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         let dy = ny - y;
         let dz = nz - z;
         let de = ne - e;
-        let distance = if is_arc {
+        let xyz = if is_arc {
             arc_move_length(&upper, dx, dy, dz)
         } else {
             (dx * dx + dy * dy + dz * dz).sqrt()
         };
-        if de > 0.0 && !wiping && distance > 1e-9 {
+        let e_only = xyz < 1e-9 && de.abs() > 1e-9;
+        let distance = if e_only { de.abs() } else { xyz };
+        if de > 0.0 && !wiping && xyz > 1e-9 {
             filament_mm += de;
         }
         x = nx;
@@ -137,11 +151,17 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
             continue;
         }
         let inv = 1.0 / distance;
-        let dir = [dx * inv, dy * inv, dz * inv];
-        let accel = if is_travel || is_arc {
-            settings.travel_acceleration_mm_s2
+        let dir = if e_only {
+            [0.0, 0.0, 0.0]
         } else {
-            settings.default_acceleration_mm_s2
+            [dx * inv, dy * inv, dz * inv]
+        };
+        let accel = if e_only {
+            retract_accel
+        } else if is_travel || is_arc || parse_axis(&upper, b'E').is_none() {
+            travel_accel
+        } else {
+            print_accel
         }
         .max(1.0);
         let block = build_block(
@@ -217,6 +237,27 @@ fn parse_axis(upper: &str, axis: u8) -> Option<f64> {
         i += 1;
     }
     None
+}
+
+fn apply_m204(upper: &str, print: &mut f64, travel: &mut f64, retract: &mut f64) {
+    if let Some(s) = parse_axis(upper, b'S') {
+        let v = s.max(1.0);
+        *print = v;
+        *travel = v;
+        if let Some(t) = parse_axis(upper, b'T') {
+            *retract = t.max(1.0);
+        }
+        return;
+    }
+    if let Some(p) = parse_axis(upper, b'P') {
+        *print = p.max(1.0);
+    }
+    if let Some(r) = parse_axis(upper, b'R') {
+        *retract = r.max(1.0);
+    }
+    if let Some(t) = parse_axis(upper, b'T') {
+        *travel = t.max(1.0);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -541,5 +582,34 @@ mod tests {
         assert!(footer.contains("; total filament weight [g] : 0.30"));
         assert!(footer.contains("; total filament volume [cm^3] : 0.24"));
         assert!(footer.contains("; total filament length [mm] : 100.00"));
+    }
+
+    #[test]
+    fn retract_e_only_counts_time() {
+        let mut settings = SliceSettings::default();
+        settings.retract_acceleration_mm_s2 = 1500.0;
+        let gcode = "G90\nG1 E-30 F1800\n";
+        let stats = process_gcode(gcode, &settings);
+        assert_eq!(stats.move_count, 1);
+        assert!(
+            (0.8..1.3).contains(&stats.time_s),
+            "30 mm retract at 30 mm/s should be ~1s, got {}",
+            stats.time_s
+        );
+        assert!(stats.filament_mm.abs() < 1e-9);
+    }
+
+    #[test]
+    fn m204_p_sets_print_acceleration() {
+        let settings = SliceSettings::default();
+        let fast = process_gcode("G90\nG1 X50 Y0 E1 F3000\n", &settings);
+        let slow = process_gcode("G90\nM204 P50\nG1 X50 Y0 E1 F3000\n", &settings);
+        assert!(
+            slow.time_s > fast.time_s + 0.2,
+            "print accel 50 should stretch trapezoid vs 10000 (fast {}s slow {}s)",
+            fast.time_s,
+            slow.time_s
+        );
+        assert!((fast.filament_mm - slow.filament_mm).abs() < 1e-9);
     }
 }

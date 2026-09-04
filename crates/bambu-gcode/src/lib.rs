@@ -6,7 +6,7 @@ mod processor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, SliceSettings, ZHopType};
+use bambu_config::{Flow, PrintAccel, SliceSettings, ZHopType};
 use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, point_in_polygons, SliceResult};
 use thiserror::Error;
@@ -55,21 +55,30 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let support_f = settings.support_speed_mm_s * 60.0;
     let support_interface_f = settings.support_interface_speed_mm_s * 60.0;
 
-    let mut state = WriterState::default();
+    let mut state = WriterState {
+        print_accel: settings.print_acceleration_mm_s2(true, PrintAccel::Default),
+        ..WriterState::default()
+    };
     for (layer_i, layer) in sliced.layers.iter().enumerate() {
+        let first = layer_i == 0;
         if layer_i > 0 && settings.retract_when_changing_layer {
             retract(&mut out, settings, &mut state)?;
         }
         writeln!(out, "; CHANGE_LAYER")?;
         writeln!(out, ";LAYER:{}", layer.index)?;
         writeln!(out, "; LAYER_HEIGHT:{}", layer.height_mm)?;
+        state.first_layer = first;
+        emit_accel(
+            &mut out,
+            &mut state,
+            settings.travel_acceleration_for_layer(first),
+        )?;
         writeln!(out, "G1 Z{:.3} F600", layer.print_z_mm)?;
         state.z = layer.print_z_mm;
         state.lifted = 0.0;
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
         let mm3_per_mm = flow.mm3_per_mm();
-        let first = layer_i == 0;
         let wall_f = if first { first_f } else { outer_f };
         let inner_wall_f = if first { first_f } else { inner_f };
         let sparse_f = if first { first_infill_f } else { infill_f };
@@ -95,6 +104,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 
         if !layer.skirt.is_empty() {
             writeln!(out, "; FEATURE: Skirt")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.skirt,
@@ -109,6 +119,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.brim.is_empty() {
             writeln!(out, "; FEATURE: Brim")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.brim,
@@ -123,6 +134,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.support.is_empty() {
             writeln!(out, "; FEATURE: Support")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.support,
@@ -137,6 +149,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.support_interface.is_empty() {
             writeln!(out, "; FEATURE: Support interface")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.support_interface,
@@ -149,6 +162,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 &mut state,
             )?;
         }
+        set_print_role(&mut state, settings, PrintAccel::OuterWall);
         emit_wall_paths(
             &mut out,
             "Outer wall",
@@ -164,6 +178,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             mm3_per_mm,
             &mut state,
         )?;
+        set_print_role(&mut state, settings, PrintAccel::InnerWall);
         emit_wall_paths(
             &mut out,
             "Inner wall",
@@ -181,6 +196,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         )?;
         if !layer.gap_infill.is_empty() {
             writeln!(out, "; FEATURE: Gap infill")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.gap_infill,
@@ -195,6 +211,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.infill.is_empty() {
             writeln!(out, "; FEATURE: Sparse infill")?;
+            set_print_role(&mut state, settings, PrintAccel::SparseInfill);
             emit_paths(
                 &mut out,
                 &layer.infill,
@@ -209,6 +226,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.solid_infill.is_empty() {
             writeln!(out, "; FEATURE: Internal solid infill")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.solid_infill,
@@ -223,6 +241,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.bridge.is_empty() {
             writeln!(out, "; FEATURE: Bridge")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_marked(
                 &mut out,
                 settings.overhang_fan_applies(5, true, false),
@@ -245,6 +264,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.bottom_surface.is_empty() {
             writeln!(out, "; FEATURE: Bottom surface")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             emit_paths(
                 &mut out,
                 &layer.bottom_surface,
@@ -259,6 +279,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.top_surface.is_empty() {
             writeln!(out, "; FEATURE: Top surface")?;
+            set_print_role(&mut state, settings, PrintAccel::TopSurface);
             emit_paths(
                 &mut out,
                 &layer.top_surface,
@@ -273,6 +294,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
         if !layer.ironing.is_empty() {
             writeln!(out, "; FEATURE: Ironing")?;
+            set_print_role(&mut state, settings, PrintAccel::Default);
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
             let iron_e = iron_flow.e_per_mm();
@@ -529,9 +551,29 @@ struct WriterState {
     to_lift_type: ZHopType,
     /// Previous layer contours; Auto hop treats travel outside them as over air.
     prev_solid: Vec<Polygon>,
+    last_accel: f64,
+    print_accel: f64,
+    first_layer: bool,
 }
 
 const TRAVEL_EPS_MM: f64 = 1e-4;
+
+fn set_print_role(state: &mut WriterState, settings: &SliceSettings, kind: PrintAccel) {
+    state.print_accel = settings.print_acceleration_mm_s2(state.first_layer, kind);
+}
+
+fn emit_accel(out: &mut String, state: &mut WriterState, accel: f64) -> Result<(), GcodeError> {
+    if accel <= 0.0 {
+        return Ok(());
+    }
+    let rounded = accel.round();
+    if (rounded - state.last_accel).abs() < 0.5 {
+        return Ok(());
+    }
+    state.last_accel = rounded;
+    writeln!(out, "M204 P{:.0} ; adjust acceleration", rounded)?;
+    Ok(())
+}
 
 fn xy_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
@@ -857,6 +899,11 @@ fn travel_to(
         if dist + 1e-9 >= settings.retraction_minimum_travel_mm {
             retract(out, settings, state)?;
         }
+        emit_accel(
+            out,
+            state,
+            settings.travel_acceleration_for_layer(state.first_layer),
+        )?;
         apply_lazy_lift(out, dest, travel_f, settings, state)?;
     }
     if state.lifted > 1e-9 {
@@ -891,6 +938,8 @@ fn emit_one_path(
     let start = pts[0];
     travel_to(out, start, travel_f, settings, state)?;
     unretract(out, settings, state)?;
+    let print_accel = state.print_accel;
+    emit_accel(out, state, print_accel)?;
     let n = pts.len();
     let end = if closed { n } else { n - 1 };
     let mut trail = vec![start];
@@ -1841,5 +1890,34 @@ mod tests {
             !fast_inner,
             "inner walls should still stretch for layer cooling"
         );
+    }
+
+    #[test]
+    fn h2c_emits_role_accelerations() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains("M204 P500 ; adjust acceleration"),
+            "first layer print 500\n{gcode}"
+        );
+        assert!(
+            gcode.contains("M204 P5000 ; adjust acceleration"),
+            "outer wall 5000\n{gcode}"
+        );
+        assert!(
+            gcode.contains("M204 P6000 ; adjust acceleration"),
+            "first-layer travel 6000\n{gcode}"
+        );
+        assert!(
+            gcode.contains("M204 P10000 ; adjust acceleration"),
+            "later travel 10000\n{gcode}"
+        );
+        let first_print = gcode.find("M204 P500 ;").expect("first layer");
+        let outer = gcode.find("M204 P5000 ;").expect("outer");
+        assert!(first_print < outer, "{gcode}");
     }
 }

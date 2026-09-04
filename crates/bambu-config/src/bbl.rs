@@ -354,8 +354,47 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "outer_wall_acceleration",
+        num_str(settings.outer_wall_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "inner_wall_acceleration",
+        num_str(settings.inner_wall_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "initial_layer_acceleration",
+        num_str(settings.initial_layer_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "top_surface_acceleration",
+        num_str(settings.top_surface_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_acceleration",
+        if settings.sparse_infill_acceleration_is_percent {
+            format!("{}%", num_str(settings.sparse_infill_acceleration))
+        } else {
+            num_str(settings.sparse_infill_acceleration)
+        },
+    );
+    insert(
+        &mut map,
         "travel_acceleration",
         num_str(settings.travel_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "initial_layer_travel_acceleration",
+        num_str(settings.initial_layer_travel_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
+        "machine_max_acceleration_retracting",
+        num_str(settings.retract_acceleration_mm_s2),
     );
     insert(
         &mut map,
@@ -936,8 +975,30 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "default_acceleration") {
         s.default_acceleration_mm_s2 = v.max(0.0);
     }
+    if let Some(v) = num(map, "outer_wall_acceleration") {
+        s.outer_wall_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "inner_wall_acceleration") {
+        s.inner_wall_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "initial_layer_acceleration") {
+        s.initial_layer_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "top_surface_acceleration") {
+        s.top_surface_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some((v, is_pct)) = float_or_percent(map, "sparse_infill_acceleration") {
+        s.sparse_infill_acceleration = v.max(0.0);
+        s.sparse_infill_acceleration_is_percent = is_pct;
+    }
     if let Some(v) = num(map, "travel_acceleration") {
         s.travel_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "initial_layer_travel_acceleration") {
+        s.initial_layer_travel_acceleration_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "machine_max_acceleration_retracting") {
+        s.retract_acceleration_mm_s2 = v.max(0.0);
     }
     if let Some(v) = num(map, "filament_density") {
         s.filament_density_g_cm3 = v.max(0.0);
@@ -1434,6 +1495,8 @@ mod tests {
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
         assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
+        assert!((s.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
+        assert!((s.initial_layer_acceleration_mm_s2 - 500.0).abs() < 1.0);
     }
 
     #[test]
@@ -1483,6 +1546,7 @@ mod tests {
         assert!((s.retract_lift_below_mm - 319.0).abs() < 1e-9);
         assert!(s.auxiliary_fan);
         assert!(!s.support_air_filtration);
+        assert!((s.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!(s.bed_bbox_valid);
         assert!((s.bed_min_x).abs() < 1e-9);
         assert!((s.bed_max_x - 325.0).abs() < 1e-9);
@@ -1499,6 +1563,8 @@ mod tests {
         assert!(baked.bed_bbox_valid);
         assert!((baked.bed_max_x - 325.0).abs() < 1e-9);
         assert_eq!(baked.additional_cooling_fan_speed, 75);
+        assert!((baked.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
+        assert!((baked.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((baked.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);
         assert!((baked.flow_ratio - 0.99).abs() < 1e-9);
