@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     FuzzySkinType, InfillPattern, IroningPattern, IroningType, OverhangFanThreshold, SeamPosition,
-    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator, ZHopType,
 };
 
 #[derive(Debug, Error)]
@@ -492,6 +492,23 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "retract_restart_extra",
         num_str(settings.retract_restart_extra_mm),
+    );
+    insert(&mut map, "z_hop", num_str(settings.z_hop_mm));
+    insert(&mut map, "z_hop_types", settings.z_hop_type.as_str());
+    insert(
+        &mut map,
+        "retract_lift_above",
+        num_str(settings.retract_lift_above_mm),
+    );
+    insert(
+        &mut map,
+        "retract_lift_below",
+        num_str(settings.retract_lift_below_mm),
+    );
+    insert(
+        &mut map,
+        "travel_speed_z",
+        num_str(settings.travel_speed_z_mm_s),
     );
     insert(
         &mut map,
@@ -977,6 +994,23 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     ) {
         s.retract_restart_extra_mm = v;
     }
+    if let Some(v) = filament_or_printer(map, "filament_z_hop", "z_hop") {
+        s.z_hop_mm = v.max(0.0);
+    }
+    if let Some(name) = filament_or_printer_text(map, "filament_z_hop_types", "z_hop_types") {
+        if let Some(t) = ZHopType::from_name(&name) {
+            s.z_hop_type = t;
+        }
+    }
+    if let Some(v) = num(map, "retract_lift_above") {
+        s.retract_lift_above_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "retract_lift_below") {
+        s.retract_lift_below_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "travel_speed_z") {
+        s.travel_speed_z_mm_s = v.max(0.0);
+    }
 }
 
 fn text(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
@@ -1021,6 +1055,16 @@ fn filament_or_printer_percent(
     printer: &str,
 ) -> Option<f64> {
     percent(map, filament).or_else(|| percent(map, printer))
+}
+
+fn filament_or_printer_text(
+    map: &serde_json::Map<String, Value>,
+    filament: &str,
+    printer: &str,
+) -> Option<String> {
+    text(map, filament)
+        .filter(|s| s != "nil")
+        .or_else(|| text(map, printer))
 }
 
 fn float_or_percent(map: &serde_json::Map<String, Value>, key: &str) -> Option<(f64, bool)> {
@@ -1083,9 +1127,9 @@ pub struct BblOraclePaths {
 pub fn bbl_oracle_paths() -> Option<BblOraclePaths> {
     let bbl = bbl_resources_dir()?.join("profiles/BBL");
     let paths = BblOraclePaths {
-        process: bbl.join("process/0.20mm Standard @BBL X1C.json"),
-        machine: bbl.join("machine/Bambu Lab P1S 0.4 nozzle.json"),
-        filament: bbl.join("filament/Generic PLA.json"),
+        process: bbl.join("process/0.20mm Standard @BBL H2C.json"),
+        machine: bbl.join("machine/Bambu Lab H2C 0.4 nozzle.json"),
+        filament: bbl.join("filament/Generic PLA @BBL H2C 0.4 nozzle.json"),
     };
     if paths.process.is_file() && paths.machine.is_file() && paths.filament.is_file() {
         Some(paths)
@@ -1246,7 +1290,7 @@ mod tests {
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
-        assert!((s.default_acceleration_mm_s2 - 10000.0).abs() < 1.0);
+        assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
     }
 
     #[test]
@@ -1262,7 +1306,7 @@ mod tests {
         assert!((s.slow_down_layer_time_s - 8.0).abs() < 1e-9);
         assert!((s.filament_density_g_cm3 - 1.24).abs() < 1e-9);
         assert!((s.filament_max_volumetric_speed_mm3_s - 12.0).abs() < 1e-9);
-        assert!((s.flow_ratio - 0.98).abs() < 1e-9);
+        assert!((s.flow_ratio - 0.99).abs() < 1e-9);
         assert!(s.slow_down_for_layer_cooling);
         assert!((s.slow_down_min_speed_mm_s - 20.0).abs() < 1e-9);
         assert_eq!(s.overhang_fan_speed, 100);
@@ -1274,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn p1s_machine_sets_retraction() {
+    fn h2c_machine_sets_retraction() {
         let paths = bbl_oracle_paths().expect("upstream BambuStudio profiles");
         let mut s = SliceSettings::default();
         overlay_bbl_profile(&mut s, &paths.machine).unwrap();
@@ -1286,11 +1330,19 @@ mod tests {
         assert!(s.wipe);
         assert!((s.wipe_distance_mm - 2.0).abs() < 1e-9);
         assert!(s.retract_before_wipe.abs() < 1e-9);
+        assert!((s.z_hop_mm - 0.4).abs() < 1e-9);
+        assert_eq!(s.z_hop_type, crate::ZHopType::Auto);
+        assert!((s.retract_lift_below_mm - 319.0).abs() < 1e-9);
+        overlay_bbl_profile(&mut s, &paths.filament).unwrap();
+        assert!((s.retraction_length_mm - 0.4).abs() < 1e-9);
+        assert!((s.wipe_distance_mm - 1.0).abs() < 1e-9);
+        assert_eq!(s.z_hop_type, crate::ZHopType::Spiral);
         let baked = SliceSettings::bbl_0_20();
-        assert!((baked.retraction_length_mm - 0.8).abs() < 1e-9);
+        assert!((baked.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!(baked.wipe);
-        assert!(baked.retract_when_changing_layer);
-        assert!((baked.retraction_minimum_travel_mm - 1.0).abs() < 1e-9);
+        assert_eq!(baked.z_hop_type, crate::ZHopType::Spiral);
+        assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);
+        assert!((baked.flow_ratio - 0.99).abs() < 1e-9);
     }
 
     #[test]

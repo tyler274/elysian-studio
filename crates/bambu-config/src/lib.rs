@@ -170,6 +170,37 @@ impl OverhangFanThreshold {
     }
 }
 
+/// C++ `ZHopType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ZHopType {
+    Auto,
+    Normal,
+    Slope,
+    #[default]
+    Spiral,
+}
+
+impl ZHopType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "auto lift" | "auto" => Self::Auto,
+            "normal lift" | "normal" => Self::Normal,
+            "slope lift" | "slope" => Self::Slope,
+            "spiral lift" | "spiral" => Self::Spiral,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto Lift",
+            Self::Normal => "Normal Lift",
+            Self::Slope => "Slope Lift",
+            Self::Spiral => "Spiral Lift",
+        }
+    }
+}
+
 /// C++ `support_type` (`normal(auto)` vs `tree(auto)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SupportType {
@@ -397,7 +428,7 @@ pub struct SliceSettings {
     pub fuzzy_skin_first_layer: bool,
     pub nozzle_diameter_mm: f64,
     pub filament_diameter_mm: f64,
-    /// C++ `filament_flow_ratio`. Generic PLA is 0.98.
+    /// C++ `filament_flow_ratio`. Generic PLA @ H2C 0.4 is 0.99.
     pub flow_ratio: f64,
     pub temperature_c: u16,
     pub bed_temperature_c: u16,
@@ -545,6 +576,16 @@ pub struct SliceSettings {
     pub role_base_wipe_speed: bool,
     /// C++ `retract_restart_extra` (mm extra on unretract).
     pub retract_restart_extra_mm: f64,
+    /// C++ `z_hop` (mm). 0 disables the lift.
+    pub z_hop_mm: f64,
+    /// C++ `z_hop_types`.
+    pub z_hop_type: ZHopType,
+    /// C++ `retract_lift_above` (mm). Hop only at or above this Z.
+    pub retract_lift_above_mm: f64,
+    /// C++ `retract_lift_below` (mm). Hop only at or below this Z. 0 disables hop.
+    pub retract_lift_below_mm: f64,
+    /// C++ `travel_speed_z` (mm/s). 0 means use travel speed.
+    pub travel_speed_z_mm_s: f64,
     /// C++ `machine_max_jerk_x` / `_y` (mm/s). X1 Carbon default is 9.
     pub xy_jerk_mm_s: f64,
     /// C++ `machine_max_jerk_z` (mm/s). X1 Carbon default is 3.
@@ -659,6 +700,11 @@ impl Default for SliceSettings {
             wipe_speed_percent: 80.0,
             role_base_wipe_speed: true,
             retract_restart_extra_mm: 0.0,
+            z_hop_mm: 0.4,
+            z_hop_type: ZHopType::Spiral,
+            retract_lift_above_mm: 0.0,
+            retract_lift_below_mm: 0.0,
+            travel_speed_z_mm_s: 0.0,
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
         }
@@ -763,7 +809,7 @@ impl SliceSettings {
         degree > self.overhang_fan_threshold.compare_degree()
     }
 
-    /// Bambu `fdm_process_single_0.20` over `fdm_process_common`.
+    /// Bambu `0.20mm Standard @BBL H2C` plus H2C 0.4 nozzle and Generic PLA @ H2C 0.4.
     pub fn bbl_0_20() -> Self {
         Self {
             infill_density: 0.15,
@@ -776,12 +822,12 @@ impl SliceSettings {
             elephant_foot_mm: 0.15,
             top_one_wall: TopOneWallType::AllTop,
             support_type: SupportType::Tree,
-            travel_speed_mm_s: 400.0,
+            travel_speed_mm_s: 1000.0,
             print_speed_mm_s: 200.0,
             inner_wall_speed_mm_s: 300.0,
             first_layer_speed_mm_s: 50.0,
             first_layer_infill_speed_mm_s: 105.0,
-            infill_speed_mm_s: 270.0,
+            infill_speed_mm_s: 350.0,
             gap_infill_speed_mm_s: 250.0,
             solid_infill_speed_mm_s: 250.0,
             support_speed_mm_s: 150.0,
@@ -794,10 +840,12 @@ impl SliceSettings {
             overhang_speed_mm_s: 10.0,
             bridge_speed_mm_s: 50.0,
             top_surface_speed_mm_s: 200.0,
+            default_acceleration_mm_s2: 8000.0,
+            ironing_flow: 0.15,
             fan_min_speed: 100,
             fan_max_speed: 100,
             close_fan_the_first_x_layers: 1,
-            flow_ratio: 0.98,
+            flow_ratio: 0.99,
             overhang_fan_threshold: OverhangFanThreshold::ThreeFour,
             fan_cooling_layer_time_s: 100.0,
             slow_down_layer_time_s: 8.0,
@@ -805,15 +853,34 @@ impl SliceSettings {
             slow_down_min_speed_mm_s: 20.0,
             reduce_fan_stop_start_freq: true,
             filament_max_volumetric_speed_mm3_s: 12.0,
-            retraction_length_mm: 0.8,
+            retraction_length_mm: 0.4,
             retraction_speed_mm_s: 30.0,
             deretraction_speed_mm_s: 30.0,
             retraction_minimum_travel_mm: 1.0,
             retract_when_changing_layer: true,
             wipe: true,
-            wipe_distance_mm: 2.0,
+            wipe_distance_mm: 1.0,
             retract_before_wipe: 0.0,
+            z_hop_mm: 0.4,
+            z_hop_type: ZHopType::Spiral,
+            retract_lift_below_mm: 319.0,
             ..Self::default()
+        }
+    }
+
+    /// C++ hop window: `z >= retract_lift_above && z <= retract_lift_below`.
+    pub fn z_hop_in_range(&self, z_mm: f64) -> bool {
+        self.z_hop_mm > 1e-9
+            && z_mm + 1e-9 >= self.retract_lift_above_mm
+            && z_mm <= self.retract_lift_below_mm + 1e-9
+    }
+
+    /// C++ `_travel_to_z` feed: `travel_speed_z`, else travel speed.
+    pub fn z_travel_speed_mm_s(&self) -> f64 {
+        if self.travel_speed_z_mm_s > 0.0 {
+            self.travel_speed_z_mm_s
+        } else {
+            self.travel_speed_mm_s
         }
     }
 }

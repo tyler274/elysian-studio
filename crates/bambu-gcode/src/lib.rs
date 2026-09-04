@@ -6,7 +6,7 @@ mod processor;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, SliceSettings};
+use bambu_config::{Flow, SliceSettings, ZHopType};
 use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
@@ -58,6 +58,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(out, ";LAYER:{}", layer.index)?;
         writeln!(out, "; LAYER_HEIGHT:{}", layer.height_mm)?;
         writeln!(out, "G1 Z{:.3} F600", layer.print_z_mm)?;
+        state.z = layer.print_z_mm;
+        state.lifted = 0.0;
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
         let mm3_per_mm = flow.mm3_per_mm();
@@ -507,6 +509,8 @@ struct WriterState {
     last: Option<(f64, f64)>,
     wipe: Vec<(f64, f64)>,
     last_print_f: f64,
+    z: f64,
+    lifted: f64,
 }
 
 const TRAVEL_EPS_MM: f64 = 1e-4;
@@ -625,22 +629,73 @@ fn retract(
         return Ok(());
     }
     let remaining = (length - state.retracted).max(0.0);
-    if remaining <= 1e-9 {
-        state.wipe.clear();
-        return Ok(());
-    }
-    let can_wipe = settings.wipe && settings.wipe_distance_mm > 1e-9 && state.wipe.len() >= 2;
-    if can_wipe {
-        let before = remaining * settings.retract_before_wipe.clamp(0.0, 1.0);
-        emit_retract_e(out, settings, state, before)?;
-        let leftover = (length - state.retracted).max(0.0);
-        wipe(out, settings, state, leftover)?;
-        let still = (length - state.retracted).max(0.0);
-        emit_retract_e(out, settings, state, still)?;
-    } else {
-        emit_retract_e(out, settings, state, remaining)?;
+    if remaining > 1e-9 {
+        let can_wipe = settings.wipe && settings.wipe_distance_mm > 1e-9 && state.wipe.len() >= 2;
+        if can_wipe {
+            let before = remaining * settings.retract_before_wipe.clamp(0.0, 1.0);
+            emit_retract_e(out, settings, state, before)?;
+            let leftover = (length - state.retracted).max(0.0);
+            wipe(out, settings, state, leftover)?;
+            let still = (length - state.retracted).max(0.0);
+            emit_retract_e(out, settings, state, still)?;
+        } else {
+            emit_retract_e(out, settings, state, remaining)?;
+        }
     }
     state.wipe.clear();
+    lift(out, settings, state)?;
+    Ok(())
+}
+
+/// C++ `GCodeWriter::slope_threshold` (3°).
+const SLOPE_THRESHOLD_RAD: f64 = 3.0 * std::f64::consts::PI / 180.0;
+
+fn lift(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+) -> Result<(), GcodeError> {
+    if state.lifted > 1e-9 || !settings.z_hop_in_range(state.z) {
+        return Ok(());
+    }
+    let hop = settings.z_hop_mm;
+    let dest_z = state.z + hop;
+    let feed = settings.z_travel_speed_mm_s() * 60.0;
+    match settings.z_hop_type {
+        ZHopType::Spiral | ZHopType::Auto => {
+            let radius = hop / (2.0 * std::f64::consts::PI * SLOPE_THRESHOLD_RAD.atan());
+            writeln!(out, "G17")?;
+            writeln!(
+                out,
+                "G2 Z{:.3} I{:.3} J0 P1 F{:.0} ; spiral lift Z",
+                dest_z, radius, feed
+            )?;
+        }
+        ZHopType::Normal | ZHopType::Slope => {
+            writeln!(out, "G1 Z{:.3} F{:.0} ; normal lift Z", dest_z, feed)?;
+        }
+    }
+    state.z = dest_z;
+    state.lifted = hop;
+    Ok(())
+}
+
+fn unlift(
+    out: &mut String,
+    settings: &SliceSettings,
+    state: &mut WriterState,
+) -> Result<(), GcodeError> {
+    if state.lifted <= 1e-9 {
+        return Ok(());
+    }
+    state.z -= state.lifted;
+    state.lifted = 0.0;
+    writeln!(
+        out,
+        "G1 Z{:.3} F{:.0} ; restore layer Z",
+        state.z,
+        settings.z_travel_speed_mm_s() * 60.0
+    )?;
     Ok(())
 }
 
@@ -649,6 +704,7 @@ fn unretract(
     settings: &SliceSettings,
     state: &mut WriterState,
 ) -> Result<(), GcodeError> {
+    unlift(out, settings, state)?;
     if state.retracted <= 1e-9 {
         return Ok(());
     }
@@ -1445,5 +1501,46 @@ mod tests {
         assert!(start < end);
         let wipe = &gcode[start..end];
         assert!(wipe.contains("G1 X"), "wipe travels along the last path");
+    }
+
+    #[test]
+    fn h2c_spiral_hops_on_travel() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("G17"), "{gcode}");
+        assert!(gcode.contains("; spiral lift Z"));
+        assert!(gcode.contains("; restore layer Z"));
+        assert!(gcode.contains("G2 Z") && gcode.contains(" P1 F"));
+    }
+
+    #[test]
+    fn default_cube_skips_z_hop() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.wipe = false;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(!gcode.contains("; spiral lift Z"));
+        assert!(!gcode.contains("; normal lift Z"));
+        assert!(!gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn normal_lift_uses_g1_z() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.z_hop_type = bambu_config::ZHopType::Normal;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; normal lift Z"));
+        assert!(!gcode.contains("; spiral lift Z"));
+        assert!(gcode.contains("; restore layer Z"));
     }
 }

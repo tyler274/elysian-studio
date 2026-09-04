@@ -76,7 +76,7 @@ enum Commands {
         /// Bambu process JSON (follows `inherits` in the same directory).
         #[arg(long)]
         settings: Option<PathBuf>,
-        /// Load upstream `0.20mm Standard @BBL X1C` (15% grid, brim 5, 5 top shells).
+        /// Load upstream `0.20mm Standard @BBL H2C` (15% grid, brim 5, 5 top shells).
         #[arg(long)]
         bbl_0_20: bool,
         #[arg(long)]
