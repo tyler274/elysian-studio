@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use bambu_config::{Flow, PrintAccel, SliceSettings, ZHopType};
-use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
-use bambu_slicer::{classify_overhang, point_in_polygons, SliceResult};
+use bambu_geom::{intersect_polygons, offset_polygons, unscale, Point, Polygon, Polyline};
+use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
 
 pub use cooling::{
@@ -61,6 +61,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     };
     for (layer_i, layer) in sliced.layers.iter().enumerate() {
         let first = layer_i == 0;
+        state.lift_overhangs = lift_overhangs_in_window(&sliced.layers, layer.print_z_mm);
         if layer_i > 0 && settings.retract_when_changing_layer {
             retract(&mut out, settings, &mut state)?;
         }
@@ -320,7 +321,6 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 },
             )?;
         }
-        state.prev_solid = layer.contours.clone();
     }
 
     writeln!(out, "M104 S0")?;
@@ -549,17 +549,20 @@ struct WriterState {
     /// C++ `m_to_lift`: hop height queued by `lazy_lift` until the next XY travel.
     to_lift: f64,
     to_lift_type: ZHopType,
-    /// Previous layer contours; Auto hop treats travel outside them as over air.
-    prev_solid: Vec<Polygon>,
+    /// C++ `loverhangs` in the 0.4 mm Z window around the current layer.
+    lift_overhangs: Vec<Polygon>,
     last_accel: f64,
     print_accel: f64,
     first_layer: bool,
+    /// Upcoming extrusion is an outer/overhang wall (C++ short-travel accel).
+    short_travel_role: bool,
 }
 
 const TRAVEL_EPS_MM: f64 = 1e-4;
 
 fn set_print_role(state: &mut WriterState, settings: &SliceSettings, kind: PrintAccel) {
     state.print_accel = settings.print_acceleration_mm_s2(state.first_layer, kind);
+    state.short_travel_role = kind == PrintAccel::OuterWall;
 }
 
 fn emit_accel(out: &mut String, state: &mut WriterState, accel: f64) -> Result<(), GcodeError> {
@@ -724,6 +727,7 @@ fn queue_lift(settings: &SliceSettings, state: &mut WriterState) {
 }
 
 /// C++ `travel_to_xyz` hop that was delayed by `lazy_lift`.
+/// Auto: spiral if the clipped travel hits `loverhangs`, else slope.
 fn apply_lazy_lift(
     out: &mut String,
     dest: (f64, f64),
@@ -748,7 +752,7 @@ fn apply_lazy_lift(
     if dist > TRAVEL_EPS_MM {
         let lift = match state.to_lift_type {
             ZHopType::Auto => {
-                if travel_over_air(from, dest, hop, &state.prev_solid) {
+                if travel_through_overhang(from, dest, hop, &state.lift_overhangs) {
                     ZHopType::Spiral
                 } else {
                     ZHopType::Slope
@@ -824,9 +828,28 @@ fn spiral_ij_on_bed(
     None
 }
 
-/// C++ Auto hop: clipped travel over air/overhang → spiral, else slope.
-fn travel_over_air(from: (f64, f64), dest: (f64, f64), hop: f64, solid: &[Polygon]) -> bool {
-    if solid.is_empty() {
+/// C++ `protect_z` window used by `is_through_overhang`.
+const LIFT_PROTECT_Z_MM: f64 = 0.4;
+/// Half-width of the travel stroke used to emulate C++ `intersection_pl`.
+const TRAVEL_HIT_HALF_WIDTH_MM: f64 = 0.02;
+
+fn lift_overhangs_in_window(layers: &[bambu_slicer::Layer], print_z: f64) -> Vec<Polygon> {
+    let z0 = (print_z - LIFT_PROTECT_Z_MM).max(0.0);
+    layers
+        .iter()
+        .filter(|l| l.print_z_mm + 1e-9 >= z0 && l.print_z_mm <= print_z + 1e-9)
+        .flat_map(|l| l.lift_overhangs.iter().cloned())
+        .collect()
+}
+
+/// C++ Auto hop: clipped travel intersecting `loverhangs` → spiral, else slope.
+fn travel_through_overhang(
+    from: (f64, f64),
+    dest: (f64, f64),
+    hop: f64,
+    overhangs: &[Polygon],
+) -> bool {
+    if overhangs.is_empty() {
         return false;
     }
     let dist = xy_dist(from, dest);
@@ -834,12 +857,18 @@ fn travel_over_air(from: (f64, f64), dest: (f64, f64), hop: f64, solid: &[Polygo
         return false;
     }
     let clip = (hop / SLOPE_THRESHOLD_RAD.tan()).min(dist);
-    let t = (clip * 0.5) / dist;
-    let mid = (
-        from.0 + (dest.0 - from.0) * t,
-        from.1 + (dest.1 - from.1) * t,
-    );
-    !point_in_polygons(Point::from_mm(mid.0, mid.1), solid)
+    let ux = (dest.0 - from.0) / dist;
+    let uy = (dest.1 - from.1) / dist;
+    let end = (from.0 + ux * clip, from.1 + uy * clip);
+    let px = -uy * TRAVEL_HIT_HALF_WIDTH_MM;
+    let py = ux * TRAVEL_HIT_HALF_WIDTH_MM;
+    let stroke = vec![
+        Point::from_mm(from.0 + px, from.1 + py),
+        Point::from_mm(end.0 + px, end.1 + py),
+        Point::from_mm(end.0 - px, end.1 - py),
+        Point::from_mm(from.0 - px, from.1 - py),
+    ];
+    !intersect_polygons(&[stroke], overhangs).is_empty()
 }
 
 fn unlift(
@@ -902,7 +931,7 @@ fn travel_to(
         emit_accel(
             out,
             state,
-            settings.travel_acceleration_for_layer(state.first_layer),
+            settings.travel_acceleration_for_move(state.first_layer, state.short_travel_role, dist),
         )?;
         apply_lazy_lift(out, dest, travel_f, settings, state)?;
     }
@@ -1919,5 +1948,27 @@ mod tests {
         let first_print = gcode.find("M204 P500 ;").expect("first layer");
         let outer = gcode.find("M204 P5000 ;").expect("outer");
         assert!(first_print < outer, "{gcode}");
+    }
+
+    #[test]
+    fn h2c_short_travel_to_outer_wall_uses_250() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        settings.retraction_minimum_travel_mm = 100.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        let layer1 = gcode.find(";LAYER:1").expect("layer 1");
+        assert!(
+            !gcode[..layer1].contains("M204 P250"),
+            "first layer must keep full travel accel\n{}",
+            &gcode[..layer1]
+        );
+        assert!(
+            gcode[layer1..].contains("M204 P250 ; adjust acceleration"),
+            "short hop to an outer wall should use 250\n{}",
+            &gcode[layer1..]
+        );
     }
 }

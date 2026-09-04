@@ -393,6 +393,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "travel_short_distance_acceleration",
+        num_str(settings.travel_short_distance_acceleration_mm_s2),
+    );
+    insert(
+        &mut map,
         "machine_max_acceleration_retracting",
         num_str(settings.retract_acceleration_mm_s2),
     );
@@ -997,6 +1002,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "initial_layer_travel_acceleration") {
         s.initial_layer_travel_acceleration_mm_s2 = v.max(0.0);
     }
+    if let Some(v) = num(map, "travel_short_distance_acceleration") {
+        s.travel_short_distance_acceleration_mm_s2 = v.max(0.0);
+    }
     if let Some(v) = num(map, "machine_max_acceleration_retracting") {
         s.retract_acceleration_mm_s2 = v.max(0.0);
     }
@@ -1497,6 +1505,7 @@ mod tests {
         assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
         assert!((s.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((s.initial_layer_acceleration_mm_s2 - 500.0).abs() < 1.0);
+        assert!((s.travel_short_distance_acceleration_mm_s2 - 250.0).abs() < 1.0);
     }
 
     #[test]
@@ -1564,6 +1573,7 @@ mod tests {
         assert!((baked.bed_max_x - 325.0).abs() < 1e-9);
         assert_eq!(baked.additional_cooling_fan_speed, 75);
         assert!((baked.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
+        assert!((baked.travel_short_distance_acceleration_mm_s2 - 250.0).abs() < 1.0);
         assert!((baked.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((baked.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);

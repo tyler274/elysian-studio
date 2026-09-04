@@ -546,6 +546,8 @@ pub struct SliceSettings {
     pub travel_acceleration_mm_s2: f64,
     /// C++ `initial_layer_travel_acceleration`. 0 means use travel acceleration.
     pub initial_layer_travel_acceleration_mm_s2: f64,
+    /// C++ `travel_short_distance_acceleration`. 0 disables the VFA short-hop.
+    pub travel_short_distance_acceleration_mm_s2: f64,
     /// C++ `machine_max_acceleration_retracting`. 0 means 1500.
     pub retract_acceleration_mm_s2: f64,
     /// C++ `filament_density` (g/cm³). Generic PLA is 1.24.
@@ -734,6 +736,7 @@ impl Default for SliceSettings {
             sparse_infill_acceleration_is_percent: false,
             travel_acceleration_mm_s2: 10000.0,
             initial_layer_travel_acceleration_mm_s2: 0.0,
+            travel_short_distance_acceleration_mm_s2: 250.0,
             retract_acceleration_mm_s2: 0.0,
             filament_density_g_cm3: 1.24,
             fan_min_speed: 20,
@@ -903,6 +906,23 @@ impl SliceSettings {
         }
     }
 
+    /// C++ short-travel accel for hops to outer walls shorter than `retraction_minimum_travel`.
+    pub fn travel_acceleration_for_move(
+        &self,
+        first_layer: bool,
+        to_outer_wall: bool,
+        dist_mm: f64,
+    ) -> f64 {
+        if !first_layer
+            && to_outer_wall
+            && self.travel_short_distance_acceleration_mm_s2 > 0.0
+            && dist_mm + 1e-9 < self.retraction_minimum_travel_mm
+        {
+            return self.travel_short_distance_acceleration_mm_s2;
+        }
+        self.travel_acceleration_for_layer(first_layer)
+    }
+
     /// C++ `get_retract_acceleration`: machine limit, else 1500.
     pub fn retract_acceleration_or_default(&self) -> f64 {
         if self.retract_acceleration_mm_s2 > 0.0 {
@@ -976,6 +996,7 @@ impl SliceSettings {
             sparse_infill_acceleration_is_percent: true,
             travel_acceleration_mm_s2: 10000.0,
             initial_layer_travel_acceleration_mm_s2: 6000.0,
+            travel_short_distance_acceleration_mm_s2: 250.0,
             retract_acceleration_mm_s2: 5000.0,
             ironing_flow: 0.15,
             fan_min_speed: 100,

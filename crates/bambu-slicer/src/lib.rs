@@ -16,8 +16,10 @@
 
 mod clip;
 mod fuzzy;
+mod gap_fill;
 mod infill;
 mod ironing;
+mod lift;
 mod perimeters;
 mod prepare_infill;
 mod raft;
@@ -85,6 +87,8 @@ pub struct Layer {
     pub region_infill: Vec<Vec<Polygon>>,
     /// Settings for [`Self::region_infill`] slots (same length).
     pub region_settings: Vec<SliceSettings>,
+    /// C++ `Layer::loverhangs` for Auto Z-hop.
+    pub lift_overhangs: Vec<Polygon>,
 }
 
 impl Layer {
@@ -490,6 +494,7 @@ fn slice_prepared(
             support_blocker: prepared[i].blockers.clone(),
             region_infill: paths.region_infill,
             region_settings: paths.region_settings,
+            lift_overhangs: Vec::new(),
         });
     }
 
@@ -497,6 +502,7 @@ fn slice_prepared(
     ironing::apply(&mut out, settings);
     support::apply(&mut out, settings);
     raft::apply(&mut out, settings);
+    lift::detect_overhangs_for_lift(&mut out, settings.line_width_mm);
     if let Some(first) = out.first() {
         let rafted = settings.raft_layers > 0;
         let brim = if rafted {
@@ -904,6 +910,46 @@ mod tests {
         settings.brim_width_mm = settings.line_width_mm * 3.0;
         let result = slice_mesh(&mesh, &settings).unwrap();
         assert_eq!(result.layers[0].brim.len(), 3);
+    }
+
+    #[test]
+    fn cube_has_no_lift_overhangs() {
+        let mesh = TriangleMesh::cube(20.0);
+        let result = slice_mesh(&mesh, &SliceSettings::default()).unwrap();
+        assert!(result.layers[0].lift_overhangs.is_empty());
+        assert!(
+            result.layers.iter().all(|l| l.lift_overhangs.is_empty()),
+            "vertical cube walls should not register as lift overhangs"
+        );
+    }
+
+    #[test]
+    fn overhang_table_has_lift_overhangs() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let winged: Vec<&Layer> = result
+            .layers
+            .iter()
+            .filter(|l| !l.lift_overhangs.is_empty())
+            .collect();
+        assert_eq!(
+            winged.len(),
+            1,
+            "only the pillar→slab transition should mark loverhangs, got {}",
+            winged.len()
+        );
+        let z = winged[0].print_z_mm;
+        assert!(
+            (7.5..=9.0).contains(&z),
+            "overhang layer should sit at the slab, print_z={z}"
+        );
+        let area: f64 = winged[0].lift_overhangs.iter().map(contour_area_mm2).sum();
+        assert!(
+            area > 100.0,
+            "expected a wing-sized overhang region, area={area}"
+        );
     }
 
     #[test]
@@ -1366,6 +1412,7 @@ mod tests {
             assert_eq!(a.solid_infill, b.solid_infill);
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
+            assert_eq!(a.lift_overhangs, b.lift_overhangs);
         }
     }
 

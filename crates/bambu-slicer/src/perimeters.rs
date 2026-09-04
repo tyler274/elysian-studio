@@ -6,6 +6,10 @@
 //! onions as possible, then drop a centerline into leftover thinner than one
 //! wall so features classic drops still print.
 //!
+//! Classic leftover between onions uses C++ gap collapse (`opening_ex` minus
+//! too-wide `offset2_ex`) and an open midline for thin corridors. Variable-width
+//! Voronoi medial axis is later.
+//!
 //! `top_one_wall_type` / legacy `only_one_wall_top`: the topmost layer (and,
 //! for `AllTop`, terraces not covered by the layer above) keep a single outer
 //! wall so top infill can fill the rest. Extra inner walls continue only under
@@ -345,15 +349,30 @@ fn centerline_gaps(
 ) -> Vec<Polyline> {
     let min = 0.2 * w * (1.0 - INSET_OVERLAP_TOLERANCE);
     let max = 2.0 * w;
-    let mut opened = offset_polygons(gaps, -min * 0.5);
-    opened.retain(|g| g.len() >= 3);
-    if opened.is_empty() {
+    let keep = crate::gap_fill::collapse_gap_areas(gaps, min, max);
+    if keep.is_empty() {
         return Vec::new();
     }
-    let Some(rings) = deepest_inset(&opened, 0.0, (max * 0.5).min(w)) else {
-        return Vec::new();
-    };
-    let mut paths = seam_rings(rings, settings, hint);
+    let mut corridors = Vec::new();
+    let mut loops = Vec::new();
+    for poly in keep {
+        if poly.len() < 3 {
+            continue;
+        }
+        if crate::gap_fill::is_thin_corridor(&poly, max) {
+            if let Some(path) = crate::gap_fill::open_centerline(&poly) {
+                corridors.push(path);
+                continue;
+            }
+        }
+        loops.push(poly);
+    }
+    let mut paths = corridors;
+    if !loops.is_empty() {
+        if let Some(rings) = deepest_inset(&loops, 0.0, (max * 0.5).min(w)) {
+            paths.extend(seam_rings(rings, settings, hint));
+        }
+    }
     let min_len = settings.filter_out_gap_fill_mm;
     if min_len > 0.0 {
         paths.retain(|p| polyline_len_mm(p) >= min_len);
@@ -458,6 +477,44 @@ mod tests {
         assert!(
             arachne_len > classic_len * 1.4,
             "thin leftover should add wall length: arachne={arachne_len} classic={classic_len}"
+        );
+    }
+
+    #[test]
+    fn classic_gap_fill_is_open_centerline() {
+        let w = 0.42;
+        let contours = vec![rect(0.7, 20.0)];
+        let mut settings = SliceSettings::default();
+        settings.line_width_mm = w;
+        settings.wall_loops = 2;
+        settings.wall_generator = WallGenerator::Classic;
+        settings.gap_infill_speed_mm_s = 45.0;
+        let peri = generate(&contours, &settings, None, None);
+        assert!(!peri.gap_infill.is_empty());
+        let path = &peri.gap_infill[0];
+        let len = wall_len(&peri.gap_infill);
+        assert!(
+            (12.0..35.0).contains(&len),
+            "open midline along the leftover, not a double-back loop: len={len}"
+        );
+        assert!(
+            path.first().unwrap().distance_mm(*path.last().unwrap()) > 8.0,
+            "gap fill should be an open path"
+        );
+    }
+
+    #[test]
+    fn filter_out_gap_fill_drops_short_paths() {
+        let contours = vec![rect(0.7, 20.0)];
+        let mut settings = SliceSettings::default();
+        settings.line_width_mm = 0.42;
+        settings.wall_loops = 2;
+        settings.gap_infill_speed_mm_s = 45.0;
+        settings.filter_out_gap_fill_mm = 100.0;
+        let peri = generate(&contours, &settings, None, None);
+        assert!(
+            peri.gap_infill.is_empty(),
+            "100 mm filter should drop the leftover"
         );
     }
 
