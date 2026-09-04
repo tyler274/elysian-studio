@@ -422,6 +422,52 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "reduce_fan_stop_start_freq",
         settings.reduce_fan_stop_start_freq,
     );
+    insert_bool(&mut map, "auxiliary_fan", settings.auxiliary_fan);
+    insert(
+        &mut map,
+        "additional_cooling_fan_speed",
+        settings.additional_cooling_fan_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "close_additional_fan_first_x_layers",
+        settings.close_additional_fan_first_x_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "additional_fan_full_speed_layer",
+        settings.additional_fan_full_speed_layer.to_string(),
+    );
+    insert(
+        &mut map,
+        "first_x_layer_fan_speed",
+        settings.first_x_layer_fan_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "pre_start_fan_time",
+        num_str(settings.pre_start_fan_time_s),
+    );
+    insert_bool(
+        &mut map,
+        "support_air_filtration",
+        settings.support_air_filtration,
+    );
+    insert_bool(
+        &mut map,
+        "activate_air_filtration",
+        settings.activate_air_filtration,
+    );
+    insert(
+        &mut map,
+        "during_print_exhaust_fan_speed",
+        settings.during_print_exhaust_fan_speed.to_string(),
+    );
+    insert(
+        &mut map,
+        "complete_print_exhaust_fan_speed",
+        settings.complete_print_exhaust_fan_speed.to_string(),
+    );
     insert_bool(
         &mut map,
         "slow_down_for_layer_cooling",
@@ -929,6 +975,36 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "reduce_fan_stop_start_freq") {
         s.reduce_fan_stop_start_freq = v;
     }
+    if let Some(v) = bool_val(map, "auxiliary_fan") {
+        s.auxiliary_fan = v;
+    }
+    if let Some(v) = u32_val(map, "additional_cooling_fan_speed") {
+        s.additional_cooling_fan_speed = v.min(100);
+    }
+    if let Some(v) = u32_val(map, "close_additional_fan_first_x_layers") {
+        s.close_additional_fan_first_x_layers = v;
+    }
+    if let Some(v) = u32_val(map, "additional_fan_full_speed_layer") {
+        s.additional_fan_full_speed_layer = v;
+    }
+    if let Some(v) = u32_val(map, "first_x_layer_fan_speed") {
+        s.first_x_layer_fan_speed = v.min(100);
+    }
+    if let Some(v) = num(map, "pre_start_fan_time") {
+        s.pre_start_fan_time_s = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "support_air_filtration") {
+        s.support_air_filtration = v;
+    }
+    if let Some(v) = bool_val(map, "activate_air_filtration") {
+        s.activate_air_filtration = v;
+    }
+    if let Some(v) = u32_val(map, "during_print_exhaust_fan_speed") {
+        s.during_print_exhaust_fan_speed = v.min(100);
+    }
+    if let Some(v) = u32_val(map, "complete_print_exhaust_fan_speed") {
+        s.complete_print_exhaust_fan_speed = v.min(100);
+    }
     if let Some(v) = bool_val(map, "slow_down_for_layer_cooling") {
         s.slow_down_for_layer_cooling = v;
     }
@@ -1315,6 +1391,11 @@ mod tests {
             crate::OverhangFanThreshold::ThreeFour
         );
         assert_eq!(s.ironing_fan_speed, -1);
+        assert_eq!(s.additional_cooling_fan_speed, 75);
+        assert_eq!(s.close_additional_fan_first_x_layers, 1);
+        assert_eq!(s.first_x_layer_fan_speed, 0);
+        assert!((s.pre_start_fan_time_s - 2.0).abs() < 1e-9);
+        assert!(!s.activate_air_filtration);
     }
 
     #[test]
@@ -1333,6 +1414,8 @@ mod tests {
         assert!((s.z_hop_mm - 0.4).abs() < 1e-9);
         assert_eq!(s.z_hop_type, crate::ZHopType::Auto);
         assert!((s.retract_lift_below_mm - 319.0).abs() < 1e-9);
+        assert!(s.auxiliary_fan);
+        assert!(!s.support_air_filtration);
         overlay_bbl_profile(&mut s, &paths.filament).unwrap();
         assert!((s.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!((s.wipe_distance_mm - 1.0).abs() < 1e-9);
@@ -1341,6 +1424,9 @@ mod tests {
         assert!((baked.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!(baked.wipe);
         assert_eq!(baked.z_hop_type, crate::ZHopType::Spiral);
+        assert!(baked.auxiliary_fan);
+        assert_eq!(baked.additional_cooling_fan_speed, 75);
+        assert!((baked.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!((baked.travel_speed_mm_s - 1000.0).abs() < 1e-9);
         assert!((baked.flow_ratio - 0.99).abs() < 1e-9);
     }

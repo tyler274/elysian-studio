@@ -1,6 +1,8 @@
-//! Part cooling fan (`M106`) and layer-time slowdown from C++ `GCodeEditor`.
+//! Part cooling fan (`M106`), auxiliary fan (`M106 P2`), and layer-time slowdown
+//! from C++ `GCodeEditor`.
 //!
-//! Overhang/ironing fan overrides are not applied.
+//! Overhang/ironing markers become PWM. `pre_start_fan_time` spins the overhang
+//! fan up early. Exhaust (`M106 P3`) is emitted from the G-code writer.
 
 use bambu_config::SliceSettings;
 
@@ -42,6 +44,25 @@ pub fn part_fan_percent(layer_id: usize, layer_time_s: f64, settings: &SliceSett
     fan.min(100)
 }
 
+/// C++ `change_extruder_set_fan` additional/aux fan percent for one layer.
+pub fn additional_fan_percent(layer_id: usize, settings: &SliceSettings) -> u32 {
+    let close = settings.close_additional_fan_first_x_layers;
+    let full = settings.additional_fan_full_speed_layer;
+    let first = settings.first_x_layer_fan_speed.min(100);
+    let target = settings.additional_cooling_fan_speed.min(100);
+    let layer_id = u32::try_from(layer_id).unwrap_or(u32::MAX);
+    if layer_id < close {
+        return first;
+    }
+    if layer_id + 1 < full && full > close {
+        let factor = f64::from(layer_id + 1 - close) / f64::from(full - close);
+        return (f64::from(first) * (1.0 - factor) + f64::from(target) * factor + 0.5)
+            .floor()
+            .clamp(0.0, 100.0) as u32;
+    }
+    target
+}
+
 /// C++ `GCodeWriter::set_fan` for Marlin / Bambu (`M106 S` PWM).
 pub fn set_fan_gcode(percent: u32) -> String {
     if percent == 0 {
@@ -53,6 +74,18 @@ pub fn set_fan_gcode(percent: u32) -> String {
     } else {
         format!("M106 S{pwm}\n")
     }
+}
+
+/// C++ `GCodeWriter::set_additional_fan` (`M106 P2` PWM, truncated).
+pub fn set_additional_fan_gcode(percent: u32) -> String {
+    let pwm = (255.0 * f64::from(percent.min(100)) / 100.0) as i32;
+    format!("M106 P2 S{pwm}\n")
+}
+
+/// C++ `GCodeWriter::set_exhaust_fan` (`M106 P3` PWM, truncated).
+pub fn set_exhaust_fan_gcode(percent: u32) -> String {
+    let pwm = (f64::from(percent.min(100)) / 100.0 * 255.0) as i32;
+    format!("M106 P3 S{pwm}\n")
 }
 
 /// Stretch extrusion `F` when a layer is shorter than `slow_down_layer_time`.
@@ -265,17 +298,25 @@ fn replace_feed(line: &str, f_mm_min: f64) -> String {
     format!("{} F{:.0}", line.trim_end(), f_mm_min.round())
 }
 
-/// Insert `M106` after each layer's first `G1 Z` when the fan percent changes.
+/// Insert `M106` / `M106 P2` after each layer's first `G1 Z` when the speed changes.
 pub fn apply_part_cooling(gcode: &str, settings: &SliceSettings) -> String {
     let mut out = String::with_capacity(gcode.len() + 64);
     let mut layer = String::new();
     let mut in_layer = false;
     let mut layer_id = 0usize;
     let mut last_fan: Option<u32> = None;
+    let mut last_aux: Option<u32> = None;
     for line in gcode.lines() {
         if line.trim_start().starts_with("; CHANGE_LAYER") || line.trim() == ";CHANGE_LAYER" {
             if in_layer {
-                flush_layer(&mut out, &layer, layer_id, settings, &mut last_fan);
+                flush_layer(
+                    &mut out,
+                    &layer,
+                    layer_id,
+                    settings,
+                    &mut last_fan,
+                    &mut last_aux,
+                );
                 layer_id += 1;
                 layer.clear();
             }
@@ -293,7 +334,14 @@ pub fn apply_part_cooling(gcode: &str, settings: &SliceSettings) -> String {
         }
     }
     if in_layer {
-        flush_layer(&mut out, &layer, layer_id, settings, &mut last_fan);
+        flush_layer(
+            &mut out,
+            &layer,
+            layer_id,
+            settings,
+            &mut last_fan,
+            &mut last_aux,
+        );
     }
     out
 }
@@ -304,14 +352,26 @@ fn flush_layer(
     layer_id: usize,
     settings: &SliceSettings,
     last_fan: &mut Option<u32>,
+    last_aux: &mut Option<u32>,
 ) {
     let time_s = process_gcode(layer, settings).time_s;
     let fan = part_fan_percent(layer_id, time_s, settings);
-    let mut text = if *last_fan == Some(fan) {
+    let mut inject = String::new();
+    if *last_fan != Some(fan) {
+        *last_fan = Some(fan);
+        inject.push_str(&set_fan_gcode(fan));
+    }
+    if settings.auxiliary_fan {
+        let aux = additional_fan_percent(layer_id, settings);
+        if *last_aux != Some(aux) {
+            *last_aux = Some(aux);
+            inject.push_str(&set_additional_fan_gcode(aux));
+        }
+    }
+    let mut text = if inject.is_empty() {
         layer.to_string()
     } else {
-        *last_fan = Some(fan);
-        insert_fan_after_z(layer, &set_fan_gcode(fan))
+        insert_fan_after_z(layer, &inject)
     };
     text = rewrite_feature_fans(&text, fan, layer_id, settings);
     out.push_str(&text);
@@ -327,13 +387,49 @@ fn rewrite_feature_fans(
     let allow = layer_allows_feature_fan(layer_id, settings);
     let overhang = settings.overhang_fan_speed.min(100);
     let overhang_ctrl = allow && settings.enable_overhang_bridge_fan && overhang > layer_fan;
+    let pre_start = if overhang_ctrl {
+        settings.pre_start_fan_time_s
+    } else {
+        0.0
+    };
     let ironing_ctrl = allow && settings.ironing_fan_speed >= 0;
     let ironing = u32::try_from(settings.ironing_fan_speed)
         .unwrap_or(0)
         .min(100);
+    let lines: Vec<&str> = layer.lines().collect();
+    let times = line_cruise_times(&lines);
     let mut current = layer_fan;
     let mut out = String::with_capacity(layer.len());
-    for line in layer.lines() {
+    let mut cumulative = 0.0_f64;
+    let mut search_time = 0.0_f64;
+    let mut j = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if pre_start > 0.0 && overhang > layer_fan {
+            cumulative += times[i];
+            if j < i {
+                j = i;
+            }
+            if search_time < cumulative {
+                search_time = cumulative;
+            }
+            while j < lines.len()
+                && search_time - cumulative < pre_start
+                && overhang_ctrl
+                && current < overhang
+            {
+                let look = lines[j].trim();
+                if look.starts_with(";_FORCE_RESUME_FAN") {
+                    break;
+                }
+                search_time += times[j];
+                if look.starts_with(";_OVERHANG_FAN_START") {
+                    out.push_str(&set_fan_gcode(overhang));
+                    current = overhang;
+                    break;
+                }
+                j += 1;
+            }
+        }
         let t = line.trim();
         if t.starts_with(";_OVERHANG_FAN_START") {
             if overhang_ctrl && current < overhang {
@@ -367,6 +463,37 @@ fn rewrite_feature_fans(
         out.push('\n');
     }
     out
+}
+
+fn line_cruise_times(lines: &[&str]) -> Vec<f64> {
+    let mut x = 0.0;
+    let mut y = 0.0;
+    let mut z = 0.0;
+    let mut f_mm_min = 0.0;
+    lines
+        .iter()
+        .map(|line| {
+            let upper = strip_comment(line).to_ascii_uppercase();
+            let is_move = upper.starts_with("G0")
+                || upper.starts_with("G1")
+                || upper.starts_with("G2")
+                || upper.starts_with("G3");
+            if !is_move {
+                return 0.0;
+            }
+            if let Some(v) = parse_axis(&upper, b'F') {
+                f_mm_min = v.max(0.0);
+            }
+            let nx = parse_axis(&upper, b'X').unwrap_or(x);
+            let ny = parse_axis(&upper, b'Y').unwrap_or(y);
+            let nz = parse_axis(&upper, b'Z').unwrap_or(z);
+            let length = ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt();
+            x = nx;
+            y = ny;
+            z = nz;
+            cruise_time(length, f_mm_min / 60.0)
+        })
+        .collect()
 }
 
 fn layer_allows_feature_fan(layer_id: usize, settings: &SliceSettings) -> bool {
@@ -523,6 +650,99 @@ mod tests {
         assert!(!out.contains(";_IRONING_FAN"), "{out}");
         assert!(out.contains("M106 S102\n"), "ironing 40%\n{out}");
         assert!(out.contains("M106 S255\n"), "layer 100%\n{out}");
+    }
+
+    #[test]
+    fn additional_fan_closed_then_full() {
+        let s = SliceSettings::bbl_0_20();
+        assert_eq!(additional_fan_percent(0, &s), 0);
+        assert_eq!(additional_fan_percent(1, &s), 75);
+        assert_eq!(additional_fan_percent(20, &s), 75);
+    }
+
+    #[test]
+    fn additional_fan_ramps_to_full() {
+        let mut s = SliceSettings::default();
+        s.close_additional_fan_first_x_layers = 1;
+        s.additional_fan_full_speed_layer = 5;
+        s.first_x_layer_fan_speed = 0;
+        s.additional_cooling_fan_speed = 100;
+        assert_eq!(additional_fan_percent(0, &s), 0);
+        assert_eq!(additional_fan_percent(1, &s), 25);
+        assert_eq!(additional_fan_percent(4, &s), 100);
+    }
+
+    #[test]
+    fn additional_fan_pwm_truncates() {
+        assert_eq!(set_additional_fan_gcode(0), "M106 P2 S0\n");
+        assert_eq!(set_additional_fan_gcode(100), "M106 P2 S255\n");
+        assert_eq!(set_additional_fan_gcode(75), "M106 P2 S191\n");
+        assert_eq!(set_exhaust_fan_gcode(60), "M106 P3 S153\n");
+        assert_eq!(set_exhaust_fan_gcode(70), "M106 P3 S178\n");
+    }
+
+    #[test]
+    fn auxiliary_fan_emits_p2_after_layer_z() {
+        let mut s = SliceSettings::default();
+        s.auxiliary_fan = true;
+        s.additional_cooling_fan_speed = 75;
+        s.close_additional_fan_first_x_layers = 1;
+        s.first_x_layer_fan_speed = 0;
+        s.close_fan_the_first_x_layers = 1;
+        s.fan_min_speed = 100;
+        s.fan_max_speed = 100;
+        s.reduce_fan_stop_start_freq = true;
+        s.slow_down_layer_time_s = 0.0;
+        let gcode = "; CHANGE_LAYER\n;LAYER:0\nG1 Z0.200 F600\nG1 X1 Y0 E1 F3000\n\
+                     ; CHANGE_LAYER\n;LAYER:1\nG1 Z0.400 F600\nG1 X2 Y0 E1 F3000\n";
+        let out = apply_part_cooling(gcode, &s);
+        assert!(
+            out.contains("M106 P2 S0\n"),
+            "closed aux on first layers\n{out}"
+        );
+        assert!(
+            out.contains("M106 P2 S191\n"),
+            "75% aux after first layers\n{out}"
+        );
+        let first = out.find("M106 P2 S0\n").expect("first aux");
+        let later = out.find("M106 P2 S191\n").expect("later aux");
+        assert!(first < later, "{out}");
+        let z0 = out.find("G1 Z0.200").expect("z0");
+        assert!(z0 < first && first < out.find("G1 X1").expect("x1"));
+    }
+
+    #[test]
+    fn no_p2_without_auxiliary_fan() {
+        let mut s = SliceSettings::default();
+        s.additional_cooling_fan_speed = 75;
+        s.slow_down_layer_time_s = 0.0;
+        let gcode = "; CHANGE_LAYER\n;LAYER:0\nG1 Z0.200 F600\nG1 X1 Y0 E1 F3000\n";
+        let out = apply_part_cooling(gcode, &s);
+        assert!(!out.contains("M106 P2"), "{out}");
+    }
+
+    #[test]
+    fn pre_start_overhang_fan_spins_up_early() {
+        let mut s = SliceSettings::default();
+        s.close_fan_the_first_x_layers = 0;
+        s.fan_min_speed = 20;
+        s.fan_max_speed = 20;
+        s.reduce_fan_stop_start_freq = true;
+        s.enable_overhang_bridge_fan = true;
+        s.overhang_fan_speed = 100;
+        s.pre_start_fan_time_s = 2.0;
+        s.slow_down_layer_time_s = 0.0;
+        // 75 mm at 50 mm/s = 1.5 s of travel before the overhang marker.
+        let gcode = "; CHANGE_LAYER\n;LAYER:1\nG1 Z0.400 F600\nG1 X0 Y0 E1 F3000\n\
+                     G1 X75 Y0 E1 F3000\n;_OVERHANG_FAN_START\nG1 X76 Y0 E0.1 F3000\n;_OVERHANG_FAN_END\n";
+        let out = apply_part_cooling(gcode, &s);
+        assert!(!out.contains(";_OVERHANG_FAN"), "{out}");
+        let boost = out.find("M106 S255\n").expect("overhang fan");
+        let travel = out.find("G1 X75 Y0").expect("pre-overhang travel");
+        assert!(
+            boost < travel,
+            "fan should start before the 1.5s travel\n{out}"
+        );
     }
 
     fn extrusion_feed_mm_min(gcode: &str) -> f64 {

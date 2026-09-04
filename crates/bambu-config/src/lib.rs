@@ -552,6 +552,26 @@ pub struct SliceSettings {
     pub slow_down_min_speed_mm_s: f64,
     /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
     pub reduce_fan_stop_start_freq: bool,
+    /// C++ `auxiliary_fan` (machine has a side/aux cooling fan, `M106 P2`).
+    pub auxiliary_fan: bool,
+    /// C++ `additional_cooling_fan_speed` (percent).
+    pub additional_cooling_fan_speed: u32,
+    /// C++ `close_additional_fan_first_x_layers`.
+    pub close_additional_fan_first_x_layers: u32,
+    /// C++ `additional_fan_full_speed_layer`. 0 disables the aux ramp.
+    pub additional_fan_full_speed_layer: u32,
+    /// C++ `first_x_layer_fan_speed` (percent). Aux fan on closed first layers.
+    pub first_x_layer_fan_speed: u32,
+    /// C++ `pre_start_fan_time` (seconds). Spin the overhang fan up early.
+    pub pre_start_fan_time_s: f64,
+    /// C++ `support_air_filtration` (machine has an exhaust fan, `M106 P3`).
+    pub support_air_filtration: bool,
+    /// C++ `activate_air_filtration`.
+    pub activate_air_filtration: bool,
+    /// C++ `during_print_exhaust_fan_speed` (percent).
+    pub during_print_exhaust_fan_speed: u32,
+    /// C++ `complete_print_exhaust_fan_speed` (percent).
+    pub complete_print_exhaust_fan_speed: u32,
     /// C++ `filament_max_volumetric_speed` (mm³/s). 0 disables the cap.
     pub filament_max_volumetric_speed_mm3_s: f64,
     /// C++ `retraction_length` (mm). 0 disables retraction.
@@ -688,6 +708,16 @@ impl Default for SliceSettings {
             slow_down_for_layer_cooling: false,
             slow_down_min_speed_mm_s: 10.0,
             reduce_fan_stop_start_freq: false,
+            auxiliary_fan: false,
+            additional_cooling_fan_speed: 0,
+            close_additional_fan_first_x_layers: 1,
+            additional_fan_full_speed_layer: 0,
+            first_x_layer_fan_speed: 0,
+            pre_start_fan_time_s: 0.0,
+            support_air_filtration: false,
+            activate_air_filtration: false,
+            during_print_exhaust_fan_speed: 60,
+            complete_print_exhaust_fan_speed: 80,
             filament_max_volumetric_speed_mm3_s: 0.0,
             retraction_length_mm: 0.8,
             retraction_speed_mm_s: 30.0,
@@ -852,6 +882,11 @@ impl SliceSettings {
             slow_down_for_layer_cooling: true,
             slow_down_min_speed_mm_s: 20.0,
             reduce_fan_stop_start_freq: true,
+            auxiliary_fan: true,
+            additional_cooling_fan_speed: 75,
+            close_additional_fan_first_x_layers: 1,
+            first_x_layer_fan_speed: 0,
+            pre_start_fan_time_s: 2.0,
             filament_max_volumetric_speed_mm3_s: 12.0,
             retraction_length_mm: 0.4,
             retraction_speed_mm_s: 30.0,

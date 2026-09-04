@@ -12,7 +12,8 @@ use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
 
 pub use cooling::{
-    apply_layer_cooling_slowdown, apply_part_cooling, part_fan_percent, set_fan_gcode,
+    additional_fan_percent, apply_layer_cooling_slowdown, apply_part_cooling, part_fan_percent,
+    set_additional_fan_gcode, set_exhaust_fan_gcode, set_fan_gcode,
 };
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
 
@@ -37,6 +38,11 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M109 S{}", settings.temperature_c)?;
     writeln!(out, "M190 S{}", settings.bed_temperature_c)?;
     writeln!(out, "G92 E0")?;
+    if settings.support_air_filtration && settings.activate_air_filtration {
+        out.push_str(&set_exhaust_fan_gcode(
+            settings.during_print_exhaust_fan_speed,
+        ));
+    }
 
     let travel_f = settings.travel_speed_mm_s * 60.0;
     let outer_f = settings.print_speed_mm_s * 60.0;
@@ -298,6 +304,11 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M140 S0")?;
     writeln!(out, "G28 X0 Y0")?;
     writeln!(out, "M84")?;
+    if settings.support_air_filtration && settings.activate_air_filtration {
+        out.push_str(&set_exhaust_fan_gcode(
+            settings.complete_print_exhaust_fan_speed,
+        ));
+    }
     out = apply_layer_cooling_slowdown(&out, settings);
     out = apply_part_cooling(&out, settings);
     let stats = process_gcode(&out, settings);
@@ -1528,6 +1539,47 @@ mod tests {
         assert!(!gcode.contains("; spiral lift Z"));
         assert!(!gcode.contains("; normal lift Z"));
         assert!(!gcode.contains("; restore layer Z"));
+    }
+
+    #[test]
+    fn h2c_emits_auxiliary_fan() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains("M106 P2 S0\n"),
+            "closed aux on first layers\n{gcode}"
+        );
+        assert!(
+            gcode.contains("M106 P2 S191\n"),
+            "H2C PLA 75% aux fan\n{gcode}"
+        );
+        assert!(!gcode.contains("M106 P3"), "filtration off on Generic PLA");
+    }
+
+    #[test]
+    fn exhaust_fan_when_filtration_enabled() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.support_air_filtration = true;
+        settings.activate_air_filtration = true;
+        settings.during_print_exhaust_fan_speed = 70;
+        settings.complete_print_exhaust_fan_speed = 80;
+        settings.slow_down_for_layer_cooling = false;
+        settings.wipe = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            gcode.contains("M106 P3 S178\n"),
+            "70% during print\n{gcode}"
+        );
+        assert!(gcode.contains("M106 P3 S204\n"), "80% after print\n{gcode}");
+        let start = gcode.find("M106 P3 S178\n").expect("start exhaust");
+        let end = gcode.find("M106 P3 S204\n").expect("end exhaust");
+        assert!(start < end, "{gcode}");
     }
 
     #[test]
