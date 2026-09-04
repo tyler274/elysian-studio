@@ -404,6 +404,13 @@ impl SurfacePattern {
     }
 }
 
+/// C++ first- vs later-layer bed temperatures for one plate type.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlateBedTemps {
+    pub later_c: u16,
+    pub initial_c: u16,
+}
+
 /// FFF settings used by the slice pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SliceSettings {
@@ -444,8 +451,14 @@ pub struct SliceSettings {
     pub filament_diameter_mm: f64,
     /// C++ `filament_flow_ratio`. Generic PLA @ H2C 0.4 is 0.99.
     pub flow_ratio: f64,
+    /// C++ `nozzle_temperature` (later layers).
     pub temperature_c: u16,
+    /// C++ `nozzle_temperature_initial_layer`.
+    pub temperature_initial_layer_c: u16,
+    /// Later-layer bed temp for `curr_bed_type` (C++ `get_bed_temperature`).
     pub bed_temperature_c: u16,
+    /// First-layer bed temp for `curr_bed_type`.
+    pub bed_temperature_initial_layer_c: u16,
     pub print_speed_mm_s: f64,
     /// C++ `inner_wall_speed`. Defaults to the outer wall speed.
     pub inner_wall_speed_mm_s: f64,
@@ -679,6 +692,16 @@ pub struct SliceSettings {
     pub cooling_filter_enabled: bool,
     /// C++ `curr_bed_type` display name (`Cool Plate`, `Textured PEI Plate`, …).
     pub curr_bed_type: String,
+    /// C++ `cool_plate_temp` / `cool_plate_temp_initial_layer`.
+    pub cool_plate: PlateBedTemps,
+    /// C++ `eng_plate_temp` / `eng_plate_temp_initial_layer`.
+    pub eng_plate: PlateBedTemps,
+    /// C++ `hot_plate_temp` / `hot_plate_temp_initial_layer` (High Temp Plate).
+    pub hot_plate: PlateBedTemps,
+    /// C++ `textured_plate_temp` / `textured_plate_temp_initial_layer`.
+    pub textured_plate: PlateBedTemps,
+    /// C++ `supertack_plate_temp` / `supertack_plate_temp_initial_layer`.
+    pub supertack_plate: PlateBedTemps,
     /// C++ `nozzle_temperature_range_high` (flush-temp fallback).
     pub nozzle_temperature_range_high: u16,
     /// C++ `time_lapse_gcode`. Empty skips per-layer insert.
@@ -693,6 +716,10 @@ pub struct SliceSettings {
     pub enable_wrapping_detection: bool,
     /// C++ `wrapping_detection_gcode`. Empty skips even when wrapping is on.
     pub wrapping_detection_gcode: String,
+    /// C++ `filament_map` (1-based extruder ids). Default is left nozzle.
+    pub filament_map: Vec<i32>,
+    /// C++ `scan_first_layer`: nozzle-cam inspect on the second layer.
+    pub scan_first_layer: bool,
 }
 
 impl Default for SliceSettings {
@@ -723,7 +750,9 @@ impl Default for SliceSettings {
             filament_diameter_mm: 1.75,
             flow_ratio: 1.0,
             temperature_c: 220,
+            temperature_initial_layer_c: 220,
             bed_temperature_c: 60,
+            bed_temperature_initial_layer_c: 60,
             print_speed_mm_s: 50.0,
             inner_wall_speed_mm_s: 50.0,
             first_layer_speed_mm_s: 50.0,
@@ -850,6 +879,11 @@ impl Default for SliceSettings {
             temperature_vitrification_c: 45,
             cooling_filter_enabled: false,
             curr_bed_type: String::from("Cool Plate"),
+            cool_plate: PlateBedTemps::default(),
+            eng_plate: PlateBedTemps::default(),
+            hot_plate: PlateBedTemps::default(),
+            textured_plate: PlateBedTemps::default(),
+            supertack_plate: PlateBedTemps::default(),
             nozzle_temperature_range_high: 240,
             time_lapse_gcode: String::new(),
             timelapse_type: 0,
@@ -857,6 +891,8 @@ impl Default for SliceSettings {
             spiral_mode: false,
             enable_wrapping_detection: false,
             wrapping_detection_gcode: String::new(),
+            filament_map: vec![1],
+            scan_first_layer: false,
         }
     }
 }
@@ -1026,6 +1062,31 @@ impl SliceSettings {
         degree > self.overhang_fan_threshold.compare_degree()
     }
 
+    /// C++ `get_bed_temp_key` / `get_bed_temp_1st_layer_key` for `curr_bed_type`.
+    pub fn plate_bed_temps(&self) -> PlateBedTemps {
+        match self.curr_bed_type.as_str() {
+            "Engineering Plate" => self.eng_plate,
+            "High Temp Plate" => self.hot_plate,
+            "Textured PEI Plate" => self.textured_plate,
+            "Supertack Plate" => self.supertack_plate,
+            _ => self.cool_plate,
+        }
+    }
+
+    /// Copy the active plate's temps into `bed_temperature_c` / initial.
+    /// Leaves the generic 60 °C defaults when that plate is unset (0).
+    pub fn resolve_bed_temps_from_plate(&mut self) {
+        let plate = self.plate_bed_temps();
+        if plate.later_c > 0 {
+            self.bed_temperature_c = plate.later_c;
+        }
+        if plate.initial_c > 0 {
+            self.bed_temperature_initial_layer_c = plate.initial_c;
+        } else if plate.later_c > 0 {
+            self.bed_temperature_initial_layer_c = plate.later_c;
+        }
+    }
+
     /// Bambu `0.20mm Standard @BBL H2C` plus H2C 0.4 nozzle and Generic PLA @ H2C 0.4.
     pub fn bbl_0_20() -> Self {
         Self {
@@ -1131,7 +1192,11 @@ impl SliceSettings {
         ctx.set("initial_no_support_filament_id", 0);
         ctx.set("initial_no_support_hotend", 0);
         ctx.set("initial_filament_id", 0);
-        ctx.set("filament_map", 0);
+        if self.filament_map.is_empty() {
+            ctx.set_list("filament_map", [1]);
+        } else {
+            ctx.set_list("filament_map", self.filament_map.iter().copied());
+        }
         ctx.set(
             "long_retraction_when_cut",
             i32::from(self.long_retraction_when_cut),
@@ -1167,7 +1232,11 @@ impl SliceSettings {
         };
         ctx.set("flush_temperatures", flush_temp);
         ctx.set("nozzle_temperature", self.temperature_c);
-        ctx.set("nozzle_temperature_initial_layer", self.temperature_c);
+        ctx.set(
+            "nozzle_temperature_initial_layer",
+            self.temperature_initial_layer_c,
+        );
+        ctx.set("first_layer_temperature", self.temperature_initial_layer_c);
         ctx.set("nozzle_diameter_at_nozzle_id", self.nozzle_diameter_mm);
         ctx.set("filament_type", self.filament_type.clone());
         ctx.set(
@@ -1187,9 +1256,16 @@ impl SliceSettings {
         ctx.set("curr_bed_type", self.curr_bed_type.clone());
         ctx.set(
             "bed_temperature_initial_layer_single",
-            self.bed_temperature_c,
+            self.bed_temperature_initial_layer_c,
         );
-        ctx.set("bed_temperature_initial_layer", self.bed_temperature_c);
+        ctx.set(
+            "bed_temperature_initial_layer",
+            self.bed_temperature_initial_layer_c,
+        );
+        ctx.set(
+            "first_layer_bed_temperature",
+            self.bed_temperature_initial_layer_c,
+        );
         ctx.set("bed_temperature", self.bed_temperature_c);
         ctx.set("wipe_tower_center_pos_valid", 0);
         ctx.set("wipe_tower_center_pos_x", 0);

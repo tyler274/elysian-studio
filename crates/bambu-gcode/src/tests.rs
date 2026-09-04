@@ -872,6 +872,30 @@ fn h2c_emits_machine_start_gcode() {
     assert!(!header.contains("{filament_type"), "{header}");
     assert!(!header.contains("{first_layer_print_min"), "{header}");
     assert!(!header.contains("{+0.0}"), "{header}");
+    assert!(
+        header.contains("T1 ; rise temp in advance"),
+        "filament_map is 1-based so T1\n{header}"
+    );
+    assert!(
+        header.contains("G151 P1 M"),
+        "filament_map % 2 plugs heat nozzle 1\n{header}"
+    );
+    assert!(
+        header.contains("M140 S35"),
+        "Cool Plate PLA first-layer bed is 35\n{header}"
+    );
+    assert!(
+        header.contains("M190 S35"),
+        "Cool Plate PLA waits for 35\n{header}"
+    );
+    let filament = header
+        .split_once("; MACHINE_START_GCODE_END")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    assert!(
+        !filament.contains("M106 P3 S255") && !filament.contains("M106 P3 S180"),
+        "Cool Plate 35 skips filament chamber-fan branches\n{filament}"
+    );
 }
 
 #[test]
@@ -1103,6 +1127,140 @@ fn h2c_emits_wrapping_detection_on_layers_3_10_19() {
             );
         }
     }
+}
+
+#[test]
+fn default_cube_skips_first_layer_scan() {
+    let mesh = TriangleMesh::cube(20.0);
+    let settings = SliceSettings::default();
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(!gcode.contains("M976 S1 P1"));
+}
+
+#[test]
+fn h2c_skips_first_layer_scan_by_default() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    assert!(!settings.scan_first_layer);
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(!executable_block(&gcode).contains("M976 S1 P1"));
+}
+
+#[test]
+fn scan_first_layer_emits_m976_on_second_layer() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.scan_first_layer = true;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let layer1 = exec.find(";LAYER:1").expect("layer 1");
+    let scan = exec
+        .find("M976 S1 P1 ; scan model before printing 2nd layer")
+        .expect("scan");
+    assert!(
+        !exec[..layer1].contains("M976 S1 P1"),
+        "scan should wait for the second layer"
+    );
+    assert!(scan > layer1);
+    let fan = exec[layer1..]
+        .find(";_SET_FAN_SPEED_CHANGING_LAYER")
+        .expect("fan");
+    assert!(
+        scan < layer1 + fan,
+        "scan should precede this layer's fan marker"
+    );
+    assert!(exec.contains("M400 P100"));
+}
+
+#[test]
+fn default_cube_skips_second_layer_temp_transition() {
+    let mesh = TriangleMesh::cube(20.0);
+    let settings = SliceSettings::default();
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let layer1 = layer_block(exec, 1).expect("layer 1");
+    assert!(!layer1.contains("; set nozzle temperature"));
+    assert!(!layer1.contains("; set bed temperature"));
+    assert!(exec.contains("M104 S220"));
+    assert!(exec.contains("M140 S60"));
+}
+
+#[test]
+fn second_layer_emits_m104_m140_when_temps_change() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.temperature_initial_layer_c = 230;
+    settings.temperature_c = 220;
+    settings.bed_temperature_initial_layer_c = 65;
+    settings.bed_temperature_c = 55;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let header_end = exec.find("; CHANGE_LAYER").expect("layers");
+    let header = &exec[..header_end];
+    assert!(header.contains("M104 S230"), "{header}");
+    assert!(header.contains("M140 S65"), "{header}");
+    let layer1 = layer_block(exec, 1).expect("layer 1");
+    assert!(
+        layer1.contains("M104 S220 ; set nozzle temperature"),
+        "{layer1}"
+    );
+    assert!(
+        layer1.contains("M140 S55 ; set bed temperature"),
+        "{layer1}"
+    );
+    let fan = layer1.find(";_SET_FAN_SPEED_CHANGING_LAYER").expect("fan");
+    let nozzle = layer1.find("M104 S220 ; set nozzle temperature").unwrap();
+    assert!(nozzle < fan, "second-layer temps precede the fan marker");
+}
+
+#[test]
+fn h2c_cool_plate_skips_second_layer_bed_temp() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    assert_eq!(settings.bed_temperature_c, 35);
+    assert_eq!(settings.bed_temperature_initial_layer_c, 35);
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let layer1 = layer_block(exec, 1).expect("layer 1");
+    assert!(!layer1.contains("; set nozzle temperature"), "{layer1}");
+    assert!(!layer1.contains("; set bed temperature"), "{layer1}");
+}
+
+fn layer_block(exec: &str, layer: usize) -> Option<&str> {
+    let tag = format!(";LAYER:{layer}");
+    let mut from = 0;
+    let start = loop {
+        let rel = exec[from..].find(&tag)?;
+        let abs = from + rel;
+        let after = abs + tag.len();
+        let next = exec.as_bytes().get(after);
+        if next.map(|c| !c.is_ascii_digit()).unwrap_or(true) {
+            break abs;
+        }
+        from = after;
+    };
+    let rest = &exec[start + tag.len()..];
+    let end = rest
+        .find(";LAYER:")
+        .map(|i| start + tag.len() + i)
+        .unwrap_or(exec.len());
+    Some(&exec[start..end])
 }
 
 fn wrapping_g39_layers(exec: &str) -> Vec<usize> {

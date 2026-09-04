@@ -53,13 +53,29 @@ impl Writer<'_> {
         ctx: Option<&PlaceholderContext>,
     ) -> Result<(), GcodeError> {
         if self.settings.machine_start_gcode.is_empty() {
-            writeln!(self.out, "M104 S{}", self.settings.temperature_c)?;
-            writeln!(self.out, "M140 S{}", self.settings.bed_temperature_c)?;
+            writeln!(
+                self.out,
+                "M104 S{}",
+                self.settings.temperature_initial_layer_c
+            )?;
+            writeln!(
+                self.out,
+                "M140 S{}",
+                self.settings.bed_temperature_initial_layer_c
+            )?;
             writeln!(self.out, "G90")?;
             writeln!(self.out, "G21")?;
             writeln!(self.out, "G28")?;
-            writeln!(self.out, "M109 S{}", self.settings.temperature_c)?;
-            writeln!(self.out, "M190 S{}", self.settings.bed_temperature_c)?;
+            writeln!(
+                self.out,
+                "M109 S{}",
+                self.settings.temperature_initial_layer_c
+            )?;
+            writeln!(
+                self.out,
+                "M190 S{}",
+                self.settings.bed_temperature_initial_layer_c
+            )?;
             writeln!(self.out, "G92 E0")?;
         } else {
             let ctx = ctx.expect("start gcode context");
@@ -147,6 +163,34 @@ impl Writer<'_> {
         if let Some(z) = last_g1_z(&self.out[start..]) {
             self.state.z = z;
             self.state.lifted = 0.0;
+        }
+        Ok(())
+    }
+
+    /// C++ second-layer `scan_first_layer` (M976 S1 P1).
+    pub(crate) fn emit_scan_first_layer(&mut self) -> Result<(), GcodeError> {
+        if !self.settings.scan_first_layer {
+            return Ok(());
+        }
+        self.retract()?;
+        writeln!(
+            self.out,
+            "M976 S1 P1 ; scan model before printing 2nd layer"
+        )?;
+        writeln!(self.out, "M400 P100")?;
+        self.unretract()?;
+        Ok(())
+    }
+
+    /// C++ second-layer nozzle/bed transition after `scan_first_layer`.
+    pub(crate) fn emit_second_layer_temps(&mut self) -> Result<(), GcodeError> {
+        let later_nozzle = self.settings.temperature_c;
+        if later_nozzle > 0 && later_nozzle != self.settings.temperature_initial_layer_c {
+            writeln!(self.out, "M104 S{later_nozzle} ; set nozzle temperature")?;
+        }
+        let later_bed = self.settings.bed_temperature_c;
+        if later_bed != self.settings.bed_temperature_initial_layer_c {
+            writeln!(self.out, "M140 S{later_bed} ; set bed temperature")?;
         }
         Ok(())
     }

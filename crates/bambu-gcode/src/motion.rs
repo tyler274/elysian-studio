@@ -290,7 +290,7 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    fn unretract(&mut self) -> Result<(), GcodeError> {
+    pub(crate) fn unretract(&mut self) -> Result<(), GcodeError> {
         self.unlift()?;
         if self.state.retracted <= 1e-9 {
             return Ok(());

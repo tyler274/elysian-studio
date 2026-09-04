@@ -668,6 +668,17 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "enable_wrapping_detection",
         settings.enable_wrapping_detection,
     );
+    insert(
+        &mut map,
+        "filament_map",
+        settings
+            .filament_map
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    insert_bool(&mut map, "scan_first_layer", settings.scan_first_layer);
     if !settings.wrapping_detection_gcode.is_empty() {
         insert(
             &mut map,
@@ -697,6 +708,66 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.cooling_filter_enabled,
     );
     insert(&mut map, "curr_bed_type", settings.curr_bed_type.clone());
+    insert(
+        &mut map,
+        "nozzle_temperature",
+        settings.temperature_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "nozzle_temperature_initial_layer",
+        settings.temperature_initial_layer_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "cool_plate_temp",
+        settings.cool_plate.later_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "cool_plate_temp_initial_layer",
+        settings.cool_plate.initial_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "eng_plate_temp",
+        settings.eng_plate.later_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "eng_plate_temp_initial_layer",
+        settings.eng_plate.initial_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "hot_plate_temp",
+        settings.hot_plate.later_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "hot_plate_temp_initial_layer",
+        settings.hot_plate.initial_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "textured_plate_temp",
+        settings.textured_plate.later_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "textured_plate_temp_initial_layer",
+        settings.textured_plate.initial_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "supertack_plate_temp",
+        settings.supertack_plate.later_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "supertack_plate_temp_initial_layer",
+        settings.supertack_plate.initial_c.to_string(),
+    );
     insert(
         &mut map,
         "nozzle_temperature_range_high",
@@ -1361,6 +1432,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = text(map, "wrapping_detection_gcode") {
         s.wrapping_detection_gcode = v;
     }
+    if let Some(v) = ints(map, "filament_map") {
+        s.filament_map = v;
+    }
+    if let Some(v) = bool_val(map, "scan_first_layer") {
+        s.scan_first_layer = v;
+    }
     if let Some(v) = text(map, "filament_type") {
         s.filament_type = v;
     }
@@ -1379,6 +1456,18 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = text(map, "curr_bed_type") {
         s.curr_bed_type = v;
     }
+    overlay_temp_c(&mut s.temperature_c, map, "nozzle_temperature");
+    overlay_temp_c(
+        &mut s.temperature_initial_layer_c,
+        map,
+        "nozzle_temperature_initial_layer",
+    );
+    overlay_plate(map, &mut s.cool_plate, "cool_plate_temp");
+    overlay_plate(map, &mut s.eng_plate, "eng_plate_temp");
+    overlay_plate(map, &mut s.hot_plate, "hot_plate_temp");
+    overlay_plate(map, &mut s.textured_plate, "textured_plate_temp");
+    overlay_plate(map, &mut s.supertack_plate, "supertack_plate_temp");
+    s.resolve_bed_temps_from_plate();
     if let Some(v) = num(map, "nozzle_temperature_range_high") {
         s.nozzle_temperature_range_high = v.round().clamp(0.0, 500.0) as u16;
     }
@@ -1459,6 +1548,35 @@ fn text(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     map.get(key).and_then(value_text)
 }
 
+fn ints(map: &serde_json::Map<String, Value>, key: &str) -> Option<Vec<i32>> {
+    match map.get(key)? {
+        Value::Array(items) => {
+            let v: Vec<i32> = items.iter().filter_map(int_from_value).collect();
+            (!v.is_empty()).then_some(v)
+        }
+        other => {
+            let raw = value_text(other)?;
+            let v: Vec<i32> = raw
+                .split([',', ' '])
+                .filter(|p| !p.is_empty())
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            (!v.is_empty()).then_some(v)
+        }
+    }
+}
+
+fn int_from_value(v: &Value) -> Option<i32> {
+    match v {
+        Value::Number(n) => n
+            .as_i64()
+            .map(|i| i as i32)
+            .or_else(|| n.as_f64().map(|f| f.round() as i32)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
 fn value_text(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
@@ -1472,6 +1590,25 @@ fn value_text(v: &Value) -> Option<String> {
 fn num(map: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
     let raw = text(map, key)?;
     raw.trim_end_matches('%').trim().parse().ok()
+}
+
+fn overlay_temp_c(dst: &mut u16, map: &serde_json::Map<String, Value>, key: &str) {
+    if let Some(v) = num(map, key) {
+        *dst = v.round().clamp(0.0, 500.0) as u16;
+    }
+}
+
+fn overlay_plate(
+    map: &serde_json::Map<String, Value>,
+    plate: &mut crate::PlateBedTemps,
+    later_key: &str,
+) {
+    overlay_temp_c(&mut plate.later_c, map, later_key);
+    overlay_temp_c(
+        &mut plate.initial_c,
+        map,
+        &format!("{later_key}_initial_layer"),
+    );
 }
 
 /// Filament JSON uses `"nil"` to inherit the printer value.
@@ -1818,6 +1955,22 @@ mod tests {
         assert_eq!(s.first_x_layer_fan_speed, 0);
         assert!((s.pre_start_fan_time_s - 2.0).abs() < 1e-9);
         assert!(!s.activate_air_filtration);
+        assert_eq!(s.temperature_c, 220);
+        assert_eq!(s.temperature_initial_layer_c, 220);
+        assert_eq!(s.cool_plate.later_c, 35);
+        assert_eq!(s.cool_plate.initial_c, 35);
+        assert_eq!(s.hot_plate.later_c, 55);
+        assert_eq!(s.textured_plate.later_c, 55);
+        assert_eq!(s.eng_plate.later_c, 55);
+        assert_eq!(s.bed_temperature_c, 35);
+        assert_eq!(s.bed_temperature_initial_layer_c, 35);
+        s.curr_bed_type = String::from("Textured PEI Plate");
+        s.resolve_bed_temps_from_plate();
+        assert_eq!(s.bed_temperature_c, 55);
+        assert_eq!(s.bed_temperature_initial_layer_c, 55);
+        s.curr_bed_type = String::from("High Temp Plate");
+        s.resolve_bed_temps_from_plate();
+        assert_eq!(s.bed_temperature_c, 55);
     }
 
     #[test]
@@ -1857,6 +2010,8 @@ mod tests {
         assert!(!s.enable_wrapping_detection);
         assert!(s.wrapping_detection_gcode.contains("G39"));
         assert!(s.wrapping_detection_gcode.contains("layer_num == 3"));
+        assert_eq!(s.filament_map, vec![1]);
+        assert!(!s.scan_first_layer);
         assert!(s
             .machine_end_gcode
             .contains("{if long_retraction_when_cut}"));
@@ -1879,6 +2034,10 @@ mod tests {
         assert!((s.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!((s.wipe_distance_mm - 1.0).abs() < 1e-9);
         assert_eq!(s.z_hop_type, crate::ZHopType::Spiral);
+        assert_eq!(s.temperature_c, 220);
+        assert_eq!(s.temperature_initial_layer_c, 220);
+        assert_eq!(s.bed_temperature_c, 35);
+        assert_eq!(s.bed_temperature_initial_layer_c, 35);
         let baked = SliceSettings::bbl_0_20();
         assert!((baked.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!(baked.wipe);
@@ -1905,6 +2064,11 @@ mod tests {
         src.enable_support = true;
         src.support_type = crate::SupportType::Tree;
         src.ironing_type = crate::IroningType::TopSurfaces;
+        src.temperature_c = 215;
+        src.temperature_initial_layer_c = 230;
+        src.cool_plate.later_c = 35;
+        src.cool_plate.initial_c = 40;
+        src.curr_bed_type = String::from("Cool Plate");
         let json = crate::project_settings_json(&src).unwrap();
         assert!(json.contains("\"from\": \"project\""));
         let loaded = crate::settings_from_json(&json).unwrap();
@@ -1914,6 +2078,12 @@ mod tests {
         assert!(loaded.enable_support);
         assert_eq!(loaded.support_type, crate::SupportType::Tree);
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
+        assert_eq!(loaded.temperature_c, 215);
+        assert_eq!(loaded.temperature_initial_layer_c, 230);
+        assert_eq!(loaded.cool_plate.later_c, 35);
+        assert_eq!(loaded.cool_plate.initial_c, 40);
+        assert_eq!(loaded.bed_temperature_c, 35);
+        assert_eq!(loaded.bed_temperature_initial_layer_c, 40);
         assert!((loaded.default_acceleration_mm_s2 - 10000.0).abs() < 1e-9);
         assert!((loaded.filament_density_g_cm3 - 1.24).abs() < 1e-9);
         assert!(loaded.small_perimeter_speed_is_percent);

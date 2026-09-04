@@ -48,6 +48,10 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             writeln!(w.out, "; open powerlost recovery")?;
             writeln!(w.out, "M1003 S1")?;
         }
+        if layer_i == 1 {
+            w.emit_scan_first_layer()?;
+            w.emit_second_layer_temps()?;
+        }
         writeln!(w.out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
         w.emit_wrapping_detection(layer_i, layer.print_z_mm, max_z)?;
 

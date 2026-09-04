@@ -738,6 +738,16 @@ mod tests {
             &ctx,
         );
         assert_eq!(out, "1.5,2.25 T1 yes");
+        let mut list = PlaceholderContext::new();
+        list.set_list("filament_map", [1]);
+        list.set("initial_no_support_filament_id", 0);
+        assert_eq!(
+            expand_placeholders(
+                "T{filament_map[initial_no_support_filament_id] % 2} G151 P{filament_map[initial_no_support_filament_id] % 2} M",
+                &list,
+            ),
+            "T1 G151 P1 M"
+        );
     }
 
     #[test]
