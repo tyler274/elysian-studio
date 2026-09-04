@@ -597,6 +597,40 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
             settings.layer_change_gcode.clone(),
         );
     }
+    if !settings.machine_end_gcode.is_empty() {
+        insert(
+            &mut map,
+            "machine_end_gcode",
+            settings.machine_end_gcode.clone(),
+        );
+    }
+    if !settings.filament_end_gcode.is_empty() {
+        insert(
+            &mut map,
+            "filament_end_gcode",
+            settings.filament_end_gcode.clone(),
+        );
+    }
+    insert_bool(
+        &mut map,
+        "long_retractions_when_cut",
+        settings.long_retraction_when_cut,
+    );
+    insert_bool(
+        &mut map,
+        "long_retractions_when_ec",
+        settings.long_retraction_when_ec,
+    );
+    insert(
+        &mut map,
+        "retraction_distances_when_cut",
+        num_str(settings.retraction_distance_when_cut),
+    );
+    insert(
+        &mut map,
+        "retraction_distances_when_ec",
+        num_str(settings.retraction_distance_when_ec),
+    );
     insert(
         &mut map,
         "retract_lift_above",
@@ -1151,6 +1185,40 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = text(map, "layer_change_gcode") {
         s.layer_change_gcode = v;
     }
+    if let Some(v) = text(map, "machine_end_gcode") {
+        s.machine_end_gcode = v;
+    }
+    if let Some(v) = text(map, "filament_end_gcode") {
+        s.filament_end_gcode = v;
+    }
+    if let Some(v) = filament_or_printer_bool(
+        map,
+        "filament_long_retractions_when_cut",
+        "long_retractions_when_cut",
+    ) {
+        s.long_retraction_when_cut = v;
+    }
+    if let Some(v) = filament_or_printer_bool(
+        map,
+        "filament_long_retractions_when_ec",
+        "long_retractions_when_ec",
+    ) {
+        s.long_retraction_when_ec = v;
+    }
+    if let Some(v) = filament_or_printer(
+        map,
+        "filament_retraction_distances_when_cut",
+        "retraction_distances_when_cut",
+    ) {
+        s.retraction_distance_when_cut = v.max(0.0);
+    }
+    if let Some(v) = filament_or_printer(
+        map,
+        "filament_retraction_distances_when_ec",
+        "retraction_distances_when_ec",
+    ) {
+        s.retraction_distance_when_ec = v.max(0.0);
+    }
     if let Some(v) = filament_or_printer(map, "filament_retraction_length", "retraction_length") {
         s.retraction_length_mm = v.max(0.0);
     }
@@ -1609,11 +1677,23 @@ mod tests {
         assert!((s.retract_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!(s.layer_change_gcode.contains("M73 L{layer_num+1}"));
         assert!(s.layer_change_gcode.contains("M991 S0 P{layer_num}"));
+        assert!(s
+            .machine_end_gcode
+            .contains(";===== machine: H2C end ====="));
+        assert!(s
+            .machine_end_gcode
+            .contains("{if long_retraction_when_cut}"));
+        assert!(s.long_retraction_when_cut);
+        assert!((s.retraction_distance_when_cut - 14.0).abs() < 1e-9);
         assert!(s.bed_bbox_valid);
         assert!((s.bed_min_x).abs() < 1e-9);
         assert!((s.bed_max_x - 325.0).abs() < 1e-9);
         assert!((s.bed_max_y - 320.0).abs() < 1e-9);
         overlay_bbl_profile(&mut s, &paths.filament).unwrap();
+        assert!(s.filament_end_gcode.contains("; filament end gcode"));
+        assert!(s.long_retraction_when_cut);
+        assert!(s.long_retraction_when_ec);
+        assert!((s.retraction_distance_when_ec - 10.0).abs() < 1e-9);
         assert!((s.retraction_length_mm - 0.4).abs() < 1e-9);
         assert!((s.wipe_distance_mm - 1.0).abs() < 1e-9);
         assert_eq!(s.z_hop_type, crate::ZHopType::Spiral);

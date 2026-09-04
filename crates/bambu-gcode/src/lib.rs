@@ -342,10 +342,23 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         }
     }
 
-    writeln!(out, "M104 S0")?;
-    writeln!(out, "M140 S0")?;
-    writeln!(out, "G28 X0 Y0")?;
-    writeln!(out, "M84")?;
+    if settings.machine_end_gcode.is_empty() {
+        writeln!(out, "M104 S0")?;
+        writeln!(out, "M140 S0")?;
+        writeln!(out, "G28 X0 Y0")?;
+        writeln!(out, "M84")?;
+    } else {
+        writeln!(out, "; FEATURE: Custom")?;
+        writeln!(out, "; MACHINE_END_GCODE_START")?;
+        let max_layer_z = sliced.layers.last().map(|l| l.print_z_mm).unwrap_or(0.0);
+        let ctx = settings.placeholder_end_context(
+            sliced.layers.len().saturating_sub(1),
+            sliced.layers.len(),
+            max_layer_z,
+        );
+        emit_expanded(&mut out, &settings.filament_end_gcode, &ctx);
+        emit_expanded(&mut out, &settings.machine_end_gcode, &ctx);
+    }
     if settings.support_air_filtration && settings.activate_air_filtration {
         out.push_str(&set_exhaust_fan_gcode(
             settings.complete_print_exhaust_fan_speed,
@@ -356,6 +369,18 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let stats = process_gcode(&out, settings);
     out.push_str(&stats.footer_lines());
     Ok(out)
+}
+
+fn emit_expanded(out: &mut String, template: &str, ctx: &PlaceholderContext) {
+    if template.is_empty() {
+        return;
+    }
+    let custom = expand_placeholders(template, ctx);
+    let trimmed = custom.trim_end();
+    if !trimmed.is_empty() {
+        out.push_str(trimmed);
+        out.push('\n');
+    }
 }
 
 fn emit_marked(
@@ -2016,6 +2041,79 @@ mod tests {
             "power-loss recovery opens on the second layer"
         );
         assert!(gcode.contains(";_SET_FAN_SPEED_CHANGING_LAYER"));
+    }
+
+    #[test]
+    fn default_cube_keeps_generic_marlin_footer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = SliceSettings::default();
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("G28 X0 Y0"));
+        assert!(gcode.contains("M84"));
+        assert!(!gcode.contains("; MACHINE_END_GCODE_START"));
+        assert!(!gcode.contains(";===== machine: H2C end ====="));
+    }
+
+    #[test]
+    fn h2c_emits_machine_end_gcode() {
+        let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+        bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        let z = sliced.layers.last().unwrap().print_z_mm;
+        assert!(gcode.contains("; MACHINE_END_GCODE_START"), "{gcode}");
+        assert!(gcode.contains(";===== machine: H2C end ====="), "{gcode}");
+        assert!(gcode.contains("; filament end gcode"), "{gcode}");
+        assert!(gcode.contains("M1003 S0"), "{gcode}");
+        assert!(
+            gcode.contains(&format!("G1 Z{} F900 ; lower z a little", z + 0.4))
+                || gcode.contains(&format!("G1 Z{:.1} F900 ; lower z a little", z + 0.4)),
+            "expected first Z park at {}+0.4\n{gcode}",
+            z
+        );
+        assert!(
+            gcode.contains("M620.11 P1 I0 B0 E-14 F"),
+            "long retract-on-cut branch should expand\n{gcode}"
+        );
+        assert!(
+            !gcode.contains("M620.11 P0 I0 B0 E0"),
+            "cut-retract else branch should be skipped\n{gcode}"
+        );
+        assert!(
+            gcode.contains("M620.11 K1 I0 B0 R10 F"),
+            "ec retract-on-cut should expand\n{gcode}"
+        );
+        assert!(
+            !gcode.contains("M620.11 K0 I0 B0 R0"),
+            "ec retract else branch should be skipped\n{gcode}"
+        );
+        let park = z + 100.0 - z / 2.0;
+        let park_s = if (park - park.round()).abs() < 1e-6 {
+            format!("{}", park.round() as i64)
+        } else {
+            let s = format!("{park:.5}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+        let end = gcode
+            .rfind("; MACHINE_END_GCODE_START")
+            .map(|i| &gcode[i..])
+            .unwrap_or(&gcode);
+        assert!(
+            end.contains(&format!("G1 Z{park_s} F600")),
+            "expected nested Z park at {park_s} (raw {park})\n{end}"
+        );
+        assert!(!gcode.contains("G28 X0 Y0"), "{gcode}");
+        assert!(!gcode.contains("{if"), "unexpanded if in\n{gcode}");
+        assert!(!gcode.contains("{endif}"), "unexpanded endif in\n{gcode}");
+        assert!(!gcode.contains("{max_layer_z"), "unexpanded z in\n{gcode}");
     }
 
     #[test]

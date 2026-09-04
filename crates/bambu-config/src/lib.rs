@@ -650,6 +650,18 @@ pub struct SliceSettings {
     pub z_jerk_mm_s: f64,
     /// C++ `layer_change_gcode`. Empty skips the custom block.
     pub layer_change_gcode: String,
+    /// C++ `machine_end_gcode`. Empty keeps the generic Marlin footer.
+    pub machine_end_gcode: String,
+    /// C++ `filament_end_gcode` for the active filament.
+    pub filament_end_gcode: String,
+    /// C++ `long_retractions_when_cut` / placeholder `long_retraction_when_cut`.
+    pub long_retraction_when_cut: bool,
+    /// C++ `long_retractions_when_ec` / placeholder `long_retraction_when_ec`.
+    pub long_retraction_when_ec: bool,
+    /// C++ `retraction_distances_when_cut`.
+    pub retraction_distance_when_cut: f64,
+    /// C++ `retraction_distances_when_ec`.
+    pub retraction_distance_when_ec: f64,
 }
 
 impl Default for SliceSettings {
@@ -793,6 +805,12 @@ impl Default for SliceSettings {
             xy_jerk_mm_s: 9.0,
             z_jerk_mm_s: 3.0,
             layer_change_gcode: String::new(),
+            machine_end_gcode: String::new(),
+            filament_end_gcode: String::new(),
+            long_retraction_when_cut: false,
+            long_retraction_when_ec: false,
+            retraction_distance_when_cut: 0.0,
+            retraction_distance_when_ec: 0.0,
         }
     }
 }
@@ -1041,6 +1059,46 @@ impl SliceSettings {
             ),
             ..Self::default()
         }
+    }
+
+    /// Values C++ `PlaceholderParser` sets for filament/machine end G-code.
+    pub fn placeholder_end_context(
+        &self,
+        layer_num: usize,
+        total_layers: usize,
+        max_layer_z: f64,
+    ) -> PlaceholderContext {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("layer_num", layer_num);
+        ctx.set("total_layer_count", total_layers);
+        ctx.set("layer_z", max_layer_z);
+        ctx.set("max_layer_z", max_layer_z);
+        ctx.set("current_filament_id", 0);
+        ctx.set("current_hotend", 0);
+        ctx.set("filament_extruder_id", 0);
+        ctx.set("current_extruder_id", 0);
+        ctx.set("current_nozzle_id", 0);
+        ctx.set(
+            "long_retraction_when_cut",
+            i32::from(self.long_retraction_when_cut),
+        );
+        ctx.set(
+            "long_retraction_when_ec",
+            i32::from(self.long_retraction_when_ec),
+        );
+        ctx.set(
+            "retraction_distance_when_cut",
+            self.retraction_distance_when_cut,
+        );
+        ctx.set(
+            "retraction_distance_when_ec",
+            self.retraction_distance_when_ec,
+        );
+        ctx.set(
+            "flush_volumetric_speeds",
+            self.filament_max_volumetric_speed_mm3_s,
+        );
+        ctx
     }
 
     /// C++ hop window: `z >= retract_lift_above && z <= retract_lift_below`.
