@@ -45,6 +45,8 @@ pub(crate) struct WriterState {
     pub(crate) first_layer: bool,
     /// Upcoming extrusion is an outer/overhang wall (C++ short-travel accel).
     pub(crate) short_travel_role: bool,
+    /// Last `; LINE_WIDTH:` value (C++ `m_last_width`).
+    pub(crate) last_line_width: Option<f64>,
 }
 
 impl<'a> Writer<'a> {
@@ -85,7 +87,9 @@ impl<'a> Writer<'a> {
             return Ok(());
         }
         self.state.last_accel = rounded;
-        writeln!(self.out, "M204 P{:.0} ; adjust acceleration", rounded)?;
+        // C++ `GCodeWriter::set_acceleration_impl` for `gcfMarlinLegacy` / Klipper:
+        // `M204 S` with `full_gcode_comment == false`. Envelope still uses `M204 P/R/T`.
+        writeln!(self.out, "M204 S{:.0}", rounded)?;
         Ok(())
     }
 

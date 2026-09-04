@@ -1,7 +1,5 @@
 //! Extrusion path emission: roles, overhang classification, small-perimeter slowdown.
 
-use std::fmt::Write as _;
-
 use bambu_config::SliceSettings;
 use bambu_geom::{offset_polygons, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, ClassifiedPath, Layer};
@@ -64,7 +62,7 @@ impl Writer<'_> {
                     supported_feature
                 };
                 if current_feature != Some(feature) {
-                    writeln!(self.out, "; FEATURE: {feature}")?;
+                    self.emit_feature(feature)?;
                     current_feature = Some(feature);
                 }
                 let mut feed = overhang_feed(self.settings, run.degree, job.print_f);

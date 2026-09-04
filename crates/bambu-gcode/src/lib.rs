@@ -8,6 +8,7 @@ mod motion;
 mod parse;
 mod paths;
 mod processor;
+mod timelapse;
 mod writer;
 
 #[cfg(test)]

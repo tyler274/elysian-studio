@@ -803,6 +803,27 @@ mod tests {
     }
 
     #[test]
+    fn h2c_timelapse_traditional_safe_pos_uses_uv() {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("spiral_mode", 0);
+        ctx.set("timelapse_inline_photo", 0);
+        ctx.set("has_timelapse_safe_pos", 1);
+        ctx.set("timelapse_pos_x", 88);
+        ctx.set("timelapse_pos_y", 20);
+        ctx.set("most_used_physical_extruder_id", 1);
+        ctx.set("curr_physical_extruder_id", 1);
+        ctx.set("timelapse_type", 0);
+        ctx.set("farthest_point_timelapse_enabled", 1);
+        ctx.set("layer_z", 0.2);
+        let out = expand_placeholders(
+            "{if timelapse_inline_photo}\nM971 S11\n{elsif has_timelapse_safe_pos && !spiral_mode}\nM9711 M{timelapse_type} E{most_used_physical_extruder_id} U{timelapse_pos_x} V{timelapse_pos_y} Z{layer_z + (farthest_point_timelapse_enabled ? 0.0 : 0.4)}\n{else}\nM9711 M{timelapse_type} E{most_used_physical_extruder_id} Z{layer_z}\n{endif}\n",
+            &ctx,
+        );
+        assert!(out.contains("M9711 M0 E1 U88 V20 Z0.2"), "{out}");
+        assert!(!out.contains("{if"), "{out}");
+    }
+
+    #[test]
     fn h2c_wrapping_g39_on_layers_3_10_19() {
         let mut ctx = PlaceholderContext::new();
         ctx.set("spiral_mode", 0);

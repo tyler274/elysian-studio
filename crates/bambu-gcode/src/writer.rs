@@ -29,6 +29,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         };
     w.emit_start(custom_ctx.as_ref())?;
 
+    let (object_min, object_max) = crate::timelapse::object_xy_bbox(sliced);
     for (layer_i, layer) in sliced.layers.iter().enumerate() {
         let first = layer_i == 0;
         w.state.lift_overhangs = lift_overhangs_in_window(&sliced.layers, layer.print_z_mm);
@@ -36,8 +37,16 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             w.retract()?;
         }
         writeln!(w.out, "; CHANGE_LAYER")?;
+        // C++ `process_layer`: `; Z_HEIGHT: %g` then `; LAYER_HEIGHT: %g`.
+        // First-layer height is print_z; later layers use the slice delta.
+        let height = if first {
+            layer.print_z_mm
+        } else {
+            layer.height_mm
+        };
+        writeln!(w.out, "; Z_HEIGHT: {}", layer.print_z_mm)?;
+        writeln!(w.out, "; LAYER_HEIGHT: {height}")?;
         writeln!(w.out, ";LAYER:{}", layer.index)?;
-        writeln!(w.out, "; LAYER_HEIGHT:{}", layer.height_mm)?;
         w.state.first_layer = first;
         w.emit_accel(settings.travel_acceleration_for_layer(first))?;
         writeln!(w.out, "G1 Z{:.3} F600", layer.print_z_mm)?;
@@ -125,7 +134,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             e(&layer.solid_infill, false, feeds.solid),
         )?;
         if !layer.bridge.is_empty() {
-            writeln!(w.out, "; FEATURE: Bridge")?;
+            w.emit_feature("Bridge")?;
             w.set_print_role(PrintAccel::Default);
             w.emit_marked(
                 settings.overhang_fan_applies(5, true, false),
@@ -145,7 +154,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             e(&layer.top_surface, false, feeds.top),
         )?;
         if !layer.ironing.is_empty() {
-            writeln!(w.out, "; FEATURE: Ironing")?;
+            w.emit_feature("Ironing")?;
             w.set_print_role(PrintAccel::Default);
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
@@ -165,7 +174,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 },
             )?;
         }
-        w.emit_time_lapse(layer_i, layer.print_z_mm, max_z)?;
+        w.emit_time_lapse(layer_i, layer, object_min, object_max, max_z)?;
     }
 
     w.emit_end(custom_ctx.as_ref())?;
@@ -173,6 +182,21 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 }
 
 impl Writer<'_> {
+    pub(crate) fn emit_feature(&mut self, feature: &str) -> Result<(), GcodeError> {
+        writeln!(self.out, "; FEATURE: {feature}")?;
+        let width = self.settings.line_width_mm;
+        let changed = self
+            .state
+            .last_line_width
+            .map(|prev| (prev - width).abs() > 1e-9)
+            .unwrap_or(true);
+        if changed {
+            writeln!(self.out, "; LINE_WIDTH: {width}")?;
+            self.state.last_line_width = Some(width);
+        }
+        Ok(())
+    }
+
     fn emit_role(
         &mut self,
         feature: &str,
@@ -182,7 +206,7 @@ impl Writer<'_> {
         if job.paths.is_empty() {
             return Ok(());
         }
-        writeln!(self.out, "; FEATURE: {feature}")?;
+        self.emit_feature(feature)?;
         self.set_print_role(role);
         self.emit_paths(job)
     }

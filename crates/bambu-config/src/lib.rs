@@ -795,6 +795,14 @@ pub struct SliceSettings {
     pub print_sequence: String,
     /// C++ `printable_height` (placeholder `max_print_height`).
     pub printable_height_mm: f64,
+    /// C++ `printable_area` polygon (mm). Empty falls back to the bed AABB.
+    pub printable_area: Vec<(f64, f64)>,
+    /// C++ `extruder_printable_area` per logical extruder (mm).
+    pub extruder_printable_areas: Vec<Vec<(f64, f64)>>,
+    /// C++ `bed_exclude_area` polygon (mm).
+    pub bed_exclude_area: Vec<(f64, f64)>,
+    /// C++ `extruder_clearance_max_radius` (mm). Timelapse keep-out.
+    pub extruder_clearance_max_radius_mm: f64,
 }
 
 impl Default for SliceSettings {
@@ -976,6 +984,10 @@ impl Default for SliceSettings {
             printer_structure: String::from("undefine"),
             print_sequence: String::from("by layer"),
             printable_height_mm: 250.0,
+            printable_area: Vec::new(),
+            extruder_printable_areas: Vec::new(),
+            bed_exclude_area: Vec::new(),
+            extruder_clearance_max_radius_mm: 65.0,
         }
     }
 }
@@ -1235,6 +1247,15 @@ impl SliceSettings {
             [] => 0,
             map => map[filament_id.min(map.len() - 1)],
         }
+    }
+
+    /// C++ `Extruder::extruder_id`: `filament_map[filament] - 1`.
+    pub fn filament_extruder_index(&self, filament_id: usize) -> usize {
+        let raw = match self.filament_map.as_slice() {
+            [] => 1,
+            map => map[filament_id.min(map.len() - 1)],
+        };
+        (raw.max(1) as usize).saturating_sub(1)
     }
 
     /// C++ `nozzle_diameter.size()`.
@@ -1525,6 +1546,8 @@ impl SliceSettings {
         layer_num: usize,
         layer_z: f64,
         max_layer_z: f64,
+        pos_x: i32,
+        pos_y: i32,
     ) -> PlaceholderContext {
         let mut ctx = PlaceholderContext::new();
         ctx.set("layer_num", layer_num);
@@ -1533,15 +1556,20 @@ impl SliceSettings {
         ctx.set("spiral_mode", i32::from(self.spiral_mode));
         ctx.set("timelapse_type", self.timelapse_type);
         ctx.set("timelapse_inline_photo", 0);
-        ctx.set("has_timelapse_safe_pos", 0);
-        ctx.set("timelapse_pos_x", 0);
-        ctx.set("timelapse_pos_y", 0);
+        let has_safe = i32::from(pos_x != 0 || pos_y != 0);
+        ctx.set("has_timelapse_safe_pos", has_safe);
+        ctx.set("timelapse_pos_x", pos_x);
+        ctx.set("timelapse_pos_y", pos_y);
         ctx.set(
             "most_used_physical_extruder_id",
             self.physical_extruder_id(0),
         );
         ctx.set("curr_physical_extruder_id", self.physical_extruder_id(0));
-        ctx.set("clear_to_x0", 0);
+        // Single-object by-layer: C++ `get_is_clear_to_x0` leaves unclear_area empty.
+        ctx.set(
+            "clear_to_x0",
+            i32::from(!self.print_sequence.to_ascii_lowercase().contains("object")),
+        );
         ctx.set("print_sequence", self.print_sequence.clone());
         ctx.set(
             "farthest_point_timelapse_enabled",

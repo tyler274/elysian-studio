@@ -891,6 +891,30 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.e_jerk_mm_s),
     );
     insert(&mut map, "gcode_flavor", settings.gcode_flavor.as_str());
+    if settings.printable_area.len() >= 3 {
+        insert(
+            &mut map,
+            "printable_area",
+            format_xy_list(&settings.printable_area),
+        );
+    }
+    if !settings.extruder_printable_areas.is_empty() {
+        insert(
+            &mut map,
+            "extruder_printable_area",
+            settings
+                .extruder_printable_areas
+                .iter()
+                .map(|p| format_xy_list(p))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+    }
+    insert(
+        &mut map,
+        "extruder_clearance_max_radius",
+        num_str(settings.extruder_clearance_max_radius_mm),
+    );
     Ok(serde_json::to_string_pretty(&Value::Object(map))?)
 }
 
@@ -1602,6 +1626,26 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "printable_height") {
         s.printable_height_mm = v.max(0.0);
     }
+    if let Some(v) = map.get("printable_area") {
+        let polys = polygons_from_area_value(v);
+        if let Some(poly) = polys.into_iter().next() {
+            s.printable_area = poly;
+        }
+    }
+    if let Some(v) = map.get("extruder_printable_area") {
+        let polys = polygons_from_area_value(v);
+        if !polys.is_empty() {
+            s.extruder_printable_areas = polys;
+        }
+    }
+    if let Some(v) = map.get("bed_exclude_area") {
+        if let Some(poly) = polygons_from_area_value(v).into_iter().next() {
+            s.bed_exclude_area = poly;
+        }
+    }
+    if let Some(v) = num(map, "extruder_clearance_max_radius") {
+        s.extruder_clearance_max_radius_mm = v.max(0.0);
+    }
     if let Some(v) = text(map, "filament_type") {
         s.filament_type = v;
     }
@@ -1886,6 +1930,41 @@ fn parse_xy_list(s: &str) -> Vec<(f64, f64)> {
             Some((x, y))
         })
         .collect()
+}
+
+fn format_xy_list(pts: &[(f64, f64)]) -> String {
+    pts.iter()
+        .map(|(x, y)| format!("{x}x{y}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// One polygon per array element when elements are multi-point strings;
+/// otherwise the whole array is a single polygon of `NxN` points.
+fn polygons_from_area_value(v: &Value) -> Vec<Vec<(f64, f64)>> {
+    match v {
+        Value::Array(items) => {
+            let parts: Vec<Vec<(f64, f64)>> = items.iter().map(xy_points_from_value).collect();
+            if parts.iter().any(|p| p.len() >= 3) {
+                parts.into_iter().filter(|p| p.len() >= 3).collect()
+            } else {
+                let flat: Vec<(f64, f64)> = parts.into_iter().flatten().collect();
+                if flat.len() >= 3 {
+                    vec![flat]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+        other => {
+            let pts = xy_points_from_value(other);
+            if pts.len() >= 3 {
+                vec![pts]
+            } else {
+                Vec::new()
+            }
+        }
+    }
 }
 
 fn xy_points_from_value(v: &Value) -> Vec<(f64, f64)> {
@@ -2217,6 +2296,9 @@ mod tests {
             .time_lapse_gcode
             .contains(";===== machine: H2C timelapse ====="));
         assert!(s.time_lapse_gcode.contains("SKIPTYPE: timelapse"));
+        assert!((s.extruder_clearance_max_radius_mm - 96.0).abs() < 1e-9);
+        assert!(s.printable_area.len() >= 4, "{:?}", s.printable_area);
+        assert_eq!(s.extruder_printable_areas.len(), 2);
         assert!(s.farthest_point_timelapse);
         assert_eq!(s.timelapse_type, 0);
         assert!(!s.spiral_mode);

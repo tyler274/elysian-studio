@@ -63,6 +63,10 @@ fn cube_gcode_z_is_print_z() {
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains("G1 Z0.200 F600"));
+    assert!(gcode.contains("; Z_HEIGHT: 0.2\n"));
+    assert!(gcode.contains("; Z_HEIGHT: 0.4\n"));
+    assert!(gcode.contains("; LAYER_HEIGHT: 0.2\n"));
+    assert!(gcode.contains("; LINE_WIDTH: 0.42\n"));
     assert!(gcode.contains("; max_z_height: 20.00"));
     let report = parse_gcode(&gcode);
     assert!((report.z_min - 0.2).abs() < 1e-6, "z_min={}", report.z_min);
@@ -366,6 +370,22 @@ fn default_cube_closes_fan_on_layer_zero() {
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains("M106 S0\n"));
     assert!(gcode.contains("M106 S"));
+}
+
+#[test]
+fn default_cube_skips_start_fan_when_close_is_zero() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.close_fan_the_first_x_layers = 0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let header_end = exec.find("; CHANGE_LAYER").expect("layers");
+    let header = &exec[..header_end];
+    assert!(
+        !header.contains("M106 "),
+        "start fan init is gated on close_fan_the_first_x_layers\n{header}"
+    );
 }
 
 #[test]
@@ -683,23 +703,24 @@ fn h2c_emits_role_accelerations() {
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(
-        gcode.contains("M204 P500 ; adjust acceleration"),
+        gcode.contains("M204 S500\n"),
         "first layer print 500\n{gcode}"
     );
+    assert!(gcode.contains("M204 S5000\n"), "outer wall 5000\n{gcode}");
     assert!(
-        gcode.contains("M204 P5000 ; adjust acceleration"),
-        "outer wall 5000\n{gcode}"
-    );
-    assert!(
-        gcode.contains("M204 P6000 ; adjust acceleration"),
+        gcode.contains("M204 S6000\n"),
         "first-layer travel 6000\n{gcode}"
     );
     assert!(
-        gcode.contains("M204 P10000 ; adjust acceleration"),
+        gcode.contains("M204 S10000\n"),
         "later travel 10000\n{gcode}"
     );
-    let first_print = gcode.find("M204 P500 ;").expect("first layer");
-    let outer = gcode.find("M204 P5000 ;").expect("outer");
+    assert!(
+        !gcode.contains("; adjust acceleration"),
+        "C++ full_gcode_comment is false"
+    );
+    let first_print = gcode.find("M204 S500\n").expect("first layer");
+    let outer = gcode.find("M204 S5000\n").expect("outer");
     assert!(first_print < outer, "{gcode}");
 }
 
@@ -714,12 +735,12 @@ fn h2c_short_travel_to_outer_wall_uses_250() {
     let gcode = write_gcode(&settings, &sliced).unwrap();
     let layer1 = gcode.find(";LAYER:1").expect("layer 1");
     assert!(
-        !gcode[..layer1].contains("M204 P250"),
+        !gcode[..layer1].contains("M204 S250"),
         "first layer must keep full travel accel\n{}",
         &gcode[..layer1]
     );
     assert!(
-        gcode[layer1..].contains("M204 P250 ; adjust acceleration"),
+        gcode[layer1..].contains("M204 S250\n"),
         "short hop to an outer wall should use 250\n{}",
         &gcode[layer1..]
     );
@@ -867,6 +888,17 @@ fn h2c_emits_machine_start_gcode() {
         envelope_at < start_at,
         "print_machine_envelope precedes machine start"
     );
+    let before_start = &header[..start_at];
+    assert!(
+        before_start.contains("M106 S0\n"),
+        "close_fan_the_first_x_layers shuts the part fan before start\n{before_start}"
+    );
+    assert!(
+        before_start.contains("M106 P2 S0\n"),
+        "H2C auxiliary fan is forced off at start\n{before_start}"
+    );
+    let fan_at = before_start.find("M106 S0\n").expect("start fan");
+    assert!(envelope_at < fan_at, "start fan follows machine envelope");
     assert!(
         header.contains(";===== machine: H2C ========================="),
         "{header}"
@@ -970,6 +1002,17 @@ fn cube_gcode_has_bbl_envelope() {
     assert!(gcode.contains("M201 X1000 Y1000 Z500 E5000"));
     assert!(gcode.contains("M203 X500 Y500 Z12 E120"));
     assert!(gcode.contains("M204 P1500 R1500 T1500"));
+    let exec = executable_block(&gcode);
+    let header_end = exec.find("; CHANGE_LAYER").expect("layers");
+    let header = &exec[..header_end];
+    assert!(
+        header.contains("M106 S0\n"),
+        "default close_fan_the_first_x_layers shuts the part fan\n{header}"
+    );
+    assert!(
+        !header.contains("M106 P2"),
+        "default machine has no aux fan\n{header}"
+    );
 }
 
 #[test]
@@ -1036,8 +1079,18 @@ fn h2c_emits_time_lapse_gcode_each_layer() {
     assert_eq!(shots, n, "one timelapse insert per layer, got {shots}");
     assert!(exec.contains(";===== machine: H2C timelapse ====="));
     assert!(
-        exec.contains("M9711 M0 E1 Z"),
-        "H2C physical_extruder_map[0] is 1\n{}",
+        exec.contains("M9711 M0 E1 U"),
+        "H2C cube should pick a safe pos (physical E1)\n{}",
+        exec.lines()
+            .filter(|l| l.contains("M9711"))
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        exec.lines()
+            .any(|l| l.contains("M9711 ") && l.contains(" V")),
+        "safe-pos M9711 includes V\n{}",
         exec.lines()
             .filter(|l| l.contains("M9711"))
             .take(3)

@@ -6,7 +6,7 @@ use bambu_config::{config_block_gcode, expand_placeholders, PlaceholderContext};
 use bambu_geom::{unscale, Point};
 use bambu_slicer::SliceResult;
 
-use crate::cooling::set_exhaust_fan_gcode;
+use crate::cooling::{set_additional_fan_gcode, set_exhaust_fan_gcode, set_fan_gcode};
 use crate::motion::Writer;
 use crate::parse::parse_axis;
 use crate::GcodeError;
@@ -55,6 +55,7 @@ impl Writer<'_> {
         if let Some(envelope) = self.settings.print_machine_envelope() {
             self.out.push_str(&envelope);
         }
+        self.emit_first_layer_fan_init();
         if self.settings.machine_start_gcode.is_empty() {
             writeln!(
                 self.out,
@@ -101,6 +102,18 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// C++ first-layer `set_fan` / `set_additional_fan` after `print_machine_envelope`.
+    fn emit_first_layer_fan_init(&mut self) {
+        if self.settings.close_fan_the_first_x_layers == 0 {
+            return;
+        }
+        self.out
+            .push_str(&set_fan_gcode(self.settings.first_x_layer_part_fan_speed));
+        if self.settings.auxiliary_fan {
+            self.out.push_str(&set_additional_fan_gcode(0));
+        }
+    }
+
     pub(crate) fn emit_layer_change_gcode(
         &mut self,
         layer_i: usize,
@@ -125,18 +138,32 @@ impl Writer<'_> {
     pub(crate) fn emit_time_lapse(
         &mut self,
         layer_i: usize,
-        print_z: f64,
+        layer: &bambu_slicer::Layer,
+        object_min: (f64, f64),
+        object_max: (f64, f64),
         max_z: f64,
     ) -> Result<(), GcodeError> {
         if self.settings.time_lapse_gcode.is_empty() {
             return Ok(());
         }
-        let ctx = self
-            .settings
-            .placeholder_timelapse_context(layer_i, print_z, max_z);
+        let farthest = if self.settings.farthest_point_timelapse_enabled() {
+            crate::timelapse::farthest_layer_point(layer)
+        } else {
+            None
+        };
+        let pos =
+            crate::timelapse::pick_timelapse_pos(self.settings, object_min, object_max, farthest);
+        let ctx = self.settings.placeholder_timelapse_context(
+            layer_i,
+            layer.print_z_mm,
+            max_z,
+            pos.x,
+            pos.y,
+        );
         let start = self.out.len();
         emit_expanded(&mut self.out, &self.settings.time_lapse_gcode, &ctx);
         if let Some(z) = last_g1_z(&self.out[start..]) {
+            let print_z = layer.print_z_mm;
             if (z - print_z).abs() > 1e-3 {
                 writeln!(self.out, "G1 Z{print_z:.3}")?;
             }
