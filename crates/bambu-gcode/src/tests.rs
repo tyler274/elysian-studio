@@ -999,6 +999,128 @@ fn h2c_emits_time_lapse_gcode_each_layer() {
     );
 }
 
+#[test]
+fn default_cube_skips_wrapping_detection() {
+    let mesh = TriangleMesh::cube(20.0);
+    let settings = SliceSettings::default();
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    assert_eq!(exec.lines().filter(|l| l.trim() == "G39").count(), 0);
+    assert!(!exec.contains("G1 Y295 F30000"));
+}
+
+#[test]
+fn h2c_skips_wrapping_detection_when_disabled() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    assert!(!settings.enable_wrapping_detection);
+    assert!(settings.wrapping_detection_gcode.contains("G39"));
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    assert!(
+        !exec.contains("date: 20251104"),
+        "wrapping header should stay out of the executable when disabled"
+    );
+    assert_eq!(
+        wrapping_g39_layers(exec),
+        Vec::<usize>::new(),
+        "wrapping off should skip layer G39"
+    );
+}
+
+#[test]
+fn h2c_emits_wrapping_detection_on_layers_3_10_19() {
+    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    settings.enable_wrapping_detection = true;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    assert!(sliced.layers.len() > 19, "cube should reach layer 19");
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let exec = executable_block(&gcode);
+    let n = sliced.layers.len();
+    let headers = exec.matches("date: 20251104").count();
+    assert_eq!(
+        headers, n,
+        "wrapping header once per layer, got {headers} for {n} layers"
+    );
+    assert_eq!(wrapping_g39_layers(exec), vec![3, 10, 19]);
+    assert_eq!(
+        exec.matches("nozzle cam detection allow status save")
+            .count(),
+        3
+    );
+    assert!(!exec.contains("{if"), "unexpanded wrapping if\n{exec}");
+    assert!(!exec.contains("{endif}"), "unexpanded wrapping endif");
+    for layer in [3usize, 10, 19] {
+        let marker = format!(";LAYER:{layer}");
+        let start = exec
+            .match_indices(&marker)
+            .find_map(|(i, _)| {
+                let next = exec.as_bytes().get(i + marker.len());
+                match next {
+                    None | Some(b'\n') | Some(b'\r') => Some(i),
+                    Some(c) if !c.is_ascii_digit() => Some(i),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| panic!("missing {marker}"));
+        let rest = &exec[start..];
+        let end = rest[1..]
+            .find(";LAYER:")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let block = &rest[..end];
+        let fan = block.find(";_SET_FAN_SPEED_CHANGING_LAYER");
+        let g39 = block.find("G39");
+        let paths = block
+            .find("; FEATURE: Skirt")
+            .or_else(|| block.find("; FEATURE: Brim"))
+            .or_else(|| block.find("; FEATURE: Outer wall"));
+        assert!(
+            fan.is_some() && g39.is_some(),
+            "layer {layer} wrapping after fan marker"
+        );
+        assert!(
+            fan.unwrap() < g39.unwrap(),
+            "wrapping should follow layer-change fan marker"
+        );
+        if let Some(paths) = paths {
+            assert!(
+                g39.unwrap() < paths,
+                "wrapping should precede this layer's paths"
+            );
+        }
+    }
+}
+
+fn wrapping_g39_layers(exec: &str) -> Vec<usize> {
+    let mut current = None;
+    let mut hits = Vec::new();
+    for line in exec.lines() {
+        if let Some(rest) = line.strip_prefix(";LAYER:") {
+            current = rest.trim().parse().ok();
+        }
+        if line.trim() == "G39" {
+            if let Some(n) = current {
+                hits.push(n);
+            }
+        }
+    }
+    hits
+}
+
 fn executable_block(gcode: &str) -> &str {
     let start = gcode.find("; EXECUTABLE_BLOCK_START").unwrap_or(0);
     let end = gcode

@@ -791,4 +791,39 @@ mod tests {
         assert!(!out.contains("{if"), "{out}");
         assert!(!out.contains("?"), "{out}");
     }
+
+    #[test]
+    fn h2c_wrapping_g39_on_layers_3_10_19() {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("spiral_mode", 0);
+        let tmpl = "{if !spiral_mode}\n{if layer_num == 3 || layer_num == 10 || layer_num == 19}\nG39\nG1 Y295 F30000\n{endif}\n{endif}\n";
+        ctx.set("layer_num", 3);
+        let on = expand_placeholders(tmpl, &ctx);
+        assert!(on.contains("G39"), "{on}");
+        assert!(on.contains("G1 Y295 F30000"), "{on}");
+        assert!(!on.contains("{if"), "{on}");
+        ctx.set("layer_num", 4);
+        let off = expand_placeholders(tmpl, &ctx);
+        assert!(!off.contains("G39"), "{off}");
+        ctx.set("layer_num", 3);
+        ctx.set("spiral_mode", 1);
+        let spiral = expand_placeholders(tmpl, &ctx);
+        assert!(!spiral.contains("G39"), "{spiral}");
+    }
+
+    #[test]
+    fn h2c_wrapping_oracle_template_hits_3_10_19() {
+        let paths = crate::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mut s = crate::SliceSettings::default();
+        crate::overlay_bbl_profile(&mut s, &paths.machine).unwrap();
+        let mut hits = Vec::new();
+        for n in 0..25 {
+            let ctx = s.placeholder_wrapping_context(n, 0.2 * (n as f64 + 1.0), 20.0);
+            let out = expand_placeholders(&s.wrapping_detection_gcode, &ctx);
+            if out.lines().any(|l| l.trim() == "G39") {
+                hits.push(n);
+            }
+        }
+        assert_eq!(hits, vec![3, 10, 19], "{hits:?}");
+    }
 }

@@ -663,6 +663,18 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.farthest_point_timelapse,
     );
     insert_bool(&mut map, "spiral_mode", settings.spiral_mode);
+    insert_bool(
+        &mut map,
+        "enable_wrapping_detection",
+        settings.enable_wrapping_detection,
+    );
+    if !settings.wrapping_detection_gcode.is_empty() {
+        insert(
+            &mut map,
+            "wrapping_detection_gcode",
+            settings.wrapping_detection_gcode.clone(),
+        );
+    }
     insert(&mut map, "filament_type", settings.filament_type.clone());
     insert(
         &mut map,
@@ -1343,6 +1355,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "spiral_mode") {
         s.spiral_mode = v;
     }
+    if let Some(v) = bool_val(map, "enable_wrapping_detection") {
+        s.enable_wrapping_detection = v;
+    }
+    if let Some(v) = text(map, "wrapping_detection_gcode") {
+        s.wrapping_detection_gcode = v;
+    }
     if let Some(v) = text(map, "filament_type") {
         s.filament_type = v;
     }
@@ -1702,6 +1720,7 @@ mod tests {
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert!(!s.enable_support);
+        assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
         assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
         assert!((s.ironing_flow - 0.10).abs() < 1e-9);
@@ -1835,6 +1854,9 @@ mod tests {
         assert!(s.farthest_point_timelapse);
         assert_eq!(s.timelapse_type, 0);
         assert!(!s.spiral_mode);
+        assert!(!s.enable_wrapping_detection);
+        assert!(s.wrapping_detection_gcode.contains("G39"));
+        assert!(s.wrapping_detection_gcode.contains("layer_num == 3"));
         assert!(s
             .machine_end_gcode
             .contains("{if long_retraction_when_cut}"));

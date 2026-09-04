@@ -125,6 +125,32 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// C++ `insert_wrapping_detection_gcode`: once per layer, before the first extruder.
+    pub(crate) fn emit_wrapping_detection(
+        &mut self,
+        layer_i: usize,
+        print_z: f64,
+        max_z: f64,
+    ) -> Result<(), GcodeError> {
+        if !self.settings.enable_wrapping_detection {
+            return Ok(());
+        }
+        self.retract()?;
+        if self.settings.wrapping_detection_gcode.is_empty() {
+            return Ok(());
+        }
+        let ctx = self
+            .settings
+            .placeholder_wrapping_context(layer_i, print_z, max_z);
+        let start = self.out.len();
+        emit_expanded(&mut self.out, &self.settings.wrapping_detection_gcode, &ctx);
+        if let Some(z) = last_g1_z(&self.out[start..]) {
+            self.state.z = z;
+            self.state.lifted = 0.0;
+        }
+        Ok(())
+    }
+
     pub(crate) fn emit_end(&mut self, ctx: Option<&PlaceholderContext>) -> Result<(), GcodeError> {
         if !self.settings.machine_start_gcode.is_empty() {
             writeln!(self.out, "M981 S0 P20000 ; close spaghetti detector")?;

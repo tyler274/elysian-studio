@@ -689,6 +689,10 @@ pub struct SliceSettings {
     pub farthest_point_timelapse: bool,
     /// C++ `spiral_mode`.
     pub spiral_mode: bool,
+    /// C++ `enable_wrapping_detection`. Off skips the per-layer insert.
+    pub enable_wrapping_detection: bool,
+    /// C++ `wrapping_detection_gcode`. Empty skips even when wrapping is on.
+    pub wrapping_detection_gcode: String,
 }
 
 impl Default for SliceSettings {
@@ -851,6 +855,8 @@ impl Default for SliceSettings {
             timelapse_type: 0,
             farthest_point_timelapse: false,
             spiral_mode: false,
+            enable_wrapping_detection: false,
+            wrapping_detection_gcode: String::new(),
         }
     }
 }
@@ -1226,6 +1232,23 @@ impl SliceSettings {
             "farthest_point_timelapse_enabled",
             i32::from(self.farthest_point_timelapse && self.timelapse_type == 0),
         );
+        ctx
+    }
+
+    /// C++ `insert_wrapping_detection_gcode` extras on top of print config.
+    pub fn placeholder_wrapping_context(
+        &self,
+        layer_num: usize,
+        layer_z: f64,
+        max_layer_z: f64,
+    ) -> PlaceholderContext {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set("layer_num", layer_num);
+        ctx.set("layer_z", layer_z);
+        ctx.set("max_layer_z", max_layer_z);
+        ctx.set("spiral_mode", i32::from(self.spiral_mode));
+        ctx.set("most_used_physical_extruder_id", 0);
+        ctx.set("curr_physical_extruder_id", 0);
         ctx
     }
 

@@ -49,6 +49,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             writeln!(w.out, "M1003 S1")?;
         }
         writeln!(w.out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
+        w.emit_wrapping_detection(layer_i, layer.print_z_mm, max_z)?;
 
         let flow = Flow::from_settings(settings, layer.height_mm);
         let e_per_mm = flow.e_per_mm();
