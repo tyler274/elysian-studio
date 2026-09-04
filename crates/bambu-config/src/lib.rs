@@ -662,6 +662,24 @@ pub struct SliceSettings {
     pub retraction_distance_when_cut: f64,
     /// C++ `retraction_distances_when_ec`.
     pub retraction_distance_when_ec: f64,
+    /// C++ `machine_start_gcode`. Empty keeps the generic Marlin header.
+    pub machine_start_gcode: String,
+    /// C++ `filament_start_gcode` for the active filament.
+    pub filament_start_gcode: String,
+    /// C++ `filament_type`.
+    pub filament_type: String,
+    /// C++ `filament_vendor`.
+    pub filament_vendor: String,
+    /// C++ `chamber_temperatures` / placeholder `overall_chamber_temperature`.
+    pub chamber_temperature_c: i32,
+    /// C++ `temperature_vitrification`.
+    pub temperature_vitrification_c: i32,
+    /// C++ `cooling_filter_enabled`.
+    pub cooling_filter_enabled: bool,
+    /// C++ `curr_bed_type` display name (`Cool Plate`, `Textured PEI Plate`, …).
+    pub curr_bed_type: String,
+    /// C++ `nozzle_temperature_range_high` (flush-temp fallback).
+    pub nozzle_temperature_range_high: u16,
 }
 
 impl Default for SliceSettings {
@@ -811,6 +829,15 @@ impl Default for SliceSettings {
             long_retraction_when_ec: false,
             retraction_distance_when_cut: 0.0,
             retraction_distance_when_ec: 0.0,
+            machine_start_gcode: String::new(),
+            filament_start_gcode: String::new(),
+            filament_type: String::from("PLA"),
+            filament_vendor: String::from("Generic"),
+            chamber_temperature_c: 0,
+            temperature_vitrification_c: 45,
+            cooling_filter_enabled: false,
+            curr_bed_type: String::from("Cool Plate"),
+            nozzle_temperature_range_high: 240,
         }
     }
 }
@@ -1061,23 +1088,31 @@ impl SliceSettings {
         }
     }
 
-    /// Values C++ `PlaceholderParser` sets for filament/machine end G-code.
-    pub fn placeholder_end_context(
+    /// Values C++ `PlaceholderParser` sets for custom machine/filament G-code.
+    pub fn placeholder_custom_gcode_context(
         &self,
         layer_num: usize,
         total_layers: usize,
         max_layer_z: f64,
+        first_layer_min: (f64, f64),
+        first_layer_size: (f64, f64),
     ) -> PlaceholderContext {
         let mut ctx = PlaceholderContext::new();
         ctx.set("layer_num", layer_num);
         ctx.set("total_layer_count", total_layers);
         ctx.set("layer_z", max_layer_z);
         ctx.set("max_layer_z", max_layer_z);
+        ctx.set("max_print_z", max_layer_z.ceil() as i64);
         ctx.set("current_filament_id", 0);
         ctx.set("current_hotend", 0);
         ctx.set("filament_extruder_id", 0);
         ctx.set("current_extruder_id", 0);
         ctx.set("current_nozzle_id", 0);
+        ctx.set("initial_nozzle_id", 0);
+        ctx.set("initial_no_support_filament_id", 0);
+        ctx.set("initial_no_support_hotend", 0);
+        ctx.set("initial_filament_id", 0);
+        ctx.set("filament_map", 0);
         ctx.set(
             "long_retraction_when_cut",
             i32::from(self.long_retraction_when_cut),
@@ -1095,8 +1130,61 @@ impl SliceSettings {
             self.retraction_distance_when_ec,
         );
         ctx.set(
+            "retraction_distances_when_cut",
+            self.retraction_distance_when_cut,
+        );
+        ctx.set(
             "flush_volumetric_speeds",
             self.filament_max_volumetric_speed_mm3_s,
+        );
+        ctx.set(
+            "filament_max_volumetric_speed",
+            self.filament_max_volumetric_speed_mm3_s,
+        );
+        let flush_temp = if self.nozzle_temperature_range_high > 0 {
+            self.nozzle_temperature_range_high
+        } else {
+            self.temperature_c
+        };
+        ctx.set("flush_temperatures", flush_temp);
+        ctx.set("nozzle_temperature", self.temperature_c);
+        ctx.set("nozzle_temperature_initial_layer", self.temperature_c);
+        ctx.set("nozzle_diameter_at_nozzle_id", self.nozzle_diameter_mm);
+        ctx.set("filament_type", self.filament_type.clone());
+        ctx.set(
+            "is_all_bbl_filament",
+            i32::from(self.filament_vendor == "Bambu Lab"),
+        );
+        ctx.set("overall_chamber_temperature", self.chamber_temperature_c);
+        ctx.set("chamber_temperature", self.chamber_temperature_c);
+        ctx.set(
+            "min_vitrification_temperature",
+            self.temperature_vitrification_c,
+        );
+        ctx.set(
+            "cooling_filter_enabled",
+            i32::from(self.cooling_filter_enabled),
+        );
+        ctx.set("curr_bed_type", self.curr_bed_type.clone());
+        ctx.set(
+            "bed_temperature_initial_layer_single",
+            self.bed_temperature_c,
+        );
+        ctx.set("bed_temperature_initial_layer", self.bed_temperature_c);
+        ctx.set("bed_temperature", self.bed_temperature_c);
+        ctx.set("wipe_tower_center_pos_valid", 0);
+        ctx.set("wipe_tower_center_pos_x", 0);
+        ctx.set("wipe_tower_center_pos_y", 0);
+        ctx.set("has_tpu_in_first_layer", 0);
+        ctx.set("first_non_support_filaments", 0);
+        ctx.set("first_non_support_hotend", 0);
+        ctx.set_list(
+            "first_layer_print_min",
+            [first_layer_min.0, first_layer_min.1],
+        );
+        ctx.set_list(
+            "first_layer_print_size",
+            [first_layer_size.0, first_layer_size.1],
         );
         ctx
     }

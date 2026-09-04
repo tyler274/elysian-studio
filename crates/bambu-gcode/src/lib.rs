@@ -32,14 +32,41 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     if let Some(last) = sliced.layers.last() {
         writeln!(out, "; max_z_height: {:.2}", last.print_z_mm)?;
     }
-    writeln!(out, "M104 S{}", settings.temperature_c)?;
-    writeln!(out, "M140 S{}", settings.bed_temperature_c)?;
-    writeln!(out, "G90")?;
-    writeln!(out, "G21")?;
-    writeln!(out, "G28")?;
-    writeln!(out, "M109 S{}", settings.temperature_c)?;
-    writeln!(out, "M190 S{}", settings.bed_temperature_c)?;
-    writeln!(out, "G92 E0")?;
+    let custom_ctx =
+        if settings.machine_start_gcode.is_empty() && settings.machine_end_gcode.is_empty() {
+            None
+        } else {
+            let max_layer_z = sliced.layers.last().map(|l| l.print_z_mm).unwrap_or(0.0);
+            let (first_min, first_size) = first_layer_print_box(sliced);
+            Some(settings.placeholder_custom_gcode_context(
+                sliced.layers.len().saturating_sub(1),
+                sliced.layers.len(),
+                max_layer_z,
+                first_min,
+                first_size,
+            ))
+        };
+    if settings.machine_start_gcode.is_empty() {
+        writeln!(out, "M104 S{}", settings.temperature_c)?;
+        writeln!(out, "M140 S{}", settings.bed_temperature_c)?;
+        writeln!(out, "G90")?;
+        writeln!(out, "G21")?;
+        writeln!(out, "G28")?;
+        writeln!(out, "M109 S{}", settings.temperature_c)?;
+        writeln!(out, "M190 S{}", settings.bed_temperature_c)?;
+        writeln!(out, "G92 E0")?;
+    } else {
+        let ctx = custom_ctx.as_ref().expect("start gcode context");
+        writeln!(out, "; FEATURE: Custom")?;
+        emit_expanded(&mut out, &settings.machine_start_gcode, ctx);
+        writeln!(out, "; MACHINE_START_GCODE_END")?;
+        emit_expanded(&mut out, &settings.filament_start_gcode, ctx);
+        writeln!(out, ";VT0 H0")?;
+        writeln!(out, "G90")?;
+        writeln!(out, "G21")?;
+        writeln!(out, "M82 ; use absolute distances for extrusion")?;
+        writeln!(out, "G92 E0")?;
+    }
     if settings.support_air_filtration && settings.activate_air_filtration {
         out.push_str(&set_exhaust_fan_gcode(
             settings.during_print_exhaust_fan_speed,
@@ -348,16 +375,11 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(out, "G28 X0 Y0")?;
         writeln!(out, "M84")?;
     } else {
+        let ctx = custom_ctx.as_ref().expect("end gcode context");
         writeln!(out, "; FEATURE: Custom")?;
         writeln!(out, "; MACHINE_END_GCODE_START")?;
-        let max_layer_z = sliced.layers.last().map(|l| l.print_z_mm).unwrap_or(0.0);
-        let ctx = settings.placeholder_end_context(
-            sliced.layers.len().saturating_sub(1),
-            sliced.layers.len(),
-            max_layer_z,
-        );
-        emit_expanded(&mut out, &settings.filament_end_gcode, &ctx);
-        emit_expanded(&mut out, &settings.machine_end_gcode, &ctx);
+        emit_expanded(&mut out, &settings.filament_end_gcode, ctx);
+        emit_expanded(&mut out, &settings.machine_end_gcode, ctx);
     }
     if settings.support_air_filtration && settings.activate_air_filtration {
         out.push_str(&set_exhaust_fan_gcode(
@@ -381,6 +403,41 @@ fn emit_expanded(out: &mut String, template: &str, ctx: &PlaceholderContext) {
         out.push_str(trimmed);
         out.push('\n');
     }
+}
+
+fn first_layer_print_box(sliced: &SliceResult) -> ((f64, f64), (f64, f64)) {
+    let Some(layer) = sliced.layers.first() else {
+        return ((0.0, 0.0), (0.0, 0.0));
+    };
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut visit = |pts: &[Point]| {
+        for p in pts {
+            let x = unscale(p.x);
+            let y = unscale(p.y);
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    };
+    for poly in &layer.contours {
+        visit(poly);
+    }
+    for path in layer
+        .brim
+        .iter()
+        .chain(layer.skirt.iter())
+        .chain(layer.support.iter())
+    {
+        visit(path);
+    }
+    if !min_x.is_finite() {
+        return ((0.0, 0.0), (0.0, 0.0));
+    }
+    ((min_x, min_y), (max_x - min_x, max_y - min_y))
 }
 
 fn emit_marked(
@@ -2053,6 +2110,8 @@ mod tests {
         assert!(gcode.contains("M84"));
         assert!(!gcode.contains("; MACHINE_END_GCODE_START"));
         assert!(!gcode.contains(";===== machine: H2C end ====="));
+        assert!(gcode.contains("M104 S220") || gcode.contains("M104 S"));
+        assert!(gcode.contains("\nG28\n") || gcode.lines().any(|l| l == "G28"));
     }
 
     #[test]
@@ -2114,6 +2173,50 @@ mod tests {
         assert!(!gcode.contains("{if"), "unexpanded if in\n{gcode}");
         assert!(!gcode.contains("{endif}"), "unexpanded endif in\n{gcode}");
         assert!(!gcode.contains("{max_layer_z"), "unexpanded z in\n{gcode}");
+    }
+
+    #[test]
+    fn h2c_emits_machine_start_gcode() {
+        let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+        bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        let header_end = gcode.find("; CHANGE_LAYER").expect("layers");
+        let header = &gcode[..header_end];
+        assert!(
+            header.contains(";===== machine: H2C ========================="),
+            "{header}"
+        );
+        assert!(header.contains("; MACHINE_START_GCODE_END"), "{header}");
+        assert!(header.contains("G28 X T300"), "{header}");
+        assert!(
+            header.contains("M145 P0"),
+            "PLA uses cooling airduct\n{header}"
+        );
+        assert!(
+            header.contains("M142 P1 R30 S40 T45"),
+            "PLA 0.4 chamber autocool\n{header}"
+        );
+        assert!(header.contains("; filament start gcode"), "{header}");
+        assert!(header.contains(";VT0 H0"), "{header}");
+        assert!(
+            header.contains("M82 ; use absolute distances for extrusion"),
+            "{header}"
+        );
+        assert!(
+            !header.lines().any(|l| l == "G28"),
+            "generic home should be skipped\n{header}"
+        );
+        assert!(!header.contains("{if"), "unexpanded if in\n{header}");
+        assert!(!header.contains("{endif}"), "unexpanded endif in\n{header}");
+        assert!(!header.contains("{filament_type"), "{header}");
+        assert!(!header.contains("{first_layer_print_min"), "{header}");
+        assert!(!header.contains("{+0.0}"), "{header}");
     }
 
     #[test]

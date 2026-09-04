@@ -631,6 +631,47 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "retraction_distances_when_ec",
         num_str(settings.retraction_distance_when_ec),
     );
+    if !settings.machine_start_gcode.is_empty() {
+        insert(
+            &mut map,
+            "machine_start_gcode",
+            settings.machine_start_gcode.clone(),
+        );
+    }
+    if !settings.filament_start_gcode.is_empty() {
+        insert(
+            &mut map,
+            "filament_start_gcode",
+            settings.filament_start_gcode.clone(),
+        );
+    }
+    insert(&mut map, "filament_type", settings.filament_type.clone());
+    insert(
+        &mut map,
+        "filament_vendor",
+        settings.filament_vendor.clone(),
+    );
+    insert(
+        &mut map,
+        "chamber_temperatures",
+        settings.chamber_temperature_c.to_string(),
+    );
+    insert(
+        &mut map,
+        "temperature_vitrification",
+        settings.temperature_vitrification_c.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "cooling_filter_enabled",
+        settings.cooling_filter_enabled,
+    );
+    insert(&mut map, "curr_bed_type", settings.curr_bed_type.clone());
+    insert(
+        &mut map,
+        "nozzle_temperature_range_high",
+        settings.nozzle_temperature_range_high.to_string(),
+    );
     insert(
         &mut map,
         "retract_lift_above",
@@ -1219,6 +1260,33 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     ) {
         s.retraction_distance_when_ec = v.max(0.0);
     }
+    if let Some(v) = text(map, "machine_start_gcode") {
+        s.machine_start_gcode = v;
+    }
+    if let Some(v) = text(map, "filament_start_gcode") {
+        s.filament_start_gcode = v;
+    }
+    if let Some(v) = text(map, "filament_type") {
+        s.filament_type = v;
+    }
+    if let Some(v) = text(map, "filament_vendor") {
+        s.filament_vendor = v;
+    }
+    if let Some(v) = num(map, "chamber_temperatures") {
+        s.chamber_temperature_c = v.round() as i32;
+    }
+    if let Some(v) = num(map, "temperature_vitrification") {
+        s.temperature_vitrification_c = v.round() as i32;
+    }
+    if let Some(v) = bool_val(map, "cooling_filter_enabled") {
+        s.cooling_filter_enabled = v;
+    }
+    if let Some(v) = text(map, "curr_bed_type") {
+        s.curr_bed_type = v;
+    }
+    if let Some(v) = num(map, "nozzle_temperature_range_high") {
+        s.nozzle_temperature_range_high = v.round().clamp(0.0, 500.0) as u16;
+    }
     if let Some(v) = filament_or_printer(map, "filament_retraction_length", "retraction_length") {
         s.retraction_length_mm = v.max(0.0);
     }
@@ -1681,6 +1749,9 @@ mod tests {
             .machine_end_gcode
             .contains(";===== machine: H2C end ====="));
         assert!(s
+            .machine_start_gcode
+            .contains(";===== machine: H2C ========================="));
+        assert!(s
             .machine_end_gcode
             .contains("{if long_retraction_when_cut}"));
         assert!(s.long_retraction_when_cut);
@@ -1691,6 +1762,11 @@ mod tests {
         assert!((s.bed_max_y - 320.0).abs() < 1e-9);
         overlay_bbl_profile(&mut s, &paths.filament).unwrap();
         assert!(s.filament_end_gcode.contains("; filament end gcode"));
+        assert!(s.filament_start_gcode.contains("; filament start gcode"));
+        assert_eq!(s.filament_type, "PLA");
+        assert_eq!(s.filament_vendor, "Generic");
+        assert_eq!(s.temperature_vitrification_c, 45);
+        assert_eq!(s.chamber_temperature_c, 0);
         assert!(s.long_retraction_when_cut);
         assert!(s.long_retraction_when_ec);
         assert!((s.retraction_distance_when_ec - 10.0).abs() < 1e-9);

@@ -2,9 +2,15 @@
 
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone)]
+enum CtxVal {
+    Scalar(String),
+    List(Vec<String>),
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct PlaceholderContext {
-    vars: BTreeMap<String, String>,
+    vars: BTreeMap<String, CtxVal>,
 }
 
 impl PlaceholderContext {
@@ -13,11 +19,27 @@ impl PlaceholderContext {
     }
 
     pub fn set(&mut self, key: impl Into<String>, value: impl ToString) {
-        self.vars.insert(key.into(), value.to_string());
+        self.vars
+            .insert(key.into(), CtxVal::Scalar(value.to_string()));
+    }
+
+    pub fn set_list(
+        &mut self,
+        key: impl Into<String>,
+        values: impl IntoIterator<Item = impl ToString>,
+    ) {
+        self.vars.insert(
+            key.into(),
+            CtxVal::List(values.into_iter().map(|v| v.to_string()).collect()),
+        );
     }
 
     fn get(&self, key: &str) -> Option<&str> {
-        self.vars.get(key).map(String::as_str)
+        match self.vars.get(key) {
+            Some(CtxVal::Scalar(s)) => Some(s.as_str()),
+            Some(CtxVal::List(v)) => v.first().map(String::as_str),
+            None => None,
+        }
     }
 }
 
@@ -268,6 +290,7 @@ enum Tok {
     Minus,
     Star,
     Slash,
+    Percent,
     LParen,
     RParen,
     LBrack,
@@ -362,6 +385,7 @@ fn tokenize(s: &str) -> Option<Vec<Tok>> {
             b'-' => Tok::Minus,
             b'*' => Tok::Star,
             b'/' => Tok::Slash,
+            b'%' => Tok::Percent,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
             b'[' => Tok::LBrack,
@@ -476,6 +500,15 @@ fn parse_mul(toks: &[Tok], i: &mut usize, ctx: &PlaceholderContext) -> Option<Va
                 }
                 v = Val::Num(v.as_num()? / d);
             }
+            Some(Tok::Percent) => {
+                *i += 1;
+                let r = parse_unary(toks, i, ctx)?;
+                let d = r.as_num()?;
+                if d.abs() < 1e-18 {
+                    return None;
+                }
+                v = Val::Num(v.as_num()? % d);
+            }
             _ => return Some(v),
         }
     }
@@ -536,32 +569,42 @@ fn parse_primary(toks: &[Tok], i: &mut usize, ctx: &PlaceholderContext) -> Optio
             }
             if matches!(toks.get(*i), Some(Tok::LBrack)) {
                 *i += 1;
-                let _idx = parse_or(toks, i, ctx)?;
+                let idx = parse_or(toks, i, ctx)?;
                 if !matches!(toks.get(*i), Some(Tok::RBrack)) {
                     return None;
                 }
                 *i += 1;
+                return Some(lookup(ctx, &name, Some(idx.as_num()?.round() as i64)));
             }
-            Some(lookup(ctx, &name))
+            Some(lookup(ctx, &name, None))
         }
         _ => None,
     }
 }
 
-fn lookup(ctx: &PlaceholderContext, name: &str) -> Val {
-    match ctx.get(name) {
-        Some(raw) => {
-            if raw == "true" || raw == "True" {
-                Val::Bool(true)
-            } else if raw == "false" || raw == "False" {
-                Val::Bool(false)
-            } else if let Ok(n) = raw.parse::<f64>() {
-                Val::Num(n)
-            } else {
-                Val::Str(raw.to_string())
+fn lookup(ctx: &PlaceholderContext, name: &str, idx: Option<i64>) -> Val {
+    let raw = match ctx.vars.get(name) {
+        Some(CtxVal::Scalar(s)) => s.as_str(),
+        Some(CtxVal::List(v)) => {
+            let i = idx.unwrap_or(0);
+            if i < 0 {
+                return Val::Num(0.0);
+            }
+            match v.get(i as usize).or_else(|| v.last()) {
+                Some(s) => s.as_str(),
+                None => return Val::Num(0.0),
             }
         }
-        None => Val::Num(0.0),
+        None => return Val::Num(0.0),
+    };
+    if raw == "true" || raw == "True" {
+        Val::Bool(true)
+    } else if raw == "false" || raw == "False" {
+        Val::Bool(false)
+    } else if let Ok(n) = raw.parse::<f64>() {
+        Val::Num(n)
+    } else {
+        Val::Str(raw.to_string())
     }
 }
 
@@ -662,5 +705,24 @@ mod tests {
             &ctx,
         );
         assert_eq!(out, "MID");
+    }
+
+    #[test]
+    fn array_index_and_modulo() {
+        let mut ctx = PlaceholderContext::new();
+        ctx.set_list("first_layer_print_min", [1.5, 2.25]);
+        ctx.set("filament_map", 1);
+        ctx.set("filament_type", "PLA");
+        let out = expand_placeholders(
+            "{first_layer_print_min[0]},{first_layer_print_min[1]} T{filament_map[0] % 2} {if filament_type[0] == \"PLA\"}yes{else}no{endif}",
+            &ctx,
+        );
+        assert_eq!(out, "1.5,2.25 T1 yes");
+    }
+
+    #[test]
+    fn unary_plus_zero() {
+        let ctx = PlaceholderContext::new();
+        assert_eq!(expand_placeholders("Z{+0.0}", &ctx), "Z0");
     }
 }
