@@ -1,6 +1,6 @@
-//! Part cooling fan (`M106`) from C++ `GCodeEditor::write_layer_gcode`.
+//! Part cooling fan (`M106`) and layer-time slowdown from C++ `GCodeEditor`.
 //!
-//! Layer-time interpolation is applied; overhang/ironing fan overrides are not.
+//! Overhang/ironing fan overrides are not applied.
 
 use bambu_config::SliceSettings;
 
@@ -53,6 +53,216 @@ pub fn set_fan_gcode(percent: u32) -> String {
     } else {
         format!("M106 S{pwm}\n")
     }
+}
+
+/// Stretch extrusion `F` when a layer is shorter than `slow_down_layer_time`.
+///
+/// C++ `CoolingBuffer` uses cruise time (`length / feedrate`). Travel and
+/// Z-only moves stay at their original feeds. External-perimeter exceptions
+/// (`no_slow_down_for_cooling_on_outwalls`) are not applied.
+pub fn apply_layer_cooling_slowdown(gcode: &str, settings: &SliceSettings) -> String {
+    if !settings.slow_down_for_layer_cooling || settings.slow_down_layer_time_s <= 0.0 {
+        return gcode.to_string();
+    }
+    let mut out = String::with_capacity(gcode.len());
+    let mut layer = String::new();
+    let mut in_layer = false;
+    let mut head = Head::default();
+    for line in gcode.lines() {
+        if line.trim_start().starts_with("; CHANGE_LAYER") || line.trim() == ";CHANGE_LAYER" {
+            if in_layer {
+                out.push_str(&slowdown_layer(&layer, settings, &mut head));
+                layer.clear();
+            }
+            in_layer = true;
+            layer.push_str(line);
+            layer.push('\n');
+            continue;
+        }
+        if in_layer {
+            layer.push_str(line);
+            layer.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if in_layer {
+        out.push_str(&slowdown_layer(&layer, settings, &mut head));
+    }
+    out
+}
+
+#[derive(Default)]
+struct Head {
+    x: f64,
+    y: f64,
+    z: f64,
+    f_mm_min: f64,
+}
+
+fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> String {
+    let target = settings.slow_down_layer_time_s * 1.001;
+    let min_feed = settings.slow_down_min_speed_mm_s;
+    let lines: Vec<&str> = layer.lines().collect();
+    let mut x = head.x;
+    let mut y = head.y;
+    let mut z = head.z;
+    let mut f_mm_min = head.f_mm_min;
+    let mut adjustable = Vec::new();
+    let mut non_adj_time = 0.0_f64;
+    for (idx, line) in lines.iter().enumerate() {
+        let upper = strip_comment(line).to_ascii_uppercase();
+        let is_g0 = upper.starts_with("G0");
+        let is_g1 = upper.starts_with("G1");
+        if !is_g0 && !is_g1 {
+            continue;
+        }
+        if let Some(v) = parse_axis(&upper, b'F') {
+            f_mm_min = v.max(0.0);
+        }
+        let nx = parse_axis(&upper, b'X').unwrap_or(x);
+        let ny = parse_axis(&upper, b'Y').unwrap_or(y);
+        let nz = parse_axis(&upper, b'Z').unwrap_or(z);
+        let length = ((nx - x).powi(2) + (ny - y).powi(2) + (nz - z).powi(2)).sqrt();
+        let feed_mm_s = f_mm_min / 60.0;
+        let has_e = parse_axis(&upper, b'E').is_some();
+        let is_adj = is_g1 && has_e && length > 1e-9 && feed_mm_s > 1e-9;
+        if is_adj {
+            adjustable.push(AdjMove {
+                idx,
+                length,
+                feed_mm_s,
+            });
+        } else {
+            non_adj_time += cruise_time(length, feed_mm_s);
+        }
+        x = nx;
+        y = ny;
+        z = nz;
+    }
+    head.x = x;
+    head.y = y;
+    head.z = z;
+    head.f_mm_min = f_mm_min;
+    let mut feeds: Vec<f64> = adjustable.iter().map(|m| m.feed_mm_s).collect();
+    let adj_time: f64 = adjustable
+        .iter()
+        .zip(feeds.iter())
+        .map(|(m, f)| cruise_time(m.length, *f))
+        .sum();
+    if non_adj_time + adj_time >= target {
+        return layer.to_string();
+    }
+    for _ in 0..5 {
+        let mut locked_time = non_adj_time;
+        let mut stretch_time = 0.0;
+        for (m, feed) in adjustable.iter().zip(feeds.iter()) {
+            let time = cruise_time(m.length, *feed);
+            if min_feed > 0.0 && *feed <= min_feed + 1e-9 {
+                locked_time += time;
+            } else {
+                stretch_time += time;
+            }
+        }
+        if locked_time + stretch_time >= 0.95 * target {
+            break;
+        }
+        if stretch_time <= 1e-9 {
+            break;
+        }
+        let factor = ((target - locked_time) / stretch_time).max(1.0);
+        for feed in &mut feeds {
+            if min_feed > 0.0 && *feed <= min_feed + 1e-9 {
+                continue;
+            }
+            *feed /= factor;
+            if min_feed > 0.0 {
+                *feed = feed.max(min_feed);
+            }
+        }
+    }
+    let mut out = String::with_capacity(layer.len());
+    let mut adj_i = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        if adj_i < adjustable.len() && adjustable[adj_i].idx == idx {
+            out.push_str(&replace_feed(line, feeds[adj_i] * 60.0));
+            adj_i += 1;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+struct AdjMove {
+    idx: usize,
+    length: f64,
+    feed_mm_s: f64,
+}
+
+fn cruise_time(length: f64, feed_mm_s: f64) -> f64 {
+    if length <= 1e-12 || feed_mm_s <= 1e-12 {
+        0.0
+    } else {
+        length / feed_mm_s
+    }
+}
+
+fn strip_comment(line: &str) -> &str {
+    match line.find(';') {
+        Some(i) => &line[..i],
+        None => line,
+    }
+}
+
+fn parse_axis(upper: &str, axis: u8) -> Option<f64> {
+    let bytes = upper.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == axis && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            i += 1;
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i] == b'+'
+                    || bytes[i] == b'-'
+                    || bytes[i] == b'.'
+                    || bytes[i].is_ascii_digit())
+            {
+                i += 1;
+            }
+            return upper[start..i].parse().ok();
+        }
+        i += 1;
+    }
+    None
+}
+
+fn replace_feed(line: &str, f_mm_min: f64) -> String {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b';' {
+            break;
+        }
+        let c = bytes[i].to_ascii_uppercase();
+        if c == b'F' && (i == 0 || bytes[i - 1].is_ascii_whitespace()) {
+            let start = i;
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i] == b'+'
+                    || bytes[i] == b'-'
+                    || bytes[i] == b'.'
+                    || bytes[i].is_ascii_digit())
+            {
+                i += 1;
+            }
+            return format!("{}F{:.0}{}", &line[..start], f_mm_min.round(), &line[i..]);
+        }
+        i += 1;
+    }
+    format!("{} F{:.0}", line.trim_end(), f_mm_min.round())
 }
 
 /// Insert `M106` after each layer's first `G1 Z` when the fan percent changes.
@@ -174,5 +384,57 @@ mod tests {
         assert_eq!(set_fan_gcode(0), "M106 S0\n");
         assert_eq!(set_fan_gcode(100), "M106 S255\n");
         assert_eq!(set_fan_gcode(50), "M106 S127.5\n");
+    }
+
+    #[test]
+    fn slows_short_layer_toward_target_time() {
+        let mut s = SliceSettings::default();
+        s.slow_down_for_layer_cooling = true;
+        s.slow_down_layer_time_s = 8.0;
+        s.slow_down_min_speed_mm_s = 20.0;
+        let gcode =
+            "; CHANGE_LAYER\n;LAYER:1\nG1 Z0.400 F600\nG0 X0 Y0 F24000\nG1 X400 Y0 E10 F12000\n";
+        let out = apply_layer_cooling_slowdown(gcode, &s);
+        assert!(!out.contains(" F12000"), "{out}");
+        let feed = extrusion_feed_mm_min(&out);
+        // 400 mm in ~8 s → ~50 mm/s
+        assert!(
+            (45.0..55.0).contains(&(feed / 60.0)),
+            "got {} mm/s\n{out}",
+            feed / 60.0
+        );
+    }
+
+    #[test]
+    fn cooling_slowdown_respects_min_speed() {
+        let mut s = SliceSettings::default();
+        s.slow_down_for_layer_cooling = true;
+        s.slow_down_layer_time_s = 8.0;
+        s.slow_down_min_speed_mm_s = 20.0;
+        let gcode = "; CHANGE_LAYER\n;LAYER:1\nG1 X10 Y0 E1 F6000\n";
+        let out = apply_layer_cooling_slowdown(gcode, &s);
+        assert!(out.contains(" F1200"), "{out}");
+    }
+
+    #[test]
+    fn cooling_slowdown_skips_when_disabled() {
+        let mut s = SliceSettings::default();
+        s.slow_down_for_layer_cooling = false;
+        s.slow_down_layer_time_s = 8.0;
+        let gcode = "; CHANGE_LAYER\n;LAYER:1\nG1 X400 Y0 E10 F12000\n";
+        let out = apply_layer_cooling_slowdown(gcode, &s);
+        assert!(out.contains(" F12000"), "{out}");
+    }
+
+    fn extrusion_feed_mm_min(gcode: &str) -> f64 {
+        for line in gcode.lines() {
+            let upper = strip_comment(line).to_ascii_uppercase();
+            if upper.starts_with("G1") && parse_axis(&upper, b'E').is_some() {
+                if let Some(f) = parse_axis(&upper, b'F') {
+                    return f;
+                }
+            }
+        }
+        0.0
     }
 }

@@ -307,6 +307,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "support_interface_speed",
+        num_str(settings.support_interface_speed_mm_s),
+    );
+    insert(
+        &mut map,
         "internal_solid_infill_speed",
         num_str(settings.solid_infill_speed_mm_s),
     );
@@ -386,6 +391,21 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "reduce_fan_stop_start_freq",
         settings.reduce_fan_stop_start_freq,
+    );
+    insert_bool(
+        &mut map,
+        "slow_down_for_layer_cooling",
+        settings.slow_down_for_layer_cooling,
+    );
+    insert(
+        &mut map,
+        "slow_down_min_speed",
+        num_str(settings.slow_down_min_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_flow_ratio",
+        num_str(settings.flow_ratio),
     );
     insert(
         &mut map,
@@ -726,8 +746,11 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "travel_speed") {
         s.travel_speed_mm_s = v;
     }
-    if let Some(v) = num(map, "support_speed").or_else(|| num(map, "support_interface_speed")) {
+    if let Some(v) = num(map, "support_speed") {
         s.support_speed_mm_s = v;
+    }
+    if let Some(v) = num(map, "support_interface_speed") {
+        s.support_interface_speed_mm_s = v;
     }
     if let Some(v) = num(map, "internal_solid_infill_speed") {
         s.solid_infill_speed_mm_s = v;
@@ -786,6 +809,15 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = bool_val(map, "reduce_fan_stop_start_freq") {
         s.reduce_fan_stop_start_freq = v;
+    }
+    if let Some(v) = bool_val(map, "slow_down_for_layer_cooling") {
+        s.slow_down_for_layer_cooling = v;
+    }
+    if let Some(v) = num(map, "slow_down_min_speed") {
+        s.slow_down_min_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_flow_ratio") {
+        s.flow_ratio = v.max(0.0);
     }
     if let Some(v) = num(map, "filament_max_volumetric_speed") {
         s.filament_max_volumetric_speed_mm3_s = v.max(0.0);
@@ -993,6 +1025,8 @@ mod tests {
         assert!((s.small_perimeter_speed - 50.0).abs() < 1e-9);
         assert!(s.small_perimeter_threshold_mm.abs() < 1e-9);
         assert!((s.small_perimeter_speed_mm_s() - 100.0).abs() < 1e-9);
+        assert!((s.support_speed_mm_s - 150.0).abs() < 1e-9);
+        assert!((s.support_interface_speed_mm_s - 80.0).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
         assert_eq!(baked.wall_loops, s.wall_loops);
@@ -1053,6 +1087,9 @@ mod tests {
         assert!((s.slow_down_layer_time_s - 8.0).abs() < 1e-9);
         assert!((s.filament_density_g_cm3 - 1.24).abs() < 1e-9);
         assert!((s.filament_max_volumetric_speed_mm3_s - 12.0).abs() < 1e-9);
+        assert!((s.flow_ratio - 0.98).abs() < 1e-9);
+        assert!(s.slow_down_for_layer_cooling);
+        assert!((s.slow_down_min_speed_mm_s - 20.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1079,6 +1116,8 @@ mod tests {
         assert!((loaded.small_perimeter_speed - 50.0).abs() < 1e-9);
         assert_eq!(loaded.fan_min_speed, 20);
         assert!(!loaded.reduce_fan_stop_start_freq);
+        assert!(!loaded.slow_down_for_layer_cooling);
+        assert!((loaded.flow_ratio - 1.0).abs() < 1e-9);
     }
 
     #[test]

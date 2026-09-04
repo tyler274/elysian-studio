@@ -11,7 +11,9 @@ use bambu_geom::{offset_polygons, unscale, Point, Polygon, Polyline};
 use bambu_slicer::{classify_overhang, SliceResult};
 use thiserror::Error;
 
-pub use cooling::{apply_part_cooling, part_fan_percent, set_fan_gcode};
+pub use cooling::{
+    apply_layer_cooling_slowdown, apply_part_cooling, part_fan_percent, set_fan_gcode,
+};
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
 
 #[derive(Debug, Error)]
@@ -44,6 +46,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     let infill_f = settings.infill_speed_mm_s * 60.0;
     let solid_f = settings.solid_infill_speed_mm_s * 60.0;
     let support_f = settings.support_speed_mm_s * 60.0;
+    let support_interface_f = settings.support_interface_speed_mm_s * 60.0;
 
     let mut e = 0.0_f64;
     let mut last: Option<(f64, f64)> = None;
@@ -61,6 +64,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         let sparse_f = if first { first_infill_f } else { infill_f };
         let solid_layer_f = if first { first_f } else { solid_f };
         let support_layer_f = if first { first_f } else { support_f };
+        let support_interface_layer_f = if first { first_f } else { support_interface_f };
         let bridge_layer_f = if first {
             first_f
         } else {
@@ -130,7 +134,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 false,
                 &mut e,
                 e_per_mm,
-                support_layer_f,
+                support_interface_layer_f,
                 travel_f,
                 settings,
                 mm3_per_mm,
@@ -270,6 +274,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     writeln!(out, "M140 S0")?;
     writeln!(out, "G28 X0 Y0")?;
     writeln!(out, "M84")?;
+    out = apply_layer_cooling_slowdown(&out, settings);
     out = apply_part_cooling(&out, settings);
     let stats = process_gcode(&out, settings);
     out.push_str(&stats.footer_lines());
@@ -847,6 +852,31 @@ mod tests {
     }
 
     #[test]
+    fn support_interface_uses_interface_speed() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_speed_mm_s = 40.0;
+        settings.support_interface_speed_mm_s = 80.0;
+        settings.first_layer_speed_mm_s = 20.0;
+        settings.first_layer_infill_speed_mm_s = 20.0;
+        settings.infill_speed_mm_s = 90.0;
+        settings.solid_infill_speed_mm_s = 90.0;
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(sliced.layers.iter().any(|l| !l.support.is_empty()));
+        assert!(sliced
+            .layers
+            .iter()
+            .any(|l| !l.support_interface.is_empty()));
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(gcode.contains("; FEATURE: Support"));
+        assert!(gcode.contains("; FEATURE: Support interface"));
+        assert!(gcode.contains(" F2400"), "support 40 mm/s");
+        assert!(gcode.contains(" F4800"), "support interface 80 mm/s");
+    }
+
+    #[test]
     fn cube_ironing_gcode_feature() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
@@ -885,6 +915,7 @@ mod tests {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::bbl_0_20();
         settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        settings.slow_down_for_layer_cooling = false;
         let sliced = slice_mesh(&mesh, &settings).unwrap();
         let gcode = write_gcode(&settings, &sliced).unwrap();
         assert!(gcode.contains(" F12000"), "outer walls should use 200 mm/s");
@@ -894,7 +925,8 @@ mod tests {
     #[test]
     fn volumetric_cap_slows_bbl_walls() {
         let mesh = TriangleMesh::cube(20.0);
-        let settings = SliceSettings::bbl_0_20();
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.slow_down_for_layer_cooling = false;
         let mm3 = settings.line_width_mm * settings.layer_height_mm * settings.flow_ratio;
         let cap_f = settings.cap_extrude_feed_mm_min(12_000.0, mm3);
         assert!(cap_f < 12_000.0, "12 mm³/s should cap 200 mm/s walls");
@@ -998,6 +1030,33 @@ mod tests {
         assert!(
             !gcode.contains(" F1500"),
             "20 mm cube walls are larger than a 6.5 mm radius"
+        );
+    }
+
+    #[test]
+    fn flow_ratio_scales_extrusion() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut full = SliceSettings::default();
+        full.flow_ratio = 1.0;
+        let sliced = slice_mesh(&mesh, &full).unwrap();
+        let e_full = parse_gcode(&write_gcode(&full, &sliced).unwrap()).max_e;
+        let mut scaled = full.clone();
+        scaled.flow_ratio = 0.98;
+        let e_scaled = parse_gcode(&write_gcode(&scaled, &sliced).unwrap()).max_e;
+        assert!(e_full > 0.0);
+        assert!((e_scaled / e_full - 0.98).abs() < 1e-6);
+    }
+
+    #[test]
+    fn layer_cooling_slows_short_bbl_layers() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::bbl_0_20();
+        settings.filament_max_volumetric_speed_mm3_s = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let gcode = write_gcode(&settings, &sliced).unwrap();
+        assert!(
+            !gcode.contains(" F18000"),
+            "300 mm/s inner walls should be stretched for layer cooling"
         );
     }
 

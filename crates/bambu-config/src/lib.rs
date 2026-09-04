@@ -346,6 +346,7 @@ pub struct SliceSettings {
     pub fuzzy_skin_first_layer: bool,
     pub nozzle_diameter_mm: f64,
     pub filament_diameter_mm: f64,
+    /// C++ `filament_flow_ratio`. Generic PLA is 0.98.
     pub flow_ratio: f64,
     pub temperature_c: u16,
     pub bed_temperature_c: u16,
@@ -359,6 +360,8 @@ pub struct SliceSettings {
     pub infill_speed_mm_s: f64,
     pub travel_speed_mm_s: f64,
     pub support_speed_mm_s: f64,
+    /// C++ `support_interface_speed`.
+    pub support_interface_speed_mm_s: f64,
     /// C++ `detect_overhang_wall`: clip walls against the layer below.
     pub detect_overhang_wall: bool,
     /// C++ `enable_overhang_speed`: slow unsupported wall segments.
@@ -449,6 +452,10 @@ pub struct SliceSettings {
     pub fan_cooling_layer_time_s: f64,
     /// C++ `slow_down_layer_time` (seconds). Also the full-fan time threshold.
     pub slow_down_layer_time_s: f64,
+    /// C++ `slow_down_for_layer_cooling`.
+    pub slow_down_for_layer_cooling: bool,
+    /// C++ `slow_down_min_speed` (mm/s). 0 means no floor.
+    pub slow_down_min_speed_mm_s: f64,
     /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
     pub reduce_fan_stop_start_freq: bool,
     /// C++ `filament_max_volumetric_speed` (mm³/s). 0 disables the cap.
@@ -495,6 +502,7 @@ impl Default for SliceSettings {
             infill_speed_mm_s: 80.0,
             travel_speed_mm_s: 120.0,
             support_speed_mm_s: 80.0,
+            support_interface_speed_mm_s: 80.0,
             detect_overhang_wall: true,
             enable_overhang_speed: true,
             overhang_1_4_speed_mm_s: 0.0,
@@ -545,6 +553,8 @@ impl Default for SliceSettings {
             full_fan_speed_layer: 0,
             fan_cooling_layer_time_s: 60.0,
             slow_down_layer_time_s: 8.0,
+            slow_down_for_layer_cooling: false,
+            slow_down_min_speed_mm_s: 10.0,
             reduce_fan_stop_start_freq: false,
             filament_max_volumetric_speed_mm3_s: 0.0,
             xy_jerk_mm_s: 9.0,
@@ -647,7 +657,8 @@ impl SliceSettings {
             first_layer_infill_speed_mm_s: 105.0,
             infill_speed_mm_s: 270.0,
             solid_infill_speed_mm_s: 250.0,
-            support_speed_mm_s: 80.0,
+            support_speed_mm_s: 150.0,
+            support_interface_speed_mm_s: 80.0,
             enable_overhang_speed: true,
             overhang_1_4_speed_mm_s: 0.0,
             overhang_2_4_speed_mm_s: 50.0,
@@ -659,8 +670,11 @@ impl SliceSettings {
             fan_min_speed: 100,
             fan_max_speed: 100,
             close_fan_the_first_x_layers: 1,
+            flow_ratio: 0.98,
             fan_cooling_layer_time_s: 100.0,
             slow_down_layer_time_s: 8.0,
+            slow_down_for_layer_cooling: true,
+            slow_down_min_speed_mm_s: 20.0,
             reduce_fan_stop_start_freq: true,
             filament_max_volumetric_speed_mm3_s: 12.0,
             ..Self::default()
