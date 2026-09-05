@@ -1,6 +1,8 @@
 //! C++ `TimelapsePosPicker` for by-layer, single-object prints.
 //!
-//! Skips wipe-tower keep-out, by-object rod limits, and path-collision ranking.
+//! Skips by-object rod limits and path-collision ranking. Wipe-tower keep-out
+//! uses the configured width square plus brim, expanded like
+//! `expand_object_projection`.
 
 use bambu_config::SliceSettings;
 use bambu_geom::{
@@ -37,6 +39,9 @@ pub fn pick_timelapse_pos(
     let mut printable = vec![bed];
     if settings.bed_exclude_area.len() >= 3 {
         printable = difference_polygons(&printable, &[mm_polygon(&settings.bed_exclude_area)]);
+    }
+    if let Some(tower) = wipe_tower_keepout(settings) {
+        printable = difference_polygons(&printable, &[tower]);
     }
     let extruder_i = settings.filament_extruder_index(0);
     if let Some(area) = settings.extruder_printable_areas.get(extruder_i) {
@@ -105,6 +110,7 @@ pub fn farthest_layer_point(layer: &Layer) -> Option<Point> {
     if best.is_none() {
         update_farthest(&layer.infill, &mut best);
         update_farthest(&layer.solid_infill, &mut best);
+        update_farthest(&layer.floating_vertical_shell, &mut best);
         update_farthest(&layer.top_surface, &mut best);
         update_farthest(&layer.bottom_surface, &mut best);
         update_farthest(&layer.support, &mut best);
@@ -125,6 +131,31 @@ fn update_farthest(paths: &[Vec<Point>], best: &mut Option<(i64, Point)>) {
             }
         }
     }
+}
+
+/// C++ `construct_printable_area_by_printer` wipe-tower subtraction.
+///
+/// Local `wipe_tower_data().bbx` is the width square plus brim, then shifted by
+/// `wipe_tower_x/y` and expanded with `expand_object_projection`.
+fn wipe_tower_keepout(settings: &SliceSettings) -> Option<Polygon> {
+    if !settings.has_wipe_tower() {
+        return None;
+    }
+    let ((local_min_x, local_min_y), (local_max_x, local_max_y)) = settings.wipe_tower_bbx_mm();
+    let min = (
+        settings.wipe_tower_x_mm + local_min_x,
+        settings.wipe_tower_y_mm + local_min_y,
+    );
+    let max = (
+        settings.wipe_tower_x_mm + local_max_x,
+        settings.wipe_tower_y_mm + local_max_y,
+    );
+    let radius = if settings.print_sequence_by_object() {
+        settings.extruder_clearance_max_radius_mm
+    } else {
+        settings.extruder_clearance_max_radius_mm * 0.5
+    };
+    Some(expand_bbox(min, max, radius))
 }
 
 fn bed_polygon(settings: &SliceSettings) -> Option<Polygon> {
@@ -292,5 +323,50 @@ mod tests {
             d_with <= d_without,
             "L1-to-farthest should sit closer to (20,20) ({with:?} vs {without:?})"
         );
+    }
+
+    #[test]
+    fn wipe_tower_keepout_moves_safe_pos() {
+        let mut settings = h2c_like();
+        let without = pick_timelapse_pos(&settings, (0.0, 0.0), (20.0, 20.0), None);
+        assert_ne!(without, TimelapsePos::ORIGIN);
+        settings.enable_prime_tower = true;
+        settings.filament_count = 8;
+        settings.prime_tower_width_mm = 35.0;
+        settings.prime_tower_brim_width_mm = 3.0;
+        settings.wipe_tower_x_mm = f64::from(without.x) - 10.0;
+        settings.wipe_tower_y_mm = f64::from(without.y) - 10.0;
+        let with = pick_timelapse_pos(&settings, (0.0, 0.0), (20.0, 20.0), None);
+        assert_ne!(with, TimelapsePos::ORIGIN);
+        assert_ne!(
+            with, without,
+            "keep-out around {without:?} should pick a different corner, got {with:?}"
+        );
+        let ((local_min_x, local_min_y), (local_max_x, local_max_y)) = settings.wipe_tower_bbx_mm();
+        let radius = settings.extruder_clearance_max_radius_mm * 0.5;
+        let min_x = settings.wipe_tower_x_mm + local_min_x - radius;
+        let min_y = settings.wipe_tower_y_mm + local_min_y - radius;
+        let max_x = settings.wipe_tower_x_mm + local_max_x + radius;
+        let max_y = settings.wipe_tower_y_mm + local_max_y + radius;
+        let inside = f64::from(with.x) >= min_x
+            && f64::from(with.x) <= max_x
+            && f64::from(with.y) >= min_y
+            && f64::from(with.y) <= max_y;
+        assert!(
+            !inside,
+            "picked {with:?} inside expanded wipe tower [{min_x},{min_y}]–[{max_x},{max_y}]"
+        );
+    }
+
+    #[test]
+    fn single_filament_skips_wipe_tower_keepout() {
+        let mut settings = h2c_like();
+        let without = pick_timelapse_pos(&settings, (0.0, 0.0), (20.0, 20.0), None);
+        settings.enable_prime_tower = true;
+        settings.filament_count = 1;
+        settings.wipe_tower_x_mm = 15.0;
+        settings.wipe_tower_y_mm = 220.0;
+        let with = pick_timelapse_pos(&settings, (0.0, 0.0), (20.0, 20.0), None);
+        assert_eq!(with, without);
     }
 }

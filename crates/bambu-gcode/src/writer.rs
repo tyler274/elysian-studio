@@ -133,6 +133,11 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             PrintAccel::Default,
             e(&layer.solid_infill, false, feeds.solid),
         )?;
+        w.emit_role(
+            "Floating vertical shell",
+            PrintAccel::Default,
+            e(&layer.floating_vertical_shell, false, feeds.vertical_shell),
+        )?;
         if !layer.bridge.is_empty() {
             w.emit_feature("Bridge")?;
             w.set_print_role(PrintAccel::Default);
@@ -218,6 +223,7 @@ struct LayerFeeds {
     sparse: f64,
     gap: f64,
     solid: f64,
+    vertical_shell: f64,
     support: f64,
     support_interface: f64,
     bridge: f64,
@@ -252,6 +258,11 @@ impl LayerFeeds {
                 first_f
             } else {
                 settings.solid_infill_speed_mm_s * 60.0
+            },
+            vertical_shell: if first {
+                first_f
+            } else {
+                settings.vertical_shell_speed_mm_s() * 60.0
             },
             support: if first {
                 first_f

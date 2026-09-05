@@ -10,6 +10,7 @@ pub enum ExtrusionRole {
     InnerWall,
     Infill,
     SolidInfill,
+    FloatingVerticalShell,
     TopSurface,
     BottomSurface,
     Bridge,
@@ -78,6 +79,13 @@ impl ToolpathBuffer {
                 &layer.solid_infill,
                 z,
                 ExtrusionRole::SolidInfill,
+                false,
+            );
+            emit_paths(
+                &mut vertices,
+                &layer.floating_vertical_shell,
+                z,
+                ExtrusionRole::FloatingVerticalShell,
                 false,
             );
             emit_paths(

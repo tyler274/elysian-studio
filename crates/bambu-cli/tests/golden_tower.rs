@@ -30,6 +30,7 @@ const TOWER_OBJECT_ROLES: &[&str] = &[
     "Bottom surface",
     "Top surface",
     "Internal solid infill",
+    "Floating vertical shell",
     "Brim",
     "Support",
     "Support interface",
@@ -52,6 +53,20 @@ fn tower_3mf_loads() {
         8,
         "expected blank + 7 colour labels"
     );
+    assert!(
+        model.objects[0]
+            .volumes
+            .iter()
+            .any(|v| v.config.get("extruder").is_some()),
+        "tower parts should carry per-volume extruder ids"
+    );
+    assert!(
+        model.objects[0]
+            .volumes
+            .iter()
+            .any(ModelVolume::needs_volume_slice),
+        "different extruders should take the volume-slice path"
+    );
     assert_eq!(model.plates.len(), 1);
     assert_eq!(model.plates[0].name, "Advanced Full Tower");
     let settings = model.settings.as_ref().expect("project_settings.config");
@@ -69,6 +84,20 @@ fn tower_3mf_loads() {
     assert!((settings.infill_density - 0.05).abs() < 1e-9);
     assert!(settings.enable_support);
     assert_eq!(settings.support_type, SupportType::Tree);
+    assert!(settings.enable_prime_tower);
+    assert!(
+        (settings.wipe_tower_x_mm - 15.0).abs() < 0.01,
+        "wipe_tower_x {}",
+        settings.wipe_tower_x_mm
+    );
+    assert!(
+        (settings.wipe_tower_y_mm - 194.264).abs() < 0.01,
+        "wipe_tower_y {}",
+        settings.wipe_tower_y_mm
+    );
+    assert!((settings.prime_tower_width_mm - 35.0).abs() < 1e-9);
+    assert_eq!(settings.filament_count, 8);
+    assert!(settings.has_wipe_tower());
     let mesh = model.mesh_for_plate(0).expect("plate 1 mesh");
     assert!(
         mesh.indices.len() > 1000,

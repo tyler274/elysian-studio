@@ -17,6 +17,7 @@ const OUTER_WALL: [f32; 3] = [1.00, 0.86, 0.22];
 const INNER_WALL: [f32; 3] = [0.95, 0.52, 0.18];
 const INFILL: [f32; 3] = [0.28, 0.78, 0.96];
 const SOLID_INFILL: [f32; 3] = [0.95, 0.62, 0.22];
+const FLOATING_VERTICAL_SHELL: [f32; 3] = [0.45, 0.72, 0.98];
 const TOP_SURFACE: [f32; 3] = [0.98, 0.94, 0.55];
 const BOTTOM_SURFACE: [f32; 3] = [0.88, 0.72, 0.28];
 const BRIDGE: [f32; 3] = [0.35, 0.55, 0.98];
@@ -601,6 +602,7 @@ fn toolpath_vertices(buf: &ToolpathBuffer) -> Vec<Vertex> {
                 ExtrusionRole::InnerWall => INNER_WALL,
                 ExtrusionRole::Infill => INFILL,
                 ExtrusionRole::SolidInfill => SOLID_INFILL,
+                ExtrusionRole::FloatingVerticalShell => FLOATING_VERTICAL_SHELL,
                 ExtrusionRole::TopSurface => TOP_SURFACE,
                 ExtrusionRole::BottomSurface => BOTTOM_SURFACE,
                 ExtrusionRole::Bridge => BRIDGE,

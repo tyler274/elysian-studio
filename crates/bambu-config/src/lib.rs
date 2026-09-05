@@ -597,7 +597,21 @@ pub struct SliceSettings {
     pub top_surface_pattern: SurfacePattern,
     /// C++ `bottom_surface_pattern` (BBL common is `monotonic`).
     pub bottom_surface_pattern: SurfacePattern,
+    /// C++ `detect_narrow_internal_solid_infill`.
+    pub detect_narrow_internal_solid_infill: bool,
+    /// C++ `detect_floating_vertical_shell` (per-segment slowdown).
+    pub detect_floating_vertical_shell: bool,
+    /// C++ `vertical_shell_speed` raw value (mm/s, or percent of internal solid).
+    pub vertical_shell_speed: f64,
+    /// When set, [`Self::vertical_shell_speed`] is a percent of solid infill speed.
+    pub vertical_shell_speed_is_percent: bool,
     pub solid_infill_speed_mm_s: f64,
+    /// C++ `wall_filament` (1-based). 0 means default / inherit.
+    pub wall_filament: i32,
+    /// C++ `sparse_infill_filament` (1-based). 0 means default / inherit.
+    pub sparse_infill_filament: i32,
+    /// C++ `solid_infill_filament` (1-based). 0 means default / inherit.
+    pub solid_infill_filament: i32,
     pub ironing_type: IroningType,
     pub ironing_pattern: IroningPattern,
     /// Fraction of normal layer height (C++ `ironing_flow` percent).
@@ -803,6 +817,18 @@ pub struct SliceSettings {
     pub bed_exclude_area: Vec<(f64, f64)>,
     /// C++ `extruder_clearance_max_radius` (mm). Timelapse keep-out.
     pub extruder_clearance_max_radius_mm: f64,
+    /// C++ `enable_prime_tower`.
+    pub enable_prime_tower: bool,
+    /// C++ `wipe_tower_x` for the current plate (mm).
+    pub wipe_tower_x_mm: f64,
+    /// C++ `wipe_tower_y` for the current plate (mm).
+    pub wipe_tower_y_mm: f64,
+    /// C++ `prime_tower_width` (mm).
+    pub prime_tower_width_mm: f64,
+    /// C++ `prime_tower_brim_width` (mm). Negative means auto; keep-out treats it as 0.
+    pub prime_tower_brim_width_mm: f64,
+    /// C++ `filament_diameter.values.size()`.
+    pub filament_count: usize,
 }
 
 impl Default for SliceSettings {
@@ -880,7 +906,14 @@ impl Default for SliceSettings {
             top_shell_layers: 3,
             top_surface_pattern: SurfacePattern::Rectilinear,
             bottom_surface_pattern: SurfacePattern::Rectilinear,
+            detect_narrow_internal_solid_infill: true,
+            detect_floating_vertical_shell: true,
+            vertical_shell_speed: 80.0,
+            vertical_shell_speed_is_percent: true,
             solid_infill_speed_mm_s: 80.0,
+            wall_filament: 0,
+            sparse_infill_filament: 0,
+            solid_infill_filament: 0,
             ironing_type: IroningType::NoIroning,
             ironing_pattern: IroningPattern::Rectilinear,
             ironing_flow: 0.10,
@@ -988,6 +1021,12 @@ impl Default for SliceSettings {
             extruder_printable_areas: Vec::new(),
             bed_exclude_area: Vec::new(),
             extruder_clearance_max_radius_mm: 65.0,
+            enable_prime_tower: false,
+            wipe_tower_x_mm: 15.0,
+            wipe_tower_y_mm: 220.0,
+            prime_tower_width_mm: 35.0,
+            prime_tower_brim_width_mm: 3.0,
+            filament_count: 1,
         }
     }
 }
@@ -1043,6 +1082,28 @@ impl SliceSettings {
             self.small_perimeter_speed * self.print_speed_mm_s / 100.0
         } else {
             self.small_perimeter_speed
+        }
+    }
+
+    /// C++ `clamp_exturder_to_default_protect0`: 0 / negative becomes filament 1.
+    pub fn clamp_print_filaments(&mut self) {
+        if self.wall_filament < 1 {
+            self.wall_filament = 1;
+        }
+        if self.sparse_infill_filament < 1 {
+            self.sparse_infill_filament = 1;
+        }
+        if self.solid_infill_filament < 1 {
+            self.solid_infill_filament = 1;
+        }
+    }
+
+    /// C++ `vertical_shell_speed.get_abs_value(internal_solid_infill_speed)`.
+    pub fn vertical_shell_speed_mm_s(&self) -> f64 {
+        if self.vertical_shell_speed_is_percent {
+            self.vertical_shell_speed * self.solid_infill_speed_mm_s / 100.0
+        } else {
+            self.vertical_shell_speed
         }
     }
 
@@ -1218,6 +1279,38 @@ impl SliceSettings {
     /// C++ `m_farthest_point_timelapse.enabled` (toggle + traditional + not I3).
     pub fn farthest_point_timelapse_enabled(&self) -> bool {
         self.farthest_point_timelapse && self.timelapse_type == 0 && !self.is_i3()
+    }
+
+    /// C++ `print_sequence == PrintSequence::ByObject`.
+    pub fn print_sequence_by_object(&self) -> bool {
+        self.print_sequence.to_ascii_lowercase().contains("object")
+    }
+
+    /// C++ `Print::has_wipe_tower`.
+    pub fn has_wipe_tower(&self) -> bool {
+        if !self.enable_prime_tower {
+            return false;
+        }
+        if self.timelapse_type == 1 {
+            return true;
+        }
+        !self.spiral_mode && self.filament_count > 1
+    }
+
+    /// C++ `wipe_tower_data().bbx` stand-in: width square plus brim, local to the tower.
+    pub fn wipe_tower_bbx_mm(&self) -> ((f64, f64), (f64, f64)) {
+        let brim = self.prime_tower_brim_width_mm.max(0.0);
+        let width = self.prime_tower_width_mm.max(0.0);
+        ((-brim, -brim), (width + brim, width + brim))
+    }
+
+    /// Center of [`Self::wipe_tower_bbx_mm`] in world millimetres.
+    pub fn wipe_tower_center_mm(&self) -> (f64, f64) {
+        let ((min_x, min_y), (max_x, max_y)) = self.wipe_tower_bbx_mm();
+        (
+            self.wipe_tower_x_mm + (min_x + max_x) * 0.5,
+            self.wipe_tower_y_mm + (min_y + max_y) * 0.5,
+        )
     }
 
     /// C++ `during_print_exhaust_fan_speed_num` (percent → 0–255 PWM).
@@ -1480,9 +1573,13 @@ impl SliceSettings {
             self.bed_temperature_initial_layer_c,
         );
         ctx.set("bed_temperature", self.bed_temperature_c);
-        ctx.set("wipe_tower_center_pos_valid", 0);
-        ctx.set("wipe_tower_center_pos_x", 0);
-        ctx.set("wipe_tower_center_pos_y", 0);
+        let (wt_x, wt_y) = self.wipe_tower_center_mm();
+        ctx.set(
+            "wipe_tower_center_pos_valid",
+            i32::from(self.has_wipe_tower()),
+        );
+        ctx.set("wipe_tower_center_pos_x", wt_x);
+        ctx.set("wipe_tower_center_pos_y", wt_y);
         ctx.set(
             "has_tpu_in_first_layer",
             i32::from(self.filament_type.eq_ignore_ascii_case("TPU")),
@@ -1566,10 +1663,7 @@ impl SliceSettings {
         );
         ctx.set("curr_physical_extruder_id", self.physical_extruder_id(0));
         // Single-object by-layer: C++ `get_is_clear_to_x0` leaves unclear_area empty.
-        ctx.set(
-            "clear_to_x0",
-            i32::from(!self.print_sequence.to_ascii_lowercase().contains("object")),
-        );
+        ctx.set("clear_to_x0", i32::from(!self.print_sequence_by_object()));
         ctx.set("print_sequence", self.print_sequence.clone());
         ctx.set(
             "farthest_point_timelapse_enabled",

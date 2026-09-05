@@ -94,6 +94,21 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     insert(&mut map, "wall_loops", settings.wall_loops.to_string());
     insert(
         &mut map,
+        "wall_filament",
+        settings.wall_filament.to_string(),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_filament",
+        settings.sparse_infill_filament.to_string(),
+    );
+    insert(
+        &mut map,
+        "solid_infill_filament",
+        settings.solid_infill_filament.to_string(),
+    );
+    insert(
+        &mut map,
         "top_one_wall_type",
         settings.top_one_wall.as_str(),
     );
@@ -210,6 +225,25 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "bottom_surface_pattern",
         settings.bottom_surface_pattern.as_str(),
+    );
+    insert_bool(
+        &mut map,
+        "detect_narrow_internal_solid_infill",
+        settings.detect_narrow_internal_solid_infill,
+    );
+    insert_bool(
+        &mut map,
+        "detect_floating_vertical_shell",
+        settings.detect_floating_vertical_shell,
+    );
+    insert(
+        &mut map,
+        "vertical_shell_speed",
+        if settings.vertical_shell_speed_is_percent {
+            format!("{}%", num_str(settings.vertical_shell_speed))
+        } else {
+            num_str(settings.vertical_shell_speed)
+        },
     );
     insert(
         &mut map,
@@ -718,6 +752,27 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "enable_wrapping_detection",
         settings.enable_wrapping_detection,
     );
+    insert_bool(&mut map, "enable_prime_tower", settings.enable_prime_tower);
+    insert(&mut map, "wipe_tower_x", num_str(settings.wipe_tower_x_mm));
+    insert(&mut map, "wipe_tower_y", num_str(settings.wipe_tower_y_mm));
+    insert(
+        &mut map,
+        "prime_tower_width",
+        num_str(settings.prime_tower_width_mm),
+    );
+    insert(
+        &mut map,
+        "prime_tower_brim_width",
+        num_str(settings.prime_tower_brim_width_mm),
+    );
+    insert(
+        &mut map,
+        "filament_diameter",
+        (0..settings.filament_count.max(1))
+            .map(|_| num_str(settings.filament_diameter_mm))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     insert(
         &mut map,
         "nozzle_diameter",
@@ -1093,6 +1148,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "ironing_spacing"
             | "ironing_inset"
             | "ironing_speed"
+            | "extruder"
             | "wall_filament"
             | "sparse_infill_filament"
             | "solid_infill_filament"
@@ -1160,6 +1216,28 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = u32_val(map, "wall_loops") {
         s.wall_loops = v.max(1);
+    }
+    if let Some(v) = i32_val(map, "extruder") {
+        if v != 0 {
+            s.wall_filament = v;
+            s.sparse_infill_filament = v;
+            s.solid_infill_filament = v;
+        }
+    }
+    if let Some(v) = i32_val(map, "wall_filament") {
+        if v > 0 {
+            s.wall_filament = v;
+        }
+    }
+    if let Some(v) = i32_val(map, "sparse_infill_filament") {
+        if v > 0 {
+            s.sparse_infill_filament = v;
+        }
+    }
+    if let Some(v) = i32_val(map, "solid_infill_filament") {
+        if v > 0 {
+            s.solid_infill_filament = v;
+        }
     }
     if let Some(v) = bool_val(map, "only_one_wall_top") {
         s.top_one_wall = if v {
@@ -1276,6 +1354,16 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = SurfacePattern::from_name(&name) {
             s.bottom_surface_pattern = p;
         }
+    }
+    if let Some(v) = bool_val(map, "detect_narrow_internal_solid_infill") {
+        s.detect_narrow_internal_solid_infill = v;
+    }
+    if let Some(v) = bool_val(map, "detect_floating_vertical_shell") {
+        s.detect_floating_vertical_shell = v;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "vertical_shell_speed") {
+        s.vertical_shell_speed = v.max(0.0);
+        s.vertical_shell_speed_is_percent = is_percent;
     }
     if let Some(v) = num(map, "outer_wall_speed") {
         s.print_speed_mm_s = v;
@@ -1605,6 +1693,27 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "enable_wrapping_detection") {
         s.enable_wrapping_detection = v;
     }
+    if let Some(v) = bool_val(map, "enable_prime_tower") {
+        s.enable_prime_tower = v;
+    }
+    if let Some(v) = num(map, "wipe_tower_x") {
+        s.wipe_tower_x_mm = v;
+    }
+    if let Some(v) = num(map, "wipe_tower_y") {
+        s.wipe_tower_y_mm = v;
+    }
+    if let Some(v) = num(map, "prime_tower_width") {
+        s.prime_tower_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "prime_tower_brim_width") {
+        s.prime_tower_brim_width_mm = v;
+    }
+    if let Some(v) = nums(map, "filament_diameter") {
+        s.filament_count = v.len().max(1);
+        if let Some(&d) = v.first() {
+            s.filament_diameter_mm = d.max(0.0);
+        }
+    }
     if let Some(v) = text(map, "wrapping_detection_gcode") {
         s.wrapping_detection_gcode = v;
     }
@@ -1911,6 +2020,10 @@ fn u32_val(map: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
     num(map, key).map(|v| v.round() as u32)
 }
 
+fn i32_val(map: &serde_json::Map<String, Value>, key: &str) -> Option<i32> {
+    num(map, key).map(|v| v.round() as i32)
+}
+
 fn bool_val(map: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
     let raw = text(map, key)?;
     match raw.to_ascii_lowercase().as_str() {
@@ -2150,6 +2263,17 @@ mod tests {
         assert!((s.small_perimeter_speed - 50.0).abs() < 1e-9);
         assert!(s.small_perimeter_threshold_mm.abs() < 1e-9);
         assert!((s.small_perimeter_speed_mm_s() - 100.0).abs() < 1e-9);
+        assert!(s.enable_prime_tower);
+        assert!((s.prime_tower_width_mm - 35.0).abs() < 1e-9);
+        assert!((s.prime_tower_brim_width_mm - 3.0).abs() < 1e-9);
+        assert!(
+            !s.has_wipe_tower(),
+            "single-filament 0.20 has no wipe tower"
+        );
+        assert!(s.detect_floating_vertical_shell);
+        assert!(s.detect_narrow_internal_solid_infill);
+        assert!(s.vertical_shell_speed_is_percent);
+        assert!((s.vertical_shell_speed - 80.0).abs() < 1e-9);
         assert!((s.support_speed_mm_s - 150.0).abs() < 1e-9);
         assert!((s.support_interface_speed_mm_s - 80.0).abs() < 1e-9);
         assert!((s.gap_infill_speed_mm_s - 250.0).abs() < 1e-9);
@@ -2201,6 +2325,10 @@ mod tests {
         assert!((s.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((s.initial_layer_acceleration_mm_s2 - 500.0).abs() < 1.0);
         assert!((s.travel_short_distance_acceleration_mm_s2 - 250.0).abs() < 1.0);
+        assert!(s.enable_prime_tower);
+        assert!((s.prime_tower_width_mm - 60.0).abs() < 1e-9);
+        assert!((s.prime_tower_brim_width_mm + 1.0).abs() < 1e-9);
+        assert!(!s.has_wipe_tower());
     }
 
     #[test]
@@ -2461,6 +2589,12 @@ mod tests {
         src.cool_plate.later_c = 35;
         src.cool_plate.initial_c = 40;
         src.curr_bed_type = String::from("Cool Plate");
+        src.enable_prime_tower = true;
+        src.filament_count = 8;
+        src.wipe_tower_x_mm = 15.0;
+        src.wipe_tower_y_mm = 194.264;
+        src.prime_tower_width_mm = 35.0;
+        src.prime_tower_brim_width_mm = 3.0;
         let json = crate::project_settings_json(&src).unwrap();
         assert!(json.contains("\"from\": \"project\""));
         let loaded = crate::settings_from_json(&json).unwrap();
@@ -2485,6 +2619,10 @@ mod tests {
         assert!(!loaded.slow_down_for_layer_cooling);
         assert!(!loaded.no_slow_down_for_cooling_on_outwalls);
         assert!((loaded.flow_ratio - 1.0).abs() < 1e-9);
+        assert_eq!(loaded.enable_prime_tower, src.enable_prime_tower);
+        assert!((loaded.wipe_tower_x_mm - src.wipe_tower_x_mm).abs() < 1e-9);
+        assert!((loaded.prime_tower_width_mm - src.prime_tower_width_mm).abs() < 1e-9);
+        assert_eq!(loaded.filament_count, src.filament_count);
     }
 
     #[test]
@@ -2519,15 +2657,36 @@ mod tests {
         let mut pairs = BTreeMap::new();
         pairs.insert("sparse_infill_density".into(), "100%".into());
         pairs.insert("wall_loops".into(), "6".into());
+        pairs.insert("extruder".into(), "3".into());
         pairs.insert("layer_height".into(), "0.08".into());
         pairs.insert("enable_support".into(), "1".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert!((s.infill_density - 1.0).abs() < 1e-9);
         assert_eq!(s.wall_loops, 6);
+        assert_eq!(s.wall_filament, 3);
+        assert_eq!(s.sparse_infill_filament, 3);
+        assert_eq!(s.solid_infill_filament, 3);
         assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
         assert!(!s.enable_support);
         apply_config_pairs(&mut s, &pairs, false);
         assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
         assert!(s.enable_support);
+    }
+
+    #[test]
+    fn has_wipe_tower_matches_cpp() {
+        let mut s = SliceSettings::default();
+        s.enable_prime_tower = true;
+        assert!(!s.has_wipe_tower(), "one filament, traditional timelapse");
+        s.filament_count = 8;
+        assert!(s.has_wipe_tower());
+        s.spiral_mode = true;
+        assert!(!s.has_wipe_tower());
+        s.spiral_mode = false;
+        s.filament_count = 1;
+        s.timelapse_type = 1;
+        assert!(s.has_wipe_tower(), "smooth timelapse keeps the tower");
+        s.enable_prime_tower = false;
+        assert!(!s.has_wipe_tower());
     }
 }

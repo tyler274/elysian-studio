@@ -68,6 +68,8 @@ pub struct Layer {
     pub infill_region: Vec<Polygon>,
     pub infill: Vec<Polyline>,
     pub solid_infill: Vec<Polyline>,
+    /// C++ `erFloatingVerticalShell` (narrow internal solid over sparse).
+    pub floating_vertical_shell: Vec<Polyline>,
     pub top_surface: Vec<Polyline>,
     pub bottom_surface: Vec<Polyline>,
     pub bridge: Vec<Polyline>,
@@ -141,11 +143,11 @@ pub fn slice_volumes(
     volumes: &[ModelVolume],
     settings: &SliceSettings,
 ) -> Result<SliceResult, SlicerError> {
-    let parts: Vec<&TriangleMesh> = volumes
+    let part_vols: Vec<&ModelVolume> = volumes
         .iter()
         .filter(|v| v.volume_type.is_model_part())
-        .map(|v| &v.mesh)
         .collect();
+    let parts: Vec<&TriangleMesh> = part_vols.iter().map(|v| &v.mesh).collect();
     let negatives: Vec<&TriangleMesh> = volumes
         .iter()
         .filter(|v| v.volume_type.is_negative())
@@ -169,11 +171,18 @@ pub fn slice_volumes(
         .filter(|v| v.volume_type.is_modifier() && v.has_region_config())
         .filter(|v| v.region_settings(settings) != *settings)
         .collect();
+    let split_parts = part_vols.len() > 1 && part_vols.iter().any(|v| v.has_region_config());
+    let part_cfgs = if split_parts {
+        unique_part_configs(&part_vols, settings)
+    } else {
+        Vec::new()
+    };
     if negatives.is_empty()
         && parts.len() == 1
         && enforcers.is_empty()
         && blockers.is_empty()
         && modifiers.is_empty()
+        && !split_parts
         && !volumes.iter().any(ModelVolume::needs_volume_slice)
     {
         return slice_mesh(parts[0], settings);
@@ -194,11 +203,22 @@ pub fn slice_volumes(
             } else {
                 difference_polygons(&pos, &union_slices(&negatives, z))
             };
-            let (regions, region_settings) = if modifiers.is_empty() {
-                (Vec::new(), Vec::new())
+            let (mut regions, mut region_settings) = split_volume_regions(
+                &contours, &part_vols, &negatives, &modifiers, &part_cfgs, z, settings,
+            );
+            let contours = if regions.is_empty() {
+                contours
             } else {
-                split_modifier_regions(&contours, &modifiers, z, settings)
+                let mut acc = Vec::new();
+                for r in &regions {
+                    acc.extend(r.iter().cloned());
+                }
+                union_polygons(&acc)
             };
+            if regions.len() <= 1 && modifiers.is_empty() {
+                regions.clear();
+                region_settings.clear();
+            }
             PreparedContours {
                 spec,
                 contours,
@@ -260,27 +280,106 @@ fn merge_support(mut a: Vec<Polygon>, b: Vec<Polygon>) -> Vec<Polygon> {
     union_polygons(&a)
 }
 
-/// Split printable contours by parameter-modifier meshes (C++ `slice_volumes`
-/// region clipping). Later modifiers steal from leftover and earlier modifiers.
-fn split_modifier_regions(
+fn unique_part_configs(part_vols: &[&ModelVolume], settings: &SliceSettings) -> Vec<SliceSettings> {
+    let mut cfgs = Vec::new();
+    for vol in part_vols {
+        let cfg = part_region_settings(vol, settings);
+        if !cfgs.iter().any(|c| c == &cfg) {
+            cfgs.push(cfg);
+        }
+    }
+    cfgs
+}
+
+fn part_region_settings(vol: &ModelVolume, settings: &SliceSettings) -> SliceSettings {
+    let mut cfg = vol.region_settings(settings);
+    cfg.clamp_print_filaments();
+    cfg
+}
+
+/// Split printable contours by model-part extruders and parameter modifiers
+/// (C++ `slices_to_regions` + `clip_multipart_objects`).
+fn split_volume_regions(
     contours: &[Polygon],
+    part_vols: &[&ModelVolume],
+    negatives: &[&TriangleMesh],
     modifiers: &[&ModelVolume],
+    part_cfgs: &[SliceSettings],
     z: f32,
     settings: &SliceSettings,
 ) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
-    let n = modifiers.len();
-    let mut slots = vec![Vec::new(); n + 1];
-    slots[0] = contours.to_vec();
-    let mut cfgs = vec![settings.clone(); n + 1];
-    for (i, vol) in modifiers.iter().enumerate() {
-        cfgs[i + 1] = vol.region_settings(settings);
+    let (mut slots, mut cfgs) = if !part_cfgs.is_empty() {
+        split_model_part_regions(part_vols, negatives, part_cfgs, z, settings)
+    } else if modifiers.is_empty() {
+        return (Vec::new(), Vec::new());
+    } else {
+        (vec![contours.to_vec()], vec![settings.clone()])
+    };
+    apply_modifiers(&mut slots, &mut cfgs, modifiers, z, settings);
+    (slots, cfgs)
+}
+
+fn split_model_part_regions(
+    part_vols: &[&ModelVolume],
+    negatives: &[&TriangleMesh],
+    part_cfgs: &[SliceSettings],
+    z: f32,
+    settings: &SliceSettings,
+) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
+    let neg = union_slices(negatives, z);
+    let mut part_slices: Vec<(usize, Vec<Polygon>)> = part_vols
+        .iter()
+        .map(|vol| {
+            let cfg = part_region_settings(vol, settings);
+            let idx = part_cfgs.iter().position(|c| c == &cfg).unwrap_or(0);
+            let mut sliced = union_polygons(&slice_at_z(&vol.mesh, z));
+            if !neg.is_empty() {
+                sliced = difference_polygons(&sliced, &neg);
+            }
+            (idx, sliced)
+        })
+        .collect();
+    for i in 1..part_slices.len() {
+        let later = part_slices[i].1.clone();
+        if later.is_empty() {
+            continue;
+        }
+        for earlier in part_slices.iter_mut().take(i) {
+            if earlier.1.is_empty() {
+                continue;
+            }
+            earlier.1 = difference_polygons(&earlier.1, &later);
+        }
+    }
+    let mut slots = vec![Vec::new(); part_cfgs.len()];
+    for (idx, polys) in part_slices {
+        if polys.is_empty() {
+            continue;
+        }
+        let mut acc = std::mem::take(&mut slots[idx]);
+        acc.extend(polys);
+        slots[idx] = union_polygons(&acc);
+    }
+    (slots, part_cfgs.to_vec())
+}
+
+fn apply_modifiers(
+    slots: &mut Vec<Vec<Polygon>>,
+    cfgs: &mut Vec<SliceSettings>,
+    modifiers: &[&ModelVolume],
+    z: f32,
+    settings: &SliceSettings,
+) {
+    for vol in modifiers {
+        cfgs.push(vol.region_settings(settings));
         let sliced = slice_at_z(&vol.mesh, z);
         if sliced.is_empty() {
+            slots.push(Vec::new());
             continue;
         }
         let m = union_polygons(&sliced);
         let mut stolen = Vec::new();
-        for slot in slots.iter_mut().take(i + 1) {
+        for slot in slots.iter_mut() {
             if slot.is_empty() {
                 continue;
             }
@@ -291,9 +390,8 @@ fn split_modifier_regions(
             *slot = difference_polygons(slot, &m);
             stolen.extend(hit);
         }
-        slots[i + 1] = union_polygons(&stolen);
+        slots.push(union_polygons(&stolen));
     }
-    (slots, cfgs)
 }
 
 /// Project painted triangles onto the slice plane by Z range (C++ `slice_mesh_slabs`
@@ -480,6 +578,7 @@ fn slice_prepared(
             infill_region: paths.infill_region,
             infill: Vec::new(),
             solid_infill: Vec::new(),
+            floating_vertical_shell: Vec::new(),
             top_surface: Vec::new(),
             bottom_surface: Vec::new(),
             bridge: Vec::new(),
@@ -1252,6 +1351,61 @@ mod tests {
         assert!(!mid.infill.is_empty());
     }
 
+    fn thin_rib_on_cube() -> TriangleMesh {
+        let mut mesh = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(20.0, 20.0, 8.0));
+        mesh.append(&TriangleMesh::aabb_box(
+            glam::Vec3::new(8.0, 0.0, 8.0),
+            glam::Vec3::new(12.0, 20.0, 20.0),
+        ));
+        mesh
+    }
+
+    fn thin_rib_settings() -> SliceSettings {
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.wall_loops = 1;
+        settings.infill_density = 0.15;
+        settings.top_shell_layers = 3;
+        settings.bottom_shell_layers = 3;
+        settings.detect_narrow_internal_solid_infill = true;
+        settings
+    }
+
+    #[test]
+    fn cube_has_no_floating_vertical_shell() {
+        let mesh = TriangleMesh::cube(20.0);
+        let settings = thin_rib_settings();
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert!(result
+            .layers
+            .iter()
+            .all(|l| l.floating_vertical_shell.is_empty()));
+    }
+
+    #[test]
+    fn narrow_solid_over_sparse_is_floating_vertical_shell() {
+        let mesh = thin_rib_on_cube();
+        let settings = thin_rib_settings();
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result
+            .layers
+            .iter()
+            .filter(|l| !l.floating_vertical_shell.is_empty())
+            .count();
+        assert!(
+            n > 0,
+            "4 mm rib extra top shells over sparse should be floating vertical shell"
+        );
+        let mut off = settings;
+        off.detect_narrow_internal_solid_infill = false;
+        let plain = slice_mesh(&mesh, &off).unwrap();
+        assert!(plain
+            .layers
+            .iter()
+            .all(|l| l.floating_vertical_shell.is_empty()));
+        assert!(plain.layers.iter().any(|l| !l.solid_infill.is_empty()));
+    }
+
     fn polyline_len_mm(paths: &[Polyline]) -> f64 {
         paths
             .iter()
@@ -1424,6 +1578,7 @@ mod tests {
             assert_eq!(a.gap_infill, b.gap_infill);
             assert_eq!(a.infill, b.infill);
             assert_eq!(a.solid_infill, b.solid_infill);
+            assert_eq!(a.floating_vertical_shell, b.floating_vertical_shell);
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);
@@ -1622,8 +1777,11 @@ mod tests {
         .unwrap();
         let mid_open = &open.layers[open.layers.len() / 2];
         let mid_mod = &denser.layers[denser.layers.len() / 2];
-        let fill =
-            |layer: &Layer| polyline_len_mm(&layer.infill) + polyline_len_mm(&layer.solid_infill);
+        let fill = |layer: &Layer| {
+            polyline_len_mm(&layer.infill)
+                + polyline_len_mm(&layer.solid_infill)
+                + polyline_len_mm(&layer.floating_vertical_shell)
+        };
         let a = fill(mid_open);
         let b = fill(mid_mod);
         assert!(
@@ -1656,6 +1814,50 @@ mod tests {
         let a = polyline_len_mm(&open.layers[open.layers.len() / 2].inner_walls);
         let b = polyline_len_mm(&thick.layers[thick.layers.len() / 2].inner_walls);
         assert!(b > a * 1.5, "extra walls in modifier: open={a} thick={b}");
+    }
+
+    #[test]
+    fn different_extruders_keep_separate_regions() {
+        let left = TriangleMesh::cube(20.0);
+        let mut right = TriangleMesh::cube(20.0);
+        right.translate(glam::Vec3::new(25.0, 0.0, 0.0));
+        let mut a = bambu_model::ModelVolume::model_part("left", left, 1);
+        a.config.insert("extruder".into(), "1".into());
+        let mut b = bambu_model::ModelVolume::model_part("right", right, 2);
+        b.config.insert("extruder".into(), "2".into());
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let sliced = slice_volumes(&[a, b], &settings).unwrap();
+        let mid = &sliced.layers[sliced.layers.len() / 2];
+        assert_eq!(mid.region_infill.len(), 2);
+        assert!(
+            !mid.region_infill[0].is_empty() && !mid.region_infill[1].is_empty(),
+            "both filaments should occupy the mid layer"
+        );
+    }
+
+    #[test]
+    fn letter_volume_keeps_floating_vertical_shell() {
+        let body = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(20.0, 20.0, 8.0));
+        let rib = TriangleMesh::aabb_box(
+            glam::Vec3::new(8.0, 0.0, 8.0),
+            glam::Vec3::new(12.0, 20.0, 20.0),
+        );
+        let mut base = bambu_model::ModelVolume::model_part("body", body, 1);
+        base.config.insert("extruder".into(), "1".into());
+        let mut letter = bambu_model::ModelVolume::model_part("letter", rib, 2);
+        letter.config.insert("extruder".into(), "2".into());
+        let settings = thin_rib_settings();
+        let sliced = slice_volumes(&[base, letter], &settings).unwrap();
+        assert!(
+            sliced
+                .layers
+                .iter()
+                .any(|l| !l.floating_vertical_shell.is_empty()),
+            "thin letter extra shells over sparse should stay floating"
+        );
+        let mid = &sliced.layers[sliced.layers.len() / 2];
+        assert!(mid.region_infill.len() >= 2);
     }
 
     fn paint_on_y(

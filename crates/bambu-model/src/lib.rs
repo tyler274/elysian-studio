@@ -235,7 +235,8 @@ impl ModelVolume {
         out
     }
 
-    /// CPU Clipper path: negatives, support modifiers, paint, or region overrides.
+    /// CPU Clipper path: negatives, support modifiers, paint, region overrides,
+    /// or a model part with its own extruder / PrintRegion keys.
     pub fn needs_volume_slice(&self) -> bool {
         self.volume_type.is_negative()
             || self.volume_type.is_support_modifier()
@@ -243,6 +244,7 @@ impl ModelVolume {
             || self.has_seam_paint()
             || self.has_fuzzy_paint()
             || (self.volume_type.is_modifier() && self.has_region_config())
+            || (self.volume_type.is_model_part() && self.has_region_config())
     }
 }
 
@@ -436,5 +438,17 @@ mod tests {
         let over = vol.region_settings(&parent);
         assert!((over.infill_density - 1.0).abs() < 1e-9);
         assert!((over.layer_height_mm - parent.layer_height_mm).abs() < 1e-9);
+    }
+
+    #[test]
+    fn model_part_extruder_needs_volume_slice() {
+        let mut vol = ModelVolume::model_part("letter", TriangleMesh::default(), 2);
+        vol.config.insert("extruder".into(), "3".into());
+        assert!(vol.has_region_config());
+        assert!(vol.needs_volume_slice());
+        let over = vol.region_settings(&SliceSettings::default());
+        assert_eq!(over.wall_filament, 3);
+        assert_eq!(over.sparse_infill_filament, 3);
+        assert_eq!(over.solid_infill_filament, 3);
     }
 }

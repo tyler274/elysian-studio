@@ -19,6 +19,7 @@ fn cube_gcode_has_layers() {
     assert!(gcode.contains("; FEATURE: Bottom surface"));
     assert!(gcode.contains("; FEATURE: Top surface"));
     assert!(gcode.contains("; FEATURE: Internal solid infill"));
+    assert!(!gcode.contains("; FEATURE: Floating vertical shell"));
     assert!(!gcode.contains("; FEATURE: Ironing"));
     assert!(gcode.contains("; CHANGE_LAYER"));
     assert!(
@@ -364,6 +365,36 @@ fn thin_wall_emits_gap_infill() {
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains("; FEATURE: Gap infill"));
     assert!(gcode.contains(" F2700"), "gap infill 45 mm/s");
+}
+
+#[test]
+fn floating_vertical_shell_feature() {
+    let mut mesh = TriangleMesh::box_mm(20.0, 20.0, 8.0);
+    let mut rib = TriangleMesh::box_mm(4.0, 20.0, 12.0);
+    for v in &mut rib.vertices {
+        v.x += 8.0;
+        v.z += 8.0;
+    }
+    mesh.append(&rib);
+    let mut settings = SliceSettings::default();
+    settings.wall_loops = 1;
+    settings.infill_density = 0.15;
+    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.top_shell_layers = 3;
+    settings.solid_infill_speed_mm_s = 80.0;
+    settings.vertical_shell_speed = 80.0;
+    settings.vertical_shell_speed_is_percent = true;
+    settings.first_layer_speed_mm_s = 20.0;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    assert!(sliced
+        .layers
+        .iter()
+        .any(|l| !l.floating_vertical_shell.is_empty()));
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Floating vertical shell"));
+    assert!(gcode.contains(" F3840"), "vertical shell 80% of 80 mm/s");
 }
 
 #[test]
