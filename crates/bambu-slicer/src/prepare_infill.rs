@@ -5,13 +5,14 @@
 //! slivers are not treated as shells. Shell windows follow C++ layer count **or**
 //! `top_shell_thickness` / `bottom_shell_thickness`. When
 //! `ensure_vertical_shell_thickness` is enabled, slope rings become extra
-//! internal solid (`diff(infill, intersect(neighbor infills))`).
+//! internal solid (`diff(infill, intersect(neighbor infills))`). Sparse islands
+//! at or below `minimum_sparse_infill_area` become internal solid.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
 use bambu_config::{EnsureVerticalShellThickness, InfillPattern, SliceSettings};
 use bambu_geom::{
-    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon, Polyline,
-    TriangleMesh,
+    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Point, Polygon,
+    Polyline, TriangleMesh,
 };
 use rayon::prelude::*;
 
@@ -170,10 +171,11 @@ fn detect_shells(regions: &[Vec<Polygon>], zs: &[f64], settings: &SliceSettings)
         }
     }
 
-    let sparse = (0..n)
+    let mut sparse: Vec<Vec<Polygon>> = (0..n)
         .into_par_iter()
         .map(|i| difference_polygons(&regions[i], &solid[i]))
         .collect();
+    promote_small_sparse(&mut solid, &mut sparse, settings);
     ShellMap {
         top,
         bottom,
@@ -190,6 +192,54 @@ fn within_shell_window(k: usize, n_layers: usize, thickness_mm: f64, z_span: f64
 
 fn past_shell_window(k: usize, n_layers: usize, thickness_mm: f64, z_span: f64) -> bool {
     k >= n_layers && (thickness_mm <= 0.0 || z_span + SHELL_THICKNESS_EPSILON >= thickness_mm)
+}
+
+/// C++ `LayerRegion::prepare_fill_surfaces`: sparse islands at or below
+/// `minimum_sparse_infill_area` become internal solid.
+fn promote_small_sparse(
+    solid: &mut [Vec<Polygon>],
+    sparse: &mut [Vec<Polygon>],
+    settings: &SliceSettings,
+) {
+    if settings.spiral_mode || settings.infill_density <= 0.0 {
+        return;
+    }
+    let min_area = settings.minimum_sparse_infill_area_mm2;
+    if min_area <= 0.0 {
+        return;
+    }
+    for i in 0..sparse.len() {
+        let mut small = Vec::new();
+        sparse[i].retain(|poly| {
+            let area = signed_area_mm2(poly);
+            if area > 0.0 && area <= min_area {
+                small.push(poly.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if small.is_empty() {
+            continue;
+        }
+        append_union(&mut solid[i], small);
+        sparse[i] = difference_polygons(&sparse[i], &solid[i]);
+    }
+}
+
+fn signed_area_mm2(poly: &[Point]) -> f64 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut acc = 0.0;
+    for i in 0..poly.len() {
+        let a = poly[i];
+        let b = poly[(i + 1) % poly.len()];
+        let (ax, ay) = a.to_mm();
+        let (bx, by) = b.to_mm();
+        acc += ax * by - bx * ay;
+    }
+    acc * 0.5
 }
 
 /// C++ `discover_vertical_shells`: extra internal solid is infill minus the

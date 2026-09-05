@@ -1152,6 +1152,35 @@ mod tests {
         assert!(!mid.infill.is_empty());
     }
 
+    #[test]
+    fn small_sparse_islands_become_solid() {
+        let mesh = TriangleMesh::cube(4.0);
+        let mut settings = SliceSettings::default();
+        settings.wall_loops = 1;
+        settings.top_shell_layers = 1;
+        settings.bottom_shell_layers = 1;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.15;
+        settings.detect_narrow_internal_solid_infill = false;
+        settings.ensure_vertical_shell_thickness = EnsureVerticalShellThickness::Disabled;
+        settings.minimum_sparse_infill_area_mm2 = 15.0;
+        let solid = slice_mesh(&mesh, &settings).unwrap();
+        let n = solid.layers.len();
+        assert!(n > 6, "layers={n}");
+        let mid_solid = &solid.layers[n / 2];
+        assert!(
+            mid_solid.infill.is_empty(),
+            "4 mm cube sparse is under 15 mm²"
+        );
+        assert!(!mid_solid.solid_infill.is_empty());
+
+        settings.minimum_sparse_infill_area_mm2 = 0.0;
+        let sparse = slice_mesh(&mesh, &settings).unwrap();
+        let mid_sparse = &sparse.layers[sparse.layers.len() / 2];
+        assert!(!mid_sparse.infill.is_empty());
+        assert!(mid_sparse.solid_infill.is_empty());
+    }
+
     fn solid_path_len_mm(layers: &[Layer]) -> f64 {
         layers
             .iter()

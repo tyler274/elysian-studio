@@ -123,6 +123,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "sparse_infill_pattern",
         settings.infill_pattern.as_str(),
     );
+    insert(
+        &mut map,
+        "minimum_sparse_infill_area",
+        num_str(settings.minimum_sparse_infill_area_mm2),
+    );
     insert(&mut map, "seam_position", settings.seam.as_str());
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert(
@@ -1130,6 +1135,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "top_one_wall_type"
             | "sparse_infill_density"
             | "sparse_infill_pattern"
+            | "minimum_sparse_infill_area"
             | "seam_position"
             | "wall_generator"
             | "min_feature_size"
@@ -1277,6 +1283,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = InfillPattern::from_name(&name) {
             s.infill_pattern = p;
         }
+    }
+    if let Some(v) = num(map, "minimum_sparse_infill_area") {
+        s.minimum_sparse_infill_area_mm2 = v.max(0.0);
     }
     if let Some(name) = text(map, "seam_position") {
         if let Some(p) = SeamPosition::from_name(&name) {
@@ -2263,6 +2272,7 @@ mod tests {
         pairs.insert("ensure_vertical_shell_thickness".into(), "disabled".into());
         pairs.insert("top_shell_thickness".into(), "0.6".into());
         pairs.insert("bottom_shell_thickness".into(), "0.8".into());
+        pairs.insert("minimum_sparse_infill_area".into(), "12".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(
             s.ensure_vertical_shell_thickness,
@@ -2270,6 +2280,7 @@ mod tests {
         );
         assert!((s.top_shell_thickness_mm - 0.6).abs() < 1e-9);
         assert!((s.bottom_shell_thickness_mm - 0.8).abs() < 1e-9);
+        assert!((s.minimum_sparse_infill_area_mm2 - 12.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2296,6 +2307,7 @@ mod tests {
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
+        assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert!(!s.enable_support);
         assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
@@ -2372,6 +2384,7 @@ mod tests {
         let s = load_bbl_process(&paths.process).unwrap();
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
+        assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
         assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
