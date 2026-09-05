@@ -21,6 +21,10 @@ fn cube_gcode_has_layers() {
     assert!(gcode.contains("; FEATURE: Internal solid infill"));
     assert!(!gcode.contains("; FEATURE: Ironing"));
     assert!(gcode.contains("; CHANGE_LAYER"));
+    assert!(
+        !executable_block(&gcode).lines().any(|l| is_rapid_g0(l)),
+        "C++ GCodeWriter travel is G1, not G0"
+    );
     let report = parse_gcode(&gcode);
     assert_eq!(report.layer_changes, stats.layer_comments);
     assert!(report.features.contains("Outer wall"));
@@ -507,7 +511,7 @@ fn h2c_spiral_hops_on_travel() {
     assert!(
         lines
             .windows(2)
-            .any(|w| { w[0].contains("; spiral lift Z") && w[1].starts_with("G0 X") }),
+            .any(|w| { w[0].contains("; spiral lift Z") && w[1].starts_with("G1 X") }),
         "lazy spiral should sit on the following XY travel\n{gcode}"
     );
     let mut saw_perp = false;
@@ -1452,4 +1456,13 @@ fn executable_block(gcode: &str) -> &str {
         .map(|i| i + "; EXECUTABLE_BLOCK_END".len())
         .unwrap_or(gcode.len());
     &gcode[start..end]
+}
+
+fn is_rapid_g0(line: &str) -> bool {
+    let cmd = match line.find(';') {
+        Some(i) => line[..i].trim(),
+        None => line.trim(),
+    };
+    let upper = cmd.to_ascii_uppercase();
+    upper == "G0" || upper.starts_with("G0 ") || upper.starts_with("G00")
 }

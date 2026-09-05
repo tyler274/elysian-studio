@@ -330,13 +330,13 @@ impl<'a> Writer<'a> {
         if self.state.lifted > 1e-9 {
             writeln!(
                 self.out,
-                "G0 X{:.3} Y{:.3} Z{:.3} F{:.0}",
+                "G1 X{:.3} Y{:.3} Z{:.3} F{:.0}",
                 dest.0, dest.1, self.state.z, self.travel_f
             )?;
         } else {
             writeln!(
                 self.out,
-                "G0 X{:.3} Y{:.3} F{:.0}",
+                "G1 X{:.3} Y{:.3} F{:.0}",
                 dest.0, dest.1, self.travel_f
             )?;
         }
