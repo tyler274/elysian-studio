@@ -1,8 +1,8 @@
 //! Extrusion path emission: roles, overhang classification, small-perimeter slowdown.
 
-use bambu_config::SliceSettings;
+use bambu_config::{PrintAccel, SliceSettings};
 use bambu_geom::{offset_polygons, Polygon, Polyline};
-use bambu_slicer::{classify_overhang, ClassifiedPath, Layer};
+use bambu_slicer::{classify_floating, classify_overhang, ClassifiedPath, Layer};
 
 use crate::motion::Writer;
 use crate::GcodeError;
@@ -23,6 +23,45 @@ impl Writer<'_> {
             .cap_extrude_feed_mm_min(job.print_f, job.mm3_per_mm);
         for path in job.paths {
             self.emit_one_path(path, job.closed, job.e_per_mm, print_f, false)?;
+        }
+        Ok(())
+    }
+
+    /// C++ `erFloatingVerticalShell` with `cfFloatingVerticalShell` segments at
+    /// bridge speed (`GCode::_extrude` `use_seperate_speed`).
+    pub(crate) fn emit_floating_shell_paths(
+        &mut self,
+        job: Extrude<'_>,
+        floating_areas: &[Polygon],
+        bridge_f: f64,
+        first: bool,
+    ) -> Result<(), GcodeError> {
+        if job.paths.is_empty() {
+            return Ok(());
+        }
+        self.emit_feature("Floating vertical shell")?;
+        self.set_print_role(PrintAccel::Default);
+        let detect =
+            self.settings.detect_floating_vertical_shell && !first && !floating_areas.is_empty();
+        if !detect {
+            return self.emit_paths(job);
+        }
+        for path in job.paths {
+            if path.len() < 2 {
+                continue;
+            }
+            let runs = classify_floating(path, floating_areas, job.closed);
+            for run in &runs {
+                if run.path.len() < 2 {
+                    continue;
+                }
+                let over_sparse = run.degree == 0;
+                let feed = if over_sparse { bridge_f } else { job.print_f };
+                let feed = self.settings.cap_extrude_feed_mm_min(feed, job.mm3_per_mm);
+                self.emit_marked(over_sparse, "; Slow Down Start", "; Slow Down End", |w| {
+                    w.emit_one_path(&run.path, job.closed, job.e_per_mm, feed, false)
+                })?;
+            }
         }
         Ok(())
     }

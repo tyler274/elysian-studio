@@ -133,10 +133,11 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             PrintAccel::Default,
             e(&layer.solid_infill, false, feeds.solid),
         )?;
-        w.emit_role(
-            "Floating vertical shell",
-            PrintAccel::Default,
+        w.emit_floating_shell_paths(
             e(&layer.floating_vertical_shell, false, feeds.vertical_shell),
+            &layer.floating_areas,
+            feeds.bridge,
+            first,
         )?;
         if !layer.bridge.is_empty() {
             w.emit_feature("Bridge")?;

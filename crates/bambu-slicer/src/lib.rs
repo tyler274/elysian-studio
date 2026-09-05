@@ -39,7 +39,9 @@ use bambu_model::{ModelVolume, TrianglePaint};
 use rayon::prelude::*;
 use thiserror::Error;
 
-pub use clip::{classify_overhang, classify_polyline, point_in_polygons, ClassifiedPath};
+pub use clip::{
+    classify_floating, classify_overhang, classify_polyline, point_in_polygons, ClassifiedPath,
+};
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
 pub use slicing::{generate_object_layers, layer_plan, layer_z_values, LayerSpec};
 pub use steps::{PrintObjectStep, PrintStep};
@@ -70,6 +72,8 @@ pub struct Layer {
     pub solid_infill: Vec<Polyline>,
     /// C++ `erFloatingVerticalShell` (narrow internal solid over sparse).
     pub floating_vertical_shell: Vec<Polyline>,
+    /// C++ `FillFloatingConcentric::lower_layer_unsupport_areas` (sparse below).
+    pub floating_areas: Vec<Polygon>,
     pub top_surface: Vec<Polyline>,
     pub bottom_surface: Vec<Polyline>,
     pub bridge: Vec<Polyline>,
@@ -579,6 +583,7 @@ fn slice_prepared(
             infill: Vec::new(),
             solid_infill: Vec::new(),
             floating_vertical_shell: Vec::new(),
+            floating_areas: Vec::new(),
             top_surface: Vec::new(),
             bottom_surface: Vec::new(),
             bridge: Vec::new(),
@@ -1396,6 +1401,13 @@ mod tests {
             n > 0,
             "4 mm rib extra top shells over sparse should be floating vertical shell"
         );
+        assert!(
+            result
+                .layers
+                .iter()
+                .any(|l| !l.floating_vertical_shell.is_empty() && !l.floating_areas.is_empty()),
+            "floating shells need lower-layer sparse for per-segment slowdown"
+        );
         let mut off = settings;
         off.detect_narrow_internal_solid_infill = false;
         let plain = slice_mesh(&mesh, &off).unwrap();
@@ -1579,6 +1591,7 @@ mod tests {
             assert_eq!(a.infill, b.infill);
             assert_eq!(a.solid_infill, b.solid_infill);
             assert_eq!(a.floating_vertical_shell, b.floating_vertical_shell);
+            assert_eq!(a.floating_areas, b.floating_areas);
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);

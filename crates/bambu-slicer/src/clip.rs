@@ -129,6 +129,45 @@ pub fn classify_polyline(
     })
 }
 
+/// C++ `detect_floating_line`: densify long edges so a run can change at the
+/// sparse-area boundary instead of classifying a whole 20 mm segment as one.
+pub fn classify_floating(
+    path: &[Point],
+    floating_areas: &[Polygon],
+    closed: bool,
+) -> Vec<ClassifiedPath> {
+    classify_polyline(&densify_polyline(path, closed), floating_areas, closed)
+}
+
+fn densify_polyline(path: &[Point], closed: bool) -> Polyline {
+    if path.len() < 2 {
+        return path.to_vec();
+    }
+    let n = path.len();
+    let edges = if closed { n } else { n - 1 };
+    let mut out = Vec::new();
+    for i in 0..edges {
+        let a = path[i];
+        let b = path[(i + 1) % n];
+        if out.last() != Some(&a) {
+            out.push(a);
+        }
+        let dist = (b.x - a.x).abs().max((b.y - a.y).abs());
+        let steps = (dist / 200_000).clamp(1, 64);
+        for s in 1..steps {
+            out.push(lerp(a, b, s as f64 / steps as f64));
+        }
+    }
+    if !closed {
+        if let Some(&last) = path.last() {
+            if out.last() != Some(&last) {
+                out.push(last);
+            }
+        }
+    }
+    out
+}
+
 /// Classify edges against inset→grown lower-layer rings (C++ overhang degrees 0–5).
 ///
 /// `rings[0]` is the most inset (degree 0 if inside); `rings.last()` is grown by
@@ -258,5 +297,18 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].degree, 2);
         assert!(runs[0].inside());
+    }
+
+    #[test]
+    fn crossing_line_splits_floating_and_supported() {
+        let sparse = square(20.0);
+        let path = vec![Point::new(scale(-20.0), 0), Point::new(scale(20.0), 0)];
+        let runs = classify_floating(&path, &[sparse], false);
+        assert!(
+            runs.len() >= 2,
+            "expected a split at the sparse boundary, got {runs:?}"
+        );
+        assert!(runs.iter().any(|r| r.degree == 0), "{runs:?}");
+        assert!(runs.iter().any(|r| r.degree == 5), "{runs:?}");
     }
 }

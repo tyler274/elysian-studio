@@ -135,6 +135,7 @@ fn raft_layer(
         infill: Vec::new(),
         solid_infill: Vec::new(),
         floating_vertical_shell: Vec::new(),
+        floating_areas: Vec::new(),
         top_surface: Vec::new(),
         bottom_surface: Vec::new(),
         bridge: Vec::new(),

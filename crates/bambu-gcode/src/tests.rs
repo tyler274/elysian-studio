@@ -282,6 +282,7 @@ fn small_perimeter_skips_when_threshold_zero() {
     settings.small_perimeter_threshold_mm = 0.0;
     settings.skirt_loops = 0;
     settings.brim_width_mm = 0.0;
+    settings.detect_narrow_internal_solid_infill = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains(" F3000"), "walls stay at 50 mm/s");
@@ -394,7 +395,101 @@ fn floating_vertical_shell_feature() {
         .any(|l| !l.floating_vertical_shell.is_empty()));
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains("; FEATURE: Floating vertical shell"));
-    assert!(gcode.contains(" F3840"), "vertical shell 80% of 80 mm/s");
+    assert!(
+        gcode.contains(" F3840") || gcode.contains("; Slow Down Start"),
+        "supported segments at 80% solid, or floating segments at bridge speed"
+    );
+}
+
+#[test]
+fn floating_shell_over_sparse_uses_bridge_speed() {
+    let settings = {
+        let mut s = SliceSettings::default();
+        s.detect_floating_vertical_shell = true;
+        s.bridge_speed_mm_s = 25.0;
+        s.solid_infill_speed_mm_s = 80.0;
+        s.vertical_shell_speed = 80.0;
+        s.vertical_shell_speed_is_percent = true;
+        s.first_layer_speed_mm_s = 80.0;
+        s.filament_max_volumetric_speed_mm3_s = 0.0;
+        s.slow_down_for_layer_cooling = false;
+        s.retract_when_changing_layer = false;
+        s
+    };
+    let bed = vec![
+        bambu_geom::Point::from_mm(0.0, 0.0),
+        bambu_geom::Point::from_mm(20.0, 0.0),
+        bambu_geom::Point::from_mm(20.0, 20.0),
+        bambu_geom::Point::from_mm(0.0, 20.0),
+    ];
+    let sparse = vec![
+        bambu_geom::Point::from_mm(10.0, 0.0),
+        bambu_geom::Point::from_mm(20.0, 0.0),
+        bambu_geom::Point::from_mm(20.0, 20.0),
+        bambu_geom::Point::from_mm(10.0, 20.0),
+    ];
+    let path = vec![
+        bambu_geom::Point::from_mm(0.0, 10.0),
+        bambu_geom::Point::from_mm(20.0, 10.0),
+    ];
+    let mut layer0 = empty_gcode_layer(0, 0.2);
+    layer0.contours = vec![bed.clone()];
+    let mut layer1 = empty_gcode_layer(1, 0.4);
+    layer1.height_mm = 0.2;
+    layer1.contours = vec![bed];
+    layer1.floating_vertical_shell = vec![path];
+    layer1.floating_areas = vec![sparse];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer0, layer1],
+    };
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Floating vertical shell"));
+    assert!(
+        gcode.contains("; Slow Down Start\n"),
+        "C++ wraps floating segments in Slow Down markers\n{gcode}"
+    );
+    assert!(gcode.contains("; Slow Down End\n"));
+    assert!(
+        gcode.contains(" F1500"),
+        "floating segment at bridge 25 mm/s\n{gcode}"
+    );
+    assert!(
+        gcode.contains(" F3840"),
+        "supported segment at vertical shell 64 mm/s\n{gcode}"
+    );
+}
+
+fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
+    bambu_slicer::Layer {
+        z_mm: print_z_mm - 0.1,
+        index,
+        height_mm: print_z_mm.min(0.2),
+        print_z_mm,
+        contours: Vec::new(),
+        outer_walls: Vec::new(),
+        inner_walls: Vec::new(),
+        gap_infill: Vec::new(),
+        infill_region: Vec::new(),
+        infill: Vec::new(),
+        solid_infill: Vec::new(),
+        floating_vertical_shell: Vec::new(),
+        floating_areas: Vec::new(),
+        top_surface: Vec::new(),
+        bottom_surface: Vec::new(),
+        bridge: Vec::new(),
+        support: Vec::new(),
+        support_interface: Vec::new(),
+        support_region: Vec::new(),
+        skirt: Vec::new(),
+        brim: Vec::new(),
+        ironing: Vec::new(),
+        top_region: Vec::new(),
+        support_enforcer: Vec::new(),
+        support_blocker: Vec::new(),
+        region_infill: Vec::new(),
+        region_settings: Vec::new(),
+        lift_overhangs: Vec::new(),
+    }
 }
 
 #[test]

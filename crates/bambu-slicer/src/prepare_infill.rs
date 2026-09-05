@@ -33,6 +33,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         layer.infill.clear();
         layer.solid_infill.clear();
         layer.floating_vertical_shell.clear();
+        layer.floating_areas.clear();
         layer.top_surface.clear();
         layer.bottom_surface.clear();
         layer.bridge.clear();
@@ -200,6 +201,7 @@ fn emit_shells(
             layer
                 .floating_vertical_shell
                 .extend(floating_vertical_shell);
+            append_union(&mut layer.floating_areas, lower_sparse.to_vec());
             layer.infill.extend(infill);
         } else {
             layer.top_region = top_region;
@@ -211,6 +213,7 @@ fn emit_shells(
             }
             layer.solid_infill = solid_infill;
             layer.floating_vertical_shell = floating_vertical_shell;
+            layer.floating_areas = lower_sparse.to_vec();
             layer.infill = infill;
         }
     });
