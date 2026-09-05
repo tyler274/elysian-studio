@@ -1228,6 +1228,20 @@ mod tests {
     }
 
     #[test]
+    fn honeycomb_fills_sparse_region() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Honeycomb;
+        settings.infill_density = 0.05;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let mid = &result.layers[result.layers.len() / 2];
+        assert!(
+            !mid.infill.is_empty(),
+            "5% honeycomb should still reach the interior of a 20 mm cube"
+        );
+    }
+
+    #[test]
     fn honeycomb3d_fills_sparse_region() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();

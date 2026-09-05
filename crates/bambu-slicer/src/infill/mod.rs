@@ -33,7 +33,9 @@ pub fn generate(
         }
         InfillPattern::Concentric => concentric(region, spacing),
         InfillPattern::Gyroid => gyroid::fill(region, spacing, settings.infill_density, z_mm),
-        InfillPattern::Honeycomb => honeycomb::fill(region, spacing, settings.infill_density),
+        InfillPattern::Honeycomb => {
+            honeycomb::fill(region, spacing, settings.infill_density, layer_index)
+        }
         InfillPattern::Honeycomb3D => {
             honeycomb3d::fill(region, spacing, settings.infill_density, z_mm)
         }

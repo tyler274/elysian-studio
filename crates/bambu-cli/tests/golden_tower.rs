@@ -22,11 +22,11 @@ use common::{find_bambu_studio, find_gcode, require_oracle};
 const TOWER_3MF: &str = "Multifilament+advanced+full+test+tower.3mf";
 
 /// Object roles the rewrite should match when the C++ oracle emits them.
-/// Sparse infill is omitted: 1 wall / 5% honeycomb on this tower is still a
-/// known rewrite gap. Prime tower / Flush stay C++-only until MM G-code exists.
+/// Prime tower / Flush stay C++-only until multi-material G-code exists.
 const TOWER_OBJECT_ROLES: &[&str] = &[
     "Outer wall",
     "Inner wall",
+    "Sparse infill",
     "Bottom surface",
     "Top surface",
     "Internal solid infill",
