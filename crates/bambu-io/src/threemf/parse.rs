@@ -7,8 +7,11 @@ use glam::{Mat4, Vec3};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use super::flatten::flatten_model;
-use super::xml::{attr, attr_f32, attr_u32, parse_transform, unit_factor};
+use super::flatten::flatten_files;
+use super::xml::{
+    attr, attr_f32, attr_path, attr_u32, normalize_model_path, parse_transform, unit_factor,
+};
+use super::zip::MODEL_PATH;
 use crate::IoError;
 
 #[derive(Default)]
@@ -20,7 +23,8 @@ pub(super) struct ObjectRec {
     pub triangle_seam: Vec<TrianglePaint>,
     pub triangle_fuzzy_skin: Vec<TrianglePaint>,
     pub triangle_color: Vec<String>,
-    pub components: Vec<(u32, Mat4)>,
+    /// `(p:path or empty for this file, objectid, transform)`.
+    pub components: Vec<(String, u32, Mat4)>,
 }
 
 #[derive(Default)]
@@ -31,7 +35,19 @@ pub(super) struct ParsedModel {
     pub current_id: Option<u32>,
 }
 
-pub(super) fn model_from_xml(xml: &str) -> Result<Model, IoError> {
+pub(super) fn model_from_package(
+    main_xml: &str,
+    extras: &[(String, String)],
+) -> Result<Model, IoError> {
+    let mut files = BTreeMap::new();
+    files.insert(MODEL_PATH.to_string(), parse_xml(main_xml)?);
+    for (path, xml) in extras {
+        files.insert(normalize_model_path(path), parse_xml(xml)?);
+    }
+    flatten_files(&files, MODEL_PATH)
+}
+
+fn parse_xml(xml: &str) -> Result<ParsedModel, IoError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -113,12 +129,13 @@ pub(super) fn model_from_xml(xml: &str) -> Result<Model, IoError> {
                                 IoError::Message("3MF component missing objectid".into())
                             })?;
                         let xf = parse_transform(attr(&e, b"transform").as_deref().unwrap_or(""));
+                        let path = attr_path(&e).unwrap_or_default();
                         parsed
                             .objects
                             .get_mut(&id)
                             .ok_or_else(|| IoError::Message("3MF component object missing".into()))?
                             .components
-                            .push((child, xf));
+                            .push((path, child, xf));
                     }
                     b"item" => {
                         let child = attr(&e, b"objectid")
@@ -143,5 +160,5 @@ pub(super) fn model_from_xml(xml: &str) -> Result<Model, IoError> {
         buf.clear();
     }
 
-    flatten_model(parsed)
+    Ok(parsed)
 }

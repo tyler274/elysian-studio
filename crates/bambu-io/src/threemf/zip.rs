@@ -27,6 +27,8 @@ const RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 pub(super) struct PackageTexts {
     pub model_xml: String,
+    /// Other `*.model` parts (`3D/Objects/object_N.model`) keyed by zip path.
+    pub extra_models: Vec<(String, String)>,
     pub settings_xml: Option<String>,
     pub project_json: Option<String>,
 }
@@ -49,10 +51,21 @@ pub(super) fn read_package(bytes: &[u8]) -> Result<PackageTexts, IoError> {
         .map(|(orig, _)| orig.clone())
         .ok_or_else(|| IoError::Message("3MF has no 3D model part".into()))?;
     let model_xml = zip_entry_text(&mut zip, &original)?;
+    let mut extra_models = Vec::new();
+    for (orig, norm) in &entries {
+        if orig == &original {
+            continue;
+        }
+        let lower = norm.to_ascii_lowercase();
+        if lower.ends_with(".model") && !lower.contains("_rels") {
+            extra_models.push((norm.clone(), zip_entry_text(&mut zip, orig)?));
+        }
+    }
     let settings_xml = zip_optional(&mut zip, &entries, MODEL_SETTINGS_PATH)?;
     let project_json = zip_optional(&mut zip, &entries, PROJECT_SETTINGS_PATH)?;
     Ok(PackageTexts {
         model_xml,
+        extra_models,
         settings_xml,
         project_json,
     })

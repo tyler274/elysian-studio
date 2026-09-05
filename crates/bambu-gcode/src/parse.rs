@@ -199,6 +199,56 @@ pub fn assert_matches_cpp(ours: &GcodeReport, cpp: &GcodeReport) {
     );
 }
 
+/// Geometry-level C++ compare with caller-chosen FEATURE roles and slop.
+pub fn assert_matches_cpp_with(
+    ours: &GcodeReport,
+    cpp: &GcodeReport,
+    required_roles: &[&str],
+    layer_slop: usize,
+    z_slop_mm: f64,
+) {
+    let cpp_layers = cpp
+        .total_layer_number
+        .map(|n| n as usize)
+        .unwrap_or(cpp.layer_changes);
+    let delta = ours.layer_changes.abs_diff(cpp_layers);
+    assert!(
+        delta <= layer_slop,
+        "layer count diverged: rust={} cpp={} (CHANGE_LAYER={}, header={:?}, slop={layer_slop}) ours={ours:?} cpp={cpp:?}",
+        ours.layer_changes,
+        cpp_layers,
+        cpp.layer_changes,
+        cpp.total_layer_number
+    );
+    assert!(
+        (ours.z_max - cpp.z_max).abs() <= z_slop_mm,
+        "max Z diverged: rust={} cpp={} (slop={z_slop_mm})",
+        ours.z_max,
+        cpp.z_max
+    );
+    for role in required_roles {
+        if cpp.features.contains(*role) {
+            assert!(
+                ours.features.contains(*role),
+                "rewrite missing FEATURE {role} (C++ has it): rust={:?} cpp={:?}",
+                ours.features,
+                cpp.features
+            );
+        }
+    }
+    assert!(
+        ours.max_e > 0.0,
+        "rewrite G-code has no extrusion (max E={})",
+        ours.max_e
+    );
+    assert!(
+        cpp.max_e > 0.0 || cpp.features.iter().any(|f| f != "Custom" && f != "Travel"),
+        "C++ G-code has no extrusion (max E={}, features={:?})",
+        cpp.max_e,
+        cpp.features
+    );
+}
+
 pub(crate) fn parse_axis(upper: &str, axis: u8) -> Option<f64> {
     let bytes = upper.as_bytes();
     let mut i = 0;

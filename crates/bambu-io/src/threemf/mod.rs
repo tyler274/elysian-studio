@@ -1,6 +1,7 @@
 //! Core 3MF mesh import (`3D/3dmodel.model`) plus Bambu plates and parts.
 //!
-//! Geometry, units, build-item transforms, and component assemblies. When
+//! Geometry, units, build-item transforms, and component assemblies
+//! (`p:path` into `3D/Objects/*.model`). When
 //! `Metadata/model_settings.config` is present, object names, plates, part
 //! subtype, and volume matrices are applied. `Metadata/project_settings.config`
 //! carries process settings. Writers emit both files so plates, parts, and
@@ -23,7 +24,7 @@ use bambu_model::Model;
 
 use crate::IoError;
 
-use self::parse::model_from_xml;
+use self::parse::model_from_package;
 use self::write::model_xml_from_model;
 use self::zip::{read_package, write_package};
 
@@ -39,7 +40,7 @@ pub fn load_3mf(path: impl AsRef<Path>) -> Result<Model, IoError> {
 
 pub fn load_3mf_bytes(bytes: &[u8]) -> Result<Model, IoError> {
     let pack = read_package(bytes)?;
-    let mut model = model_from_xml(&pack.model_xml)?;
+    let mut model = model_from_package(&pack.model_xml, &pack.extra_models)?;
     if let Some(settings_xml) = pack.settings_xml {
         crate::bbs::apply(&mut model, &settings_xml)?;
     }

@@ -135,6 +135,44 @@ fn component_assembly() {
 }
 
 #[test]
+fn production_ppath_loads_nested_model() {
+    let child = format!(
+        r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}">
+  <resources>
+{}
+  </resources>
+  <build></build>
+</model>"#,
+        cube_mesh_xml(1, "part", 10.0, Vec3::ZERO),
+    );
+    let parent = format!(
+        r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+  <resources>
+<object id="9" name="asm" type="model">
+  <components>
+    <component p:path="/3D/Objects/object_2.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 5 0 0"/>
+  </components>
+</object>
+  </resources>
+  <build>
+<item objectid="9"/>
+  </build>
+</model>"#
+    );
+    let bytes = pack_files(&[(MODEL_PATH, &parent), ("3D/Objects/object_2.model", &child)]);
+    let model = load_3mf_bytes(&bytes).unwrap();
+    assert_eq!(model.objects.len(), 1);
+    assert_eq!(model.objects[0].volumes.len(), 1);
+    let mesh = model.merged_mesh().unwrap();
+    assert_eq!(mesh.indices.len(), 12);
+    let aabb = mesh.aabb().unwrap();
+    assert!((aabb.min.x - 5.0).abs() < 1e-3, "min.x={}", aabb.min.x);
+    assert!((aabb.max.x - 15.0).abs() < 1e-3, "max.x={}", aabb.max.x);
+}
+
+#[test]
 fn write_roundtrip_matches_cube() {
     let src = TriangleMesh::cube(20.0);
     let bytes = write_3mf_bytes("cube", &src).unwrap();

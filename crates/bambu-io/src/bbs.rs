@@ -100,16 +100,17 @@ pub fn apply(model: &mut Model, xml: &str) -> Result<(), IoError> {
 }
 
 fn apply_parts(obj: &mut bambu_model::ModelObject, parts: &[PartRec]) {
+    let object_id = obj.object_id;
     for vol in &mut obj.volumes {
         let Some(part) = find_part(parts, vol.part_id) else {
             continue;
         };
-        apply_part_to_volume(vol, part);
+        apply_part_to_volume(vol, part, object_id);
     }
     if obj.volumes.is_empty() {
         if let Some(part) = parts.first() {
             let mut vol = ModelVolume::model_part(obj.name.clone(), obj.mesh.clone(), part.id);
-            apply_part_to_volume(&mut vol, part);
+            apply_part_to_volume(&mut vol, part, object_id);
             obj.volumes.push(vol);
         }
     }
@@ -123,15 +124,19 @@ fn find_part(parts: &[PartRec], part_id: u32) -> Option<&PartRec> {
         .or_else(|| (parts.len() == 1).then_some(&parts[0]))
 }
 
-fn apply_part_to_volume(vol: &mut ModelVolume, part: &PartRec) {
+fn apply_part_to_volume(vol: &mut ModelVolume, part: &PartRec, object_id: u32) {
     vol.volume_type = part.subtype;
     vol.part_id = part.id;
     if !part.name.is_empty() {
         vol.name = part.name.clone();
     }
-    if part.matrix != Mat4::IDENTITY {
+    vol.matrix = part.matrix;
+    // C++ `_generate_volumes_new`: production-file parts keep the 3MF component
+    // transform as the live matrix; `model_settings` `matrix` is source.transform
+    // (reload-from-disk) and is not baked on top. Inline single-object meshes
+    // still apply the metadata matrix (see `volume_matrix_translates_part`).
+    if vol.part_id == object_id && part.matrix != Mat4::IDENTITY {
         vol.mesh.transform(part.matrix);
-        vol.matrix = part.matrix;
     }
     vol.config = part.config.clone();
 }

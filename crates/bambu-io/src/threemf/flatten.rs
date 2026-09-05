@@ -7,6 +7,7 @@ use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate, Triangle
 use glam::Mat4;
 
 use super::parse::{ObjectRec, ParsedModel};
+use super::xml::normalize_model_path;
 use crate::IoError;
 
 struct LeafMesh {
@@ -19,7 +20,13 @@ struct LeafMesh {
     triangle_color: Vec<String>,
 }
 
-pub(super) fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
+pub(super) fn flatten_files(
+    files: &BTreeMap<String, ParsedModel>,
+    root: &str,
+) -> Result<Model, IoError> {
+    let parsed = files
+        .get(root)
+        .ok_or_else(|| IoError::Message(format!("3MF missing root model {root:?}")))?;
     let roots: Vec<(u32, Mat4)> = if parsed.build.is_empty() {
         parsed
             .objects
@@ -36,7 +43,7 @@ pub(super) fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
     for (id, xf) in roots {
         let instance_id = *instance_n.entry(id).and_modify(|n| *n += 1).or_insert(0);
         let mut leaves = Vec::new();
-        flatten_object(&parsed.objects, id, xf, 0, &mut leaves)?;
+        flatten_object(files, root, id, xf, 0, &mut leaves)?;
         let volumes: Vec<ModelVolume> = leaves
             .into_iter()
             .filter(|leaf| !leaf.mesh.indices.is_empty())
@@ -84,8 +91,23 @@ pub(super) fn flatten_model(parsed: ParsedModel) -> Result<Model, IoError> {
     })
 }
 
+fn object_rec<'a>(
+    files: &'a BTreeMap<String, ParsedModel>,
+    file: &str,
+    id: u32,
+) -> Result<&'a ObjectRec, IoError> {
+    let parsed = files.get(file).ok_or_else(|| {
+        IoError::Message(format!("3MF missing model part {file:?} (object {id})"))
+    })?;
+    parsed
+        .objects
+        .get(&id)
+        .ok_or_else(|| IoError::Message(format!("3MF missing object {id} in {file:?}")))
+}
+
 fn flatten_object(
-    objects: &BTreeMap<u32, ObjectRec>,
+    files: &BTreeMap<String, ParsedModel>,
+    file: &str,
     id: u32,
     xf: Mat4,
     depth: u32,
@@ -94,9 +116,7 @@ fn flatten_object(
     if depth > 32 {
         return Err(IoError::Message("3MF component recursion too deep".into()));
     }
-    let obj = objects
-        .get(&id)
-        .ok_or_else(|| IoError::Message(format!("3MF missing object {id}")))?;
+    let obj = object_rec(files, file, id)?;
     if !obj.triangles.is_empty() {
         let vertices = obj
             .vertices
@@ -116,8 +136,21 @@ fn flatten_object(
             triangle_color: obj.triangle_color.clone(),
         });
     }
-    for (child, child_xf) in &obj.components {
-        flatten_object(objects, *child, xf * *child_xf, depth + 1, out)?;
+    let components = obj.components.clone();
+    for (child_path, child, child_xf) in components {
+        let next_file = if child_path.is_empty() {
+            file.to_string()
+        } else {
+            let want = normalize_model_path(&child_path);
+            if files.contains_key(&want) {
+                want
+            } else {
+                return Err(IoError::Message(format!(
+                    "3MF component p:path {child_path:?} not in package (object {child})"
+                )));
+            }
+        };
+        flatten_object(files, &next_file, child, xf * child_xf, depth + 1, out)?;
     }
     Ok(())
 }

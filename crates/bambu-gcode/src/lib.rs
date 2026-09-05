@@ -21,7 +21,8 @@ pub use cooling::{
     set_additional_fan_gcode, set_exhaust_fan_gcode, set_fan_gcode,
 };
 pub use parse::{
-    assert_matches_cpp, layer_stats, parse_config_comments, parse_gcode, GcodeReport, LayerStats,
+    assert_matches_cpp, assert_matches_cpp_with, layer_stats, parse_config_comments, parse_gcode,
+    GcodeReport, LayerStats,
 };
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
 pub use writer::write_gcode;

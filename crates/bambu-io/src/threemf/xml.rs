@@ -40,6 +40,25 @@ pub(super) fn attr<'a>(e: &'a quick_xml::events::BytesStart<'a>, key: &[u8]) -> 
         .and_then(|a| String::from_utf8(a.value.into_owned()).ok())
 }
 
+/// Match `p:path` or an unprefixed `path` on production-extension components.
+pub(super) fn attr_path(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
+    attr(e, b"p:path").or_else(|| attr(e, b"path")).or_else(|| {
+        e.attributes().flatten().find_map(|a| {
+            let key = a.key.as_ref();
+            let local = key.rsplit(|&b| b == b':').next().unwrap_or(key);
+            if local == b"path" {
+                String::from_utf8(a.value.into_owned()).ok()
+            } else {
+                None
+            }
+        })
+    })
+}
+
+pub(super) fn normalize_model_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches('/').to_string()
+}
+
 pub(super) fn attr_f32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> f32 {
     attr(e, key).and_then(|s| s.parse().ok()).unwrap_or(0.0)
 }
