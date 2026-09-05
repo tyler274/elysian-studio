@@ -431,6 +431,34 @@ impl GCodeFlavor {
     }
 }
 
+/// C++ `EnsureVerticalThicknessLevel` (`ensure_vertical_shell_thickness`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EnsureVerticalShellThickness {
+    Disabled,
+    Partial,
+    #[default]
+    Enabled,
+}
+
+impl EnsureVerticalShellThickness {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "disabled" | "0" | "false" | "off" | "none" => Self::Disabled,
+            "partial" | "1" => Self::Partial,
+            "enabled" | "2" | "true" | "on" => Self::Enabled,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Partial => "partial",
+            Self::Enabled => "enabled",
+        }
+    }
+}
+
 /// C++ `machine_max_*` used by `GCode::print_machine_envelope`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineLimits {
@@ -593,6 +621,12 @@ pub struct SliceSettings {
     pub bottom_shell_layers: u32,
     /// Solid layers at the top of the part (0 disables).
     pub top_shell_layers: u32,
+    /// C++ `top_shell_thickness` (mm). 0 means layer count only.
+    pub top_shell_thickness_mm: f64,
+    /// C++ `bottom_shell_thickness` (mm). 0 means layer count only.
+    pub bottom_shell_thickness_mm: f64,
+    /// C++ `ensure_vertical_shell_thickness`.
+    pub ensure_vertical_shell_thickness: EnsureVerticalShellThickness,
     /// C++ `top_surface_pattern` (BBL 0.20 is `monotonicline`).
     pub top_surface_pattern: SurfacePattern,
     /// C++ `bottom_surface_pattern` (BBL common is `monotonic`).
@@ -904,6 +938,9 @@ impl Default for SliceSettings {
             tree_branch_diameter_mm: 2.0,
             bottom_shell_layers: 3,
             top_shell_layers: 3,
+            top_shell_thickness_mm: 0.0,
+            bottom_shell_thickness_mm: 0.0,
+            ensure_vertical_shell_thickness: EnsureVerticalShellThickness::Enabled,
             top_surface_pattern: SurfacePattern::Rectilinear,
             bottom_surface_pattern: SurfacePattern::Rectilinear,
             detect_narrow_internal_solid_infill: true,
@@ -1401,6 +1438,7 @@ impl SliceSettings {
             skirt_loops: 0,
             brim_width_mm: 5.0,
             top_shell_layers: 5,
+            top_shell_thickness_mm: 1.0,
             top_surface_pattern: SurfacePattern::MonotonicLine,
             bottom_surface_pattern: SurfacePattern::Monotonic,
             elephant_foot_mm: 0.15,

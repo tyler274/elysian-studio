@@ -7,8 +7,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    FuzzySkinType, InfillPattern, IroningPattern, IroningType, OverhangFanThreshold, SeamPosition,
-    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator, ZHopType,
+    EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, IroningPattern, IroningType,
+    OverhangFanThreshold, SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType,
+    WallGenerator, ZHopType,
 };
 
 #[derive(Debug, Error)]
@@ -215,6 +216,21 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "top_shell_layers",
         settings.top_shell_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "top_shell_thickness",
+        num_str(settings.top_shell_thickness_mm),
+    );
+    insert(
+        &mut map,
+        "bottom_shell_thickness",
+        num_str(settings.bottom_shell_thickness_mm),
+    );
+    insert(
+        &mut map,
+        "ensure_vertical_shell_thickness",
+        settings.ensure_vertical_shell_thickness.as_str(),
     );
     insert(
         &mut map,
@@ -1124,6 +1140,9 @@ pub fn is_region_key(key: &str) -> bool {
             | "fuzzy_skin_first_layer"
             | "bottom_shell_layers"
             | "top_shell_layers"
+            | "top_shell_thickness"
+            | "bottom_shell_thickness"
+            | "ensure_vertical_shell_thickness"
             | "top_surface_pattern"
             | "bottom_surface_pattern"
             | "outer_wall_speed"
@@ -1344,6 +1363,17 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = u32_val(map, "top_shell_layers") {
         s.top_shell_layers = v;
+    }
+    if let Some(v) = num(map, "top_shell_thickness") {
+        s.top_shell_thickness_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "bottom_shell_thickness") {
+        s.bottom_shell_thickness_mm = v.max(0.0);
+    }
+    if let Some(name) = text(map, "ensure_vertical_shell_thickness") {
+        if let Some(level) = EnsureVerticalShellThickness::from_name(&name) {
+            s.ensure_vertical_shell_thickness = level;
+        }
     }
     if let Some(name) = text(map, "top_surface_pattern") {
         if let Some(p) = SurfacePattern::from_name(&name) {
@@ -2227,6 +2257,22 @@ mod tests {
     }
 
     #[test]
+    fn vertical_shell_region_keys() {
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert("ensure_vertical_shell_thickness".into(), "disabled".into());
+        pairs.insert("top_shell_thickness".into(), "0.6".into());
+        pairs.insert("bottom_shell_thickness".into(), "0.8".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(
+            s.ensure_vertical_shell_thickness,
+            crate::EnsureVerticalShellThickness::Disabled
+        );
+        assert!((s.top_shell_thickness_mm - 0.6).abs() < 1e-9);
+        assert!((s.bottom_shell_thickness_mm - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
     fn upstream_fdm_process_0_20() {
         let Some(res) = bbl_resources_dir() else {
             panic!(
@@ -2240,6 +2286,12 @@ mod tests {
         assert_eq!(s.wall_loops, 2);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.bottom_shell_layers, 3);
+        assert!((s.top_shell_thickness_mm - 1.0).abs() < 1e-9);
+        assert!(s.bottom_shell_thickness_mm.abs() < 1e-9);
+        assert_eq!(
+            s.ensure_vertical_shell_thickness,
+            crate::EnsureVerticalShellThickness::Enabled
+        );
         assert_eq!(s.skirt_loops, 0);
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
         assert!((s.infill_density - 0.15).abs() < 1e-9);
@@ -2279,6 +2331,7 @@ mod tests {
         assert!((s.gap_infill_speed_mm_s - 250.0).abs() < 1e-9);
         let baked = SliceSettings::bbl_0_20();
         assert_eq!(baked.top_shell_layers, s.top_shell_layers);
+        assert!((baked.top_shell_thickness_mm - s.top_shell_thickness_mm).abs() < 1e-9);
         assert_eq!(baked.wall_loops, s.wall_loops);
         assert_eq!(baked.infill_pattern, s.infill_pattern);
         assert_eq!(baked.top_surface_pattern, s.top_surface_pattern);

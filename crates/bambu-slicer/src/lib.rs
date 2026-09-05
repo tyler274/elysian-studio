@@ -795,8 +795,8 @@ fn signed_contour_area_mm2(poly: &Polygon) -> f64 {
 mod tests {
     use super::*;
     use bambu_config::{
-        FuzzySkinType, InfillPattern, SeamPosition, SliceSettings, SupportType, SurfacePattern,
-        TopOneWallType, WallGenerator,
+        EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition, SliceSettings,
+        SupportType, SurfacePattern, TopOneWallType, WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -1150,6 +1150,78 @@ mod tests {
         assert!(mid.bottom_surface.is_empty());
         assert!(mid.solid_infill.is_empty());
         assert!(!mid.infill.is_empty());
+    }
+
+    fn solid_path_len_mm(layers: &[Layer]) -> f64 {
+        layers
+            .iter()
+            .flat_map(|layer| layer.solid_infill.iter())
+            .map(|path| path.windows(2).map(|w| w[0].distance_mm(w[1])).sum::<f64>())
+            .sum()
+    }
+
+    #[test]
+    fn shell_thickness_extends_top_layers() {
+        let mesh = TriangleMesh::cube(8.0);
+        let mut settings = SliceSettings::default();
+        settings.top_shell_layers = 1;
+        settings.bottom_shell_layers = 1;
+        settings.top_shell_thickness_mm = 0.6;
+        settings.bottom_shell_thickness_mm = 0.0;
+        settings.ensure_vertical_shell_thickness = EnsureVerticalShellThickness::Disabled;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.detect_narrow_internal_solid_infill = false;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = result.layers.len();
+        assert!(n > 8, "layers={}", n);
+        assert!(!result.layers[n - 1].top_surface.is_empty());
+        for layer in result.layers[n - 3..n - 1].iter() {
+            assert!(
+                !layer.solid_infill.is_empty() || !layer.top_surface.is_empty(),
+                "0.6 mm top thickness should solidify layer {} (print_z={})",
+                layer.index,
+                layer.print_z_mm
+            );
+        }
+        let mid = &result.layers[n / 2];
+        assert!(mid.solid_infill.is_empty());
+        assert!(!mid.infill.is_empty());
+    }
+
+    #[test]
+    fn frustum_vertical_shell_adds_solid() {
+        let mesh = TriangleMesh::frustum(20.0, 6.0, 8.0);
+        let mut disabled = SliceSettings::default();
+        disabled.infill_pattern = InfillPattern::Rectilinear;
+        disabled.wall_loops = 1;
+        disabled.infill_density = 0.15;
+        disabled.top_shell_layers = 3;
+        disabled.bottom_shell_layers = 3;
+        disabled.top_shell_thickness_mm = 0.0;
+        disabled.bottom_shell_thickness_mm = 0.0;
+        disabled.detect_narrow_internal_solid_infill = false;
+        disabled.ensure_vertical_shell_thickness = EnsureVerticalShellThickness::Disabled;
+        let mut enabled = disabled.clone();
+        enabled.ensure_vertical_shell_thickness = EnsureVerticalShellThickness::Enabled;
+        let off = slice_mesh(&mesh, &disabled).unwrap();
+        let on = slice_mesh(&mesh, &enabled).unwrap();
+        let n = on.layers.len();
+        assert_eq!(off.layers.len(), n);
+        assert!(n > 10, "layers={n}");
+        let lo = n / 4;
+        let hi = (3 * n) / 4;
+        let off_len = solid_path_len_mm(&off.layers[lo..hi]);
+        let on_len = solid_path_len_mm(&on.layers[lo..hi]);
+        assert!(
+            on_len > off_len * 1.2 + 5.0,
+            "enabled vertical shell should add slope solid ({on_len} vs disabled {off_len})"
+        );
+        assert!(
+            on.layers[lo..hi]
+                .iter()
+                .any(|layer| !layer.solid_infill.is_empty()),
+            "enabled frustum mid layers should carry internal solid"
+        );
     }
 
     #[test]

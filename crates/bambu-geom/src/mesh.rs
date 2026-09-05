@@ -133,4 +133,35 @@ impl TriangleMesh {
         ));
         mesh
     }
+
+    /// Square frustum from `base` mm at z=0 to `top` mm at z=`height`.
+    pub fn frustum(base: f32, top: f32, height: f32) -> Self {
+        let inset = (base - top) * 0.5;
+        Self {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(base, 0.0, 0.0),
+                Vec3::new(base, base, 0.0),
+                Vec3::new(0.0, base, 0.0),
+                Vec3::new(inset, inset, height),
+                Vec3::new(inset + top, inset, height),
+                Vec3::new(inset + top, inset + top, height),
+                Vec3::new(inset, inset + top, height),
+            ],
+            indices: vec![
+                [0, 1, 2],
+                [0, 2, 3],
+                [4, 6, 5],
+                [4, 7, 6],
+                [0, 4, 5],
+                [0, 5, 1],
+                [2, 6, 7],
+                [2, 7, 3],
+                [0, 3, 7],
+                [0, 7, 4],
+                [1, 5, 6],
+                [1, 6, 2],
+            ],
+        }
+    }
 }

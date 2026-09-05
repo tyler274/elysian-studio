@@ -1,10 +1,14 @@
 //! `PrintObjectStep::PrepareInfill`: top / bottom / bridge vs sparse regions.
 //!
-//! Simplified `detect_surfaces_type` + `discover_horizontal_shells`. Neighbor
-//! contours are grown slightly so clipper slivers are not treated as shells.
+//! Simplified `detect_surfaces_type` + `discover_horizontal_shells` /
+//! `discover_vertical_shells`. Neighbor contours are grown slightly so clipper
+//! slivers are not treated as shells. Shell windows follow C++ layer count **or**
+//! `top_shell_thickness` / `bottom_shell_thickness`. When
+//! `ensure_vertical_shell_thickness` is enabled, slope rings become extra
+//! internal solid (`diff(infill, intersect(neighbor infills))`).
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
-use bambu_config::{InfillPattern, SliceSettings};
+use bambu_config::{EnsureVerticalShellThickness, InfillPattern, SliceSettings};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon, Polyline,
     TriangleMesh,
@@ -15,6 +19,10 @@ use crate::infill;
 use crate::Layer;
 
 const COVER_MM: f64 = 0.15;
+/// C++ `EPSILON` used with shell thickness windows.
+const SHELL_THICKNESS_EPSILON: f64 = 1e-4;
+/// Drop clipper crumbs from vertical-shell extra without eating slope rings.
+const VERTICAL_SHELL_SLIVER_MM: f64 = 0.05;
 
 pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&TriangleMesh>) {
     if layers.is_empty() {
@@ -40,6 +48,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         layer.top_region.clear();
     }
     let n = layers.len();
+    let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
     let union_infill: Vec<Vec<Polygon>> = layers.iter().map(|l| l.infill_region.clone()).collect();
     let mut shells = Vec::with_capacity(nreg);
     let mut cfgs = Vec::with_capacity(nreg);
@@ -52,7 +61,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
             .iter()
             .find_map(|layer| layer.region_settings.get(r).cloned())
             .unwrap_or_else(|| settings.clone());
-        shells.push(detect_shells(&regions, &cfg));
+        shells.push(detect_shells(&regions, &zs, &cfg));
         cfgs.push((cfg, regions));
     }
     let mut shared_sparse = vec![Vec::new(); n];
@@ -80,7 +89,8 @@ fn fill_into(
     shared_sparse: Option<&[Vec<Polygon>]>,
 ) {
     let regions: Vec<Vec<Polygon>> = layers.iter().map(|l| l.infill_region.clone()).collect();
-    let shells = detect_shells(&regions, settings);
+    let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
+    let shells = detect_shells(&regions, &zs, settings);
     emit_shells(layers, settings, mesh, &shells, append, shared_sparse);
 }
 
@@ -91,10 +101,12 @@ struct ShellMap {
     sparse: Vec<Vec<Polygon>>,
 }
 
-fn detect_shells(regions: &[Vec<Polygon>], settings: &SliceSettings) -> ShellMap {
+fn detect_shells(regions: &[Vec<Polygon>], zs: &[f64], settings: &SliceSettings) -> ShellMap {
     let n = regions.len();
     let top_n = settings.top_shell_layers as usize;
     let bottom_n = settings.bottom_shell_layers as usize;
+    let top_th = settings.top_shell_thickness_mm;
+    let bottom_th = settings.bottom_shell_thickness_mm;
 
     let mut top = vec![Vec::new(); n];
     let mut bottom = vec![Vec::new(); n];
@@ -123,21 +135,38 @@ fn detect_shells(regions: &[Vec<Polygon>], settings: &SliceSettings) -> ShellMap
     });
 
     for j in 0..n {
-        if top_n > 1 {
-            for k in 1..top_n {
-                if j >= k {
-                    let extra = intersect_polygons(&regions[j - k], &top[j]);
-                    append_union(&mut solid[j - k], extra);
+        if top_n > 0 {
+            for k in 1..=j {
+                let dz = zs.get(j).copied().unwrap_or(0.0) - zs.get(j - k).copied().unwrap_or(0.0);
+                if past_shell_window(k, top_n, top_th, dz) {
+                    break;
                 }
+                if !within_shell_window(k, top_n, top_th, dz) {
+                    continue;
+                }
+                let extra = intersect_polygons(&regions[j - k], &top[j]);
+                append_union(&mut solid[j - k], extra);
             }
         }
-        if bottom_n > 1 {
-            for k in 1..bottom_n {
-                if j + k < n {
-                    let extra = intersect_polygons(&regions[j + k], &bottom[j]);
-                    append_union(&mut solid[j + k], extra);
+        if bottom_n > 0 {
+            for k in 1..(n - j) {
+                let dz = zs.get(j + k).copied().unwrap_or(0.0) - zs.get(j).copied().unwrap_or(0.0);
+                if past_shell_window(k, bottom_n, bottom_th, dz) {
+                    break;
                 }
+                if !within_shell_window(k, bottom_n, bottom_th, dz) {
+                    continue;
+                }
+                let extra = intersect_polygons(&regions[j + k], &bottom[j]);
+                append_union(&mut solid[j + k], extra);
             }
+        }
+    }
+
+    if settings.ensure_vertical_shell_thickness == EnsureVerticalShellThickness::Enabled {
+        for (i, slot) in solid.iter_mut().enumerate() {
+            let extra = vertical_shell_extra(i, regions, zs, settings);
+            append_union(slot, extra);
         }
     }
 
@@ -151,6 +180,86 @@ fn detect_shells(regions: &[Vec<Polygon>], settings: &SliceSettings) -> ShellMap
         solid,
         sparse,
     }
+}
+
+/// C++ `i < idx + n_layers || z_span < thickness - EPSILON`.
+fn within_shell_window(k: usize, n_layers: usize, thickness_mm: f64, z_span: f64) -> bool {
+    n_layers > 0
+        && (k < n_layers || (thickness_mm > 0.0 && z_span + SHELL_THICKNESS_EPSILON < thickness_mm))
+}
+
+fn past_shell_window(k: usize, n_layers: usize, thickness_mm: f64, z_span: f64) -> bool {
+    k >= n_layers && (thickness_mm <= 0.0 || z_span + SHELL_THICKNESS_EPSILON >= thickness_mm)
+}
+
+/// C++ `discover_vertical_shells`: extra internal solid is infill minus the
+/// intersection of neighbor `fill_expolygons` in the shell window.
+fn vertical_shell_extra(
+    i: usize,
+    regions: &[Vec<Polygon>],
+    zs: &[f64],
+    settings: &SliceSettings,
+) -> Vec<Polygon> {
+    let n = regions.len();
+    if i >= n || regions[i].is_empty() {
+        return Vec::new();
+    }
+    let mut holes = regions[i].clone();
+    let z_i = zs.get(i).copied().unwrap_or(0.0);
+    let top_n = settings.top_shell_layers as usize;
+    let bottom_n = settings.bottom_shell_layers as usize;
+    if top_n > 0 {
+        for k in 1..n - i {
+            let j = i + k;
+            let dz = zs.get(j).copied().unwrap_or(z_i) - z_i;
+            if past_shell_window(k, top_n, settings.top_shell_thickness_mm, dz) {
+                break;
+            }
+            if !within_shell_window(k, top_n, settings.top_shell_thickness_mm, dz) {
+                continue;
+            }
+            if combine_holes(&mut holes, &regions[j]) {
+                break;
+            }
+        }
+    }
+    if bottom_n > 0 && !holes.is_empty() {
+        for k in 1..=i {
+            let j = i - k;
+            let dz = z_i - zs.get(j).copied().unwrap_or(z_i);
+            if past_shell_window(k, bottom_n, settings.bottom_shell_thickness_mm, dz) {
+                break;
+            }
+            if !within_shell_window(k, bottom_n, settings.bottom_shell_thickness_mm, dz) {
+                continue;
+            }
+            if combine_holes(&mut holes, &regions[j]) {
+                break;
+            }
+        }
+    }
+    drop_slivers(
+        difference_polygons(&regions[i], &holes),
+        VERTICAL_SHELL_SLIVER_MM,
+    )
+}
+
+/// C++ `combine_holes`: empty neighbor clears the intersection (all internal
+/// becomes extra solid).
+fn combine_holes(holes: &mut Vec<Polygon>, neighbor: &[Polygon]) -> bool {
+    if holes.is_empty() || neighbor.is_empty() {
+        holes.clear();
+        return true;
+    }
+    *holes = intersect_polygons(holes, neighbor);
+    holes.is_empty()
+}
+
+fn drop_slivers(polygons: Vec<Polygon>, delta_mm: f64) -> Vec<Polygon> {
+    if polygons.is_empty() || delta_mm <= 0.0 {
+        return polygons;
+    }
+    offset_polygons(&offset_polygons(&polygons, -delta_mm), delta_mm)
 }
 
 fn emit_shells(
