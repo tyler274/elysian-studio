@@ -111,7 +111,7 @@ fn expand(src: &[Polygon], mm: f64) -> Vec<Polygon> {
 fn fill(region: &[Polygon], spacing_mm: f64, layer_index: usize, inset_mm: f64) -> Vec<Polyline> {
     let inset = offset_polygons(region, -inset_mm);
     let polys = if inset.is_empty() { region } else { &inset };
-    infill::rectilinear(polys, spacing_mm, layer_index)
+    infill::rectilinear(polys, spacing_mm, layer_index, 0.0)
 }
 
 fn raft_layer(

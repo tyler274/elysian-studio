@@ -25,17 +25,23 @@ pub fn generate(
     }
     let spacing = settings.infill_spacing_mm();
     match settings.infill_pattern {
-        InfillPattern::Rectilinear => rectilinear(region, spacing, layer_index),
+        InfillPattern::Rectilinear => {
+            rectilinear(region, spacing, layer_index, settings.infill_direction_deg)
+        }
         InfillPattern::Grid => {
-            let mut lines = rectilinear(region, spacing, 0);
-            lines.extend(vertical(region, spacing, 1));
+            let mut lines = rectilinear(region, spacing, 0, settings.infill_direction_deg);
+            lines.extend(vertical(region, spacing, 1, settings.infill_direction_deg));
             lines
         }
         InfillPattern::Concentric => concentric(region, spacing),
         InfillPattern::Gyroid => gyroid::fill(region, spacing, settings.infill_density, z_mm),
-        InfillPattern::Honeycomb => {
-            honeycomb::fill(region, spacing, settings.infill_density, layer_index)
-        }
+        InfillPattern::Honeycomb => honeycomb::fill(
+            region,
+            spacing,
+            settings.infill_density,
+            layer_index,
+            settings.infill_direction_deg,
+        ),
         InfillPattern::Honeycomb3D => {
             honeycomb3d::fill(region, spacing, settings.infill_density, z_mm)
         }
@@ -46,23 +52,46 @@ pub fn generate(
     }
 }
 
-pub fn rectilinear(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, layer_index, false, true)
+pub fn rectilinear(
+    polygons: &[Polygon],
+    spacing_mm: f64,
+    layer_index: usize,
+    angle_deg: f64,
+) -> Vec<Polyline> {
+    scanlines(polygons, spacing_mm, layer_index, false, true, angle_deg)
 }
 
 /// 100% rectilinear fill, direction alternating each layer. Odd lines reverse (zig-zag).
-pub fn solid(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, 0, layer_index.is_multiple_of(2), true)
+pub fn solid(
+    polygons: &[Polygon],
+    spacing_mm: f64,
+    layer_index: usize,
+    angle_deg: f64,
+) -> Vec<Polyline> {
+    scanlines(
+        polygons,
+        spacing_mm,
+        0,
+        layer_index.is_multiple_of(2),
+        true,
+        angle_deg,
+    )
 }
 
 /// Solid fill with every scanline in the same direction (C++ `params.monotonic`).
-pub fn solid_monotonic(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
+pub fn solid_monotonic(
+    polygons: &[Polygon],
+    spacing_mm: f64,
+    layer_index: usize,
+    angle_deg: f64,
+) -> Vec<Polyline> {
     scanlines(
         polygons,
         spacing_mm,
         0,
         layer_index.is_multiple_of(2),
         false,
+        angle_deg,
     )
 }
 
@@ -71,18 +100,24 @@ pub fn solid_surface(
     spacing_mm: f64,
     layer_index: usize,
     pattern: SurfacePattern,
+    angle_deg: f64,
 ) -> Vec<Polyline> {
     match pattern {
         SurfacePattern::Concentric => concentric(polygons, spacing_mm),
-        SurfacePattern::Rectilinear => solid(polygons, spacing_mm, layer_index),
+        SurfacePattern::Rectilinear => solid(polygons, spacing_mm, layer_index, angle_deg),
         SurfacePattern::Monotonic | SurfacePattern::MonotonicLine => {
-            solid_monotonic(polygons, spacing_mm, layer_index)
+            solid_monotonic(polygons, spacing_mm, layer_index, angle_deg)
         }
     }
 }
 
-fn vertical(polygons: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
-    scanlines(polygons, spacing_mm, layer_index, true, true)
+fn vertical(
+    polygons: &[Polygon],
+    spacing_mm: f64,
+    layer_index: usize,
+    angle_deg: f64,
+) -> Vec<Polyline> {
+    scanlines(polygons, spacing_mm, layer_index, true, true, angle_deg)
 }
 
 fn scanlines(
@@ -91,10 +126,22 @@ fn scanlines(
     layer_index: usize,
     vertical: bool,
     zigzag: bool,
+    angle_deg: f64,
 ) -> Vec<Polyline> {
     if polygons.is_empty() || !spacing_mm.is_finite() || spacing_mm <= 0.0 {
         return Vec::new();
     }
+
+    let angle = angle_deg.to_radians();
+    let rotate = angle.abs() >= 1e-12;
+    let (cos_a, sin_a) = angle.sin_cos();
+    let rotated_storage;
+    let polygons = if rotate {
+        rotated_storage = rotate_polygons(polygons, cos_a, -sin_a);
+        rotated_storage.as_slice()
+    } else {
+        polygons
+    };
 
     let mut min_v = i64::MAX;
     let mut max_v = i64::MIN;
@@ -149,7 +196,34 @@ fn scanlines(
             }
         }
     }
+    if rotate {
+        for line in &mut lines {
+            for p in line {
+                *p = rotate_point(*p, cos_a, sin_a);
+            }
+        }
+    }
     lines
+}
+
+fn rotate_polygons(polygons: &[Polygon], cos_a: f64, sin_a: f64) -> Vec<Polygon> {
+    polygons
+        .iter()
+        .map(|poly| {
+            poly.iter()
+                .map(|p| rotate_point(*p, cos_a, sin_a))
+                .collect()
+        })
+        .collect()
+}
+
+fn rotate_point(p: Point, cos_a: f64, sin_a: f64) -> Point {
+    let x = p.x as f64;
+    let y = p.y as f64;
+    Point::new(
+        (x * cos_a - y * sin_a).round() as i64,
+        (x * sin_a + y * cos_a).round() as i64,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -290,5 +364,54 @@ mod tests {
                 "v={v}"
             );
         }
+    }
+
+    fn square_mm(size: f64) -> Vec<Polygon> {
+        vec![vec![
+            Point::from_mm(0.0, 0.0),
+            Point::from_mm(size, 0.0),
+            Point::from_mm(size, size),
+            Point::from_mm(0.0, size),
+        ]]
+    }
+
+    fn mean_abs_dir(paths: &[Polyline]) -> (f64, f64) {
+        let mut ax = 0.0;
+        let mut ay = 0.0;
+        let mut n = 0.0;
+        for path in paths {
+            if path.len() < 2 {
+                continue;
+            }
+            let (x0, y0) = path[0].to_mm();
+            let (x1, y1) = path[path.len() - 1].to_mm();
+            let dx = x1 - x0;
+            let dy = y1 - y0;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1.0 {
+                continue;
+            }
+            ax += dx.abs() / len;
+            ay += dy.abs() / len;
+            n += 1.0;
+        }
+        (ax / n, ay / n)
+    }
+
+    #[test]
+    fn rectilinear_follows_infill_direction() {
+        let region = square_mm(20.0);
+        let along_x = rectilinear(&region, 1.5, 0, 0.0);
+        let diagonal = rectilinear(&region, 1.5, 0, 45.0);
+        assert!(!along_x.is_empty());
+        assert!(!diagonal.is_empty());
+        let (x0, y0) = mean_abs_dir(&along_x);
+        let (x45, y45) = mean_abs_dir(&diagonal);
+        assert!(x0 > 0.95, "0° lines should run along X, got ({x0}, {y0})");
+        assert!(y0 < 0.1, "0° lines should be horizontal, got ({x0}, {y0})");
+        assert!(
+            (x45 - y45).abs() < 0.2,
+            "45° lines should have similar |dx| and |dy|, got ({x45}, {y45})"
+        );
     }
 }

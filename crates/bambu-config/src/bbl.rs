@@ -125,6 +125,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "infill_direction",
+        num_str(settings.infill_direction_deg),
+    );
+    insert(
+        &mut map,
         "minimum_sparse_infill_area",
         num_str(settings.minimum_sparse_infill_area_mm2),
     );
@@ -1135,6 +1140,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "top_one_wall_type"
             | "sparse_infill_density"
             | "sparse_infill_pattern"
+            | "infill_direction"
             | "minimum_sparse_infill_area"
             | "seam_position"
             | "wall_generator"
@@ -1283,6 +1289,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = InfillPattern::from_name(&name) {
             s.infill_pattern = p;
         }
+    }
+    if let Some(v) = num(map, "infill_direction") {
+        s.infill_direction_deg = v.rem_euclid(360.0);
     }
     if let Some(v) = num(map, "minimum_sparse_infill_area") {
         s.minimum_sparse_infill_area_mm2 = v.max(0.0);
@@ -2273,6 +2282,7 @@ mod tests {
         pairs.insert("top_shell_thickness".into(), "0.6".into());
         pairs.insert("bottom_shell_thickness".into(), "0.8".into());
         pairs.insert("minimum_sparse_infill_area".into(), "12".into());
+        pairs.insert("infill_direction".into(), "30".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(
             s.ensure_vertical_shell_thickness,
@@ -2281,6 +2291,7 @@ mod tests {
         assert!((s.top_shell_thickness_mm - 0.6).abs() < 1e-9);
         assert!((s.bottom_shell_thickness_mm - 0.8).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 12.0).abs() < 1e-9);
+        assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
     }
 
     #[test]
@@ -2307,6 +2318,7 @@ mod tests {
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
+        assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert!(!s.enable_support);
         assert!(!s.enable_wrapping_detection);

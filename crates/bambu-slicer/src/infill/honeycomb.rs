@@ -13,6 +13,7 @@ pub fn fill(
     spacing_mm: f64,
     density: f64,
     layer_index: usize,
+    angle_deg: f64,
 ) -> Vec<Polyline> {
     let Some((min, max)) = bbox(region) else {
         return Vec::new();
@@ -33,8 +34,8 @@ pub fn fill(
     let y_offset = x_offset * 3.0_f64.sqrt() / 3.0;
     let hex_cx = hex_width / 2.0;
     let hex_cy = hex_side;
-    // C++ `FillHoneycomb::_layer_angle`: π/3 × (layer % 3).
-    let angle = std::f64::consts::FRAC_PI_3 * (layer_index % 3) as f64;
+    // C++ `FillHoneycomb::_layer_angle`: π/3 × (layer % 3), plus `infill_direction`.
+    let angle = angle_deg.to_radians() + std::f64::consts::FRAC_PI_3 * (layer_index % 3) as f64;
 
     let mut min_x = unscale(min.x);
     let mut min_y = unscale(min.y);
@@ -154,7 +155,7 @@ mod tests {
     #[test]
     fn five_percent_fills_a_40mm_square() {
         // 0.45 mm line at 5% → `infill_spacing_mm` = 9 mm.
-        let paths = fill(&square(40.0), 9.0, 0.05, 0);
+        let paths = fill(&square(40.0), 9.0, 0.05, 0, 0.0);
         assert!(
             paths.iter().any(|p| p.len() >= 2),
             "5% honeycomb should clip into a 40 mm square, got {} paths",
@@ -164,7 +165,7 @@ mod tests {
 
     #[test]
     fn fifteen_percent_fills_a_20mm_cube_footprint() {
-        let paths = fill(&square(20.0), 0.42 / 0.15, 0.15, 1);
+        let paths = fill(&square(20.0), 0.42 / 0.15, 0.15, 1, 0.0);
         assert!(!paths.is_empty());
     }
 }

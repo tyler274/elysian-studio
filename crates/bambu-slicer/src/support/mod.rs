@@ -95,9 +95,9 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
             j < n && !overhangs[j].is_empty()
         });
         if is_interface {
-            layer.support_interface = infill::rectilinear(&fill_region, interface_spacing, i);
+            layer.support_interface = infill::rectilinear(&fill_region, interface_spacing, i, 0.0);
         } else {
-            layer.support = infill::rectilinear(&fill_region, support_spacing, i);
+            layer.support = infill::rectilinear(&fill_region, support_spacing, i, 0.0);
         }
     });
 }

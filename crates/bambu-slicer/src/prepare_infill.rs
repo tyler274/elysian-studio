@@ -336,15 +336,21 @@ fn emit_shells(
         let (wide, narrow, floating) = classify_internal_solid(&rest, lower_sparse, settings);
 
         let top_region = shells.top[i].clone();
-        let top_surface =
-            infill::solid_surface(&shells.top[i], spacing, i, settings.top_surface_pattern);
+        let top_surface = infill::solid_surface(
+            &shells.top[i],
+            spacing,
+            i,
+            settings.top_surface_pattern,
+            settings.infill_direction_deg,
+        );
         let bottom_paths = infill::solid_surface(
             &shells.bottom[i],
             spacing,
             i.wrapping_add(1),
             settings.bottom_surface_pattern,
+            settings.infill_direction_deg,
         );
-        let mut solid_infill = infill::solid(&wide, spacing, i);
+        let mut solid_infill = infill::solid(&wide, spacing, i, settings.infill_direction_deg);
         solid_infill.extend(closed_concentric(&narrow, spacing));
         let floating_vertical_shell = closed_concentric(&floating, spacing);
         let infill = sparse_paths[i].clone();

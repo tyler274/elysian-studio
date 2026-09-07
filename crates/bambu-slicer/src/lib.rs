@@ -1181,6 +1181,51 @@ mod tests {
         assert!(mid_sparse.solid_infill.is_empty());
     }
 
+    #[test]
+    fn cube_rectilinear_uses_infill_direction() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_direction_deg = 45.0;
+        let diagonal = slice_mesh(&mesh, &settings).unwrap();
+        settings.infill_direction_deg = 0.0;
+        let along_x = slice_mesh(&mesh, &settings).unwrap();
+        let dir = |paths: &[bambu_geom::Polyline]| {
+            let mut ax = 0.0;
+            let mut ay = 0.0;
+            let mut n = 0.0;
+            for path in paths {
+                if path.len() < 2 {
+                    continue;
+                }
+                let (x0, y0) = path[0].to_mm();
+                let (x1, y1) = path[path.len() - 1].to_mm();
+                let dx = x1 - x0;
+                let dy = y1 - y0;
+                let len = (dx * dx + dy * dy).sqrt();
+                if len < 1.0 {
+                    continue;
+                }
+                ax += dx.abs() / len;
+                ay += dy.abs() / len;
+                n += 1.0;
+            }
+            (ax / n, ay / n)
+        };
+        let mid_d = &diagonal.layers[diagonal.layers.len() / 2];
+        let mid_x = &along_x.layers[along_x.layers.len() / 2];
+        let (x45, y45) = dir(&mid_d.infill);
+        let (x0, y0) = dir(&mid_x.infill);
+        assert!(
+            (x45 - y45).abs() < 0.25,
+            "default 45° sparse should be diagonal, got ({x45}, {y45})"
+        );
+        assert!(
+            x0 > 0.9 && y0 < 0.15,
+            "0° sparse should run along X, got ({x0}, {y0})"
+        );
+    }
+
     fn solid_path_len_mm(layers: &[Layer]) -> f64 {
         layers
             .iter()

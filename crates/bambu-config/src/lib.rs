@@ -522,6 +522,8 @@ pub struct SliceSettings {
     pub top_one_wall: TopOneWallType,
     pub infill_density: f64,
     pub infill_pattern: InfillPattern,
+    /// C++ `infill_direction` (degrees). Sparse/solid scanlines are rotated by this.
+    pub infill_direction_deg: f64,
     /// C++ `minimum_sparse_infill_area` (mm²). Sparse islands at or below this
     /// become internal solid. 0 disables.
     pub minimum_sparse_infill_area_mm2: f64,
@@ -884,6 +886,7 @@ impl Default for SliceSettings {
             top_one_wall: TopOneWallType::None,
             infill_density: 0.20,
             infill_pattern: InfillPattern::Gyroid,
+            infill_direction_deg: 45.0,
             minimum_sparse_infill_area_mm2: 15.0,
             seam: SeamPosition::Aligned,
             wall_generator: WallGenerator::Classic,

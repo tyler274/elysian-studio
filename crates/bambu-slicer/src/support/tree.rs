@@ -129,16 +129,16 @@ fn draw(
             } else {
                 fill
             };
-            layer.support_interface = infill::rectilinear(&fill, interface_spacing, i);
+            layer.support_interface = infill::rectilinear(&fill, interface_spacing, i, 0.0);
         } else if is_roof {
             let fill = offset_polygons(&unioned, -inset);
             if !fill.is_empty() {
-                layer.support_interface = infill::rectilinear(&fill, interface_spacing, i);
+                layer.support_interface = infill::rectilinear(&fill, interface_spacing, i, 0.0);
             }
         } else if i == 0 {
             let pads = offset_polygons(&unioned, radius.max(0.4));
             let pads = if pads.is_empty() { unioned } else { pads };
-            layer.support = infill::rectilinear(&pads, pad_spacing, i);
+            layer.support = infill::rectilinear(&pads, pad_spacing, i, 0.0);
             layer.support_region = pads;
         } else {
             layer.support = unioned.into_iter().filter(|p| p.len() >= 3).collect();
