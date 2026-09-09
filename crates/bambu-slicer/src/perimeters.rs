@@ -97,7 +97,7 @@ fn classic_perimeters(
     PerimeterResult {
         outer,
         inner,
-        infill_region,
+        infill_region: apply_infill_wall_overlap(infill_region, settings),
         gap_infill,
         seam_hint: hint,
     }
@@ -140,9 +140,20 @@ fn arachne_perimeters(
     PerimeterResult {
         outer,
         inner,
-        infill_region,
+        infill_region: apply_infill_wall_overlap(infill_region, settings),
         gap_infill: Vec::new(),
         seam_hint: hint,
+    }
+}
+
+/// C++ `infill_wall_overlap`: enlarge the fill contour toward the last wall.
+/// Percent is applied to line width (BBL 15% ≈ 0.063 mm at 0.42 mm).
+fn apply_infill_wall_overlap(infill: Vec<Polygon>, settings: &SliceSettings) -> Vec<Polygon> {
+    let grow = settings.infill_wall_overlap * settings.line_width_mm;
+    if grow <= 1e-9 || infill.is_empty() {
+        infill
+    } else {
+        offset_polygons(&infill, grow)
     }
 }
 
@@ -428,6 +439,52 @@ mod tests {
             .flat_map(|pl| pl.windows(2))
             .map(|w| w[0].distance_mm(w[1]))
             .sum()
+    }
+
+    fn region_area(polys: &[Polygon]) -> f64 {
+        polys.iter().map(crate::contour_area_mm2).sum()
+    }
+
+    #[test]
+    fn infill_wall_overlap_grows_fill_region() {
+        let contours = vec![rect(20.0, 20.0)];
+        let mut off = SliceSettings::default();
+        off.wall_loops = 2;
+        off.gap_infill_speed_mm_s = 0.0;
+        off.infill_wall_overlap = 0.0;
+        let mut on = off.clone();
+        on.infill_wall_overlap = 0.15;
+        let a = generate(&contours, &off, None, None);
+        let b = generate(&contours, &on, None, None);
+        let area_off = region_area(&a.infill_region);
+        let area_on = region_area(&b.infill_region);
+        assert!(
+            area_on > area_off + 2.0,
+            "15% overlap should grow infill toward walls: off={area_off} on={area_on}"
+        );
+        let mut arachne = on.clone();
+        arachne.wall_generator = WallGenerator::Arachne;
+        let c = generate(&contours, &arachne, None, None);
+        assert!(
+            (region_area(&c.infill_region) - area_on).abs() < 1.0,
+            "arachne should apply the same overlap grow"
+        );
+    }
+
+    #[test]
+    fn infill_wall_overlap_does_not_refill_gaps() {
+        let contours = vec![rect(0.7, 20.0)];
+        let mut settings = SliceSettings::default();
+        settings.line_width_mm = 0.42;
+        settings.wall_loops = 2;
+        settings.gap_infill_speed_mm_s = 45.0;
+        settings.infill_wall_overlap = 0.15;
+        let peri = generate(&contours, &settings, None, None);
+        assert!(!peri.gap_infill.is_empty());
+        assert!(
+            peri.infill_region.is_empty(),
+            "overlap must not grow empty leftover into infill"
+        );
     }
 
     #[test]

@@ -34,7 +34,10 @@ pub fn generate(
             lines
         }
         InfillPattern::Concentric => concentric(region, spacing),
-        InfillPattern::Gyroid => gyroid::fill(region, spacing, settings.infill_density, z_mm),
+        // C++ `FillGyroid::CorrectionAngle` (−45°) cancels the default 45° direction.
+        InfillPattern::Gyroid => fill_at_angle(region, settings.infill_direction_deg - 45.0, |r| {
+            gyroid::fill(r, spacing, settings.infill_density, z_mm)
+        }),
         InfillPattern::Honeycomb => honeycomb::fill(
             region,
             spacing,
@@ -42,9 +45,9 @@ pub fn generate(
             layer_index,
             settings.infill_direction_deg,
         ),
-        InfillPattern::Honeycomb3D => {
-            honeycomb3d::fill(region, spacing, settings.infill_density, z_mm)
-        }
+        InfillPattern::Honeycomb3D => fill_at_angle(region, settings.infill_direction_deg, |r| {
+            honeycomb3d::fill(r, spacing, settings.infill_density, z_mm)
+        }),
         // Trees need every sparse layer; `prepare_infill` calls `generate_lightning`.
         InfillPattern::Lightning => Vec::new(),
         // Octree is built from the mesh in `prepare_infill`.
@@ -206,6 +209,27 @@ fn scanlines(
     lines
 }
 
+/// Rotate the region by `-angle`, fill, then rotate paths back (`FillGyroid` / `Fill3DHoneycomb`).
+fn fill_at_angle(
+    region: &[Polygon],
+    angle_deg: f64,
+    fill: impl FnOnce(&[Polygon]) -> Vec<Polyline>,
+) -> Vec<Polyline> {
+    let angle = angle_deg.to_radians();
+    if angle.abs() < 1e-12 {
+        return fill(region);
+    }
+    let (cos_a, sin_a) = angle.sin_cos();
+    let rotated = rotate_polygons(region, cos_a, -sin_a);
+    let mut lines = fill(&rotated);
+    for line in &mut lines {
+        for p in line {
+            *p = rotate_point(*p, cos_a, sin_a);
+        }
+    }
+    lines
+}
+
 fn rotate_polygons(polygons: &[Polygon], cos_a: f64, sin_a: f64) -> Vec<Polygon> {
     polygons
         .iter()
@@ -342,6 +366,7 @@ fn collect_scanline_us_scalar(edges: &[ScanEdge], v: i64) -> Vec<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bambu_config::{InfillPattern, SliceSettings};
     use bambu_geom::scale;
 
     #[test]
@@ -412,6 +437,52 @@ mod tests {
         assert!(
             (x45 - y45).abs() < 0.2,
             "45° lines should have similar |dx| and |dy|, got ({x45}, {y45})"
+        );
+    }
+
+    #[test]
+    fn gyroid_default_45_matches_unrotated() {
+        let region = square_mm(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Gyroid;
+        settings.infill_density = 0.15;
+        settings.infill_direction_deg = 45.0;
+        let via_generate = generate(&region, &settings, 0, 1.0);
+        let direct = gyroid::fill(
+            &region,
+            settings.infill_spacing_mm(),
+            settings.infill_density,
+            1.0,
+        );
+        assert!(!via_generate.is_empty());
+        assert_eq!(
+            via_generate, direct,
+            "C++ CorrectionAngle −45° should cancel default infill_direction"
+        );
+    }
+
+    #[test]
+    fn gyroid_follows_infill_direction() {
+        let region = square_mm(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Gyroid;
+        settings.infill_density = 0.15;
+        settings.infill_direction_deg = 45.0;
+        let at_45 = generate(&region, &settings, 0, 1.0);
+        settings.infill_direction_deg = 0.0;
+        let at_0 = generate(&region, &settings, 0, 1.0);
+        assert!(!at_45.is_empty());
+        assert!(!at_0.is_empty());
+        assert_ne!(at_45, at_0);
+        let (x45, y45) = mean_abs_dir(&at_45);
+        let (x0, y0) = mean_abs_dir(&at_0);
+        assert!(
+            (x45 - y45).abs() > 0.25,
+            "default 45° gyroid should stay axis-aligned, got ({x45}, {y45})"
+        );
+        assert!(
+            (x0 - y0).abs() < 0.35,
+            "0° gyroid should be diagonal after −45° correction, got ({x0}, {y0})"
         );
     }
 }

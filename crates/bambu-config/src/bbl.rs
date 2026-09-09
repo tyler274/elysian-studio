@@ -133,6 +133,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "minimum_sparse_infill_area",
         num_str(settings.minimum_sparse_infill_area_mm2),
     );
+    insert(
+        &mut map,
+        "infill_wall_overlap",
+        pct_str(settings.infill_wall_overlap),
+    );
     insert(&mut map, "seam_position", settings.seam.as_str());
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert(
@@ -1142,6 +1147,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "sparse_infill_pattern"
             | "infill_direction"
             | "minimum_sparse_infill_area"
+            | "infill_wall_overlap"
             | "seam_position"
             | "wall_generator"
             | "min_feature_size"
@@ -1295,6 +1301,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "minimum_sparse_infill_area") {
         s.minimum_sparse_infill_area_mm2 = v.max(0.0);
+    }
+    if let Some(v) = percent(map, "infill_wall_overlap") {
+        s.infill_wall_overlap = v.clamp(0.0, 1.0);
     }
     if let Some(name) = text(map, "seam_position") {
         if let Some(p) = SeamPosition::from_name(&name) {
@@ -2283,6 +2292,7 @@ mod tests {
         pairs.insert("bottom_shell_thickness".into(), "0.8".into());
         pairs.insert("minimum_sparse_infill_area".into(), "12".into());
         pairs.insert("infill_direction".into(), "30".into());
+        pairs.insert("infill_wall_overlap".into(), "25%".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(
             s.ensure_vertical_shell_thickness,
@@ -2292,6 +2302,7 @@ mod tests {
         assert!((s.bottom_shell_thickness_mm - 0.8).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 12.0).abs() < 1e-9);
         assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
+        assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
     }
 
     #[test]
@@ -2320,6 +2331,7 @@ mod tests {
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
+        assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
         assert!(!s.enable_support);
         assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
@@ -2379,6 +2391,10 @@ mod tests {
         assert_eq!(
             value_text(obj.get("sparse_infill_pattern").unwrap()).as_deref(),
             Some("grid")
+        );
+        assert_eq!(
+            value_text(obj.get("infill_wall_overlap").unwrap()).as_deref(),
+            Some("15%")
         );
         assert_eq!(
             value_text(obj.get("top_shell_layers").unwrap()).as_deref(),

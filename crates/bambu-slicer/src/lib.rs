@@ -1226,6 +1226,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cube_gyroid_uses_infill_direction() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Gyroid;
+        settings.infill_direction_deg = 45.0;
+        let at_45 = slice_mesh(&mesh, &settings).unwrap();
+        settings.infill_direction_deg = 0.0;
+        let at_0 = slice_mesh(&mesh, &settings).unwrap();
+        let mid_45 = &at_45.layers[at_45.layers.len() / 2];
+        let mid_0 = &at_0.layers[at_0.layers.len() / 2];
+        assert!(!mid_45.infill.is_empty());
+        assert!(!mid_0.infill.is_empty());
+        assert_ne!(
+            mid_45.infill, mid_0.infill,
+            "gyroid at 0° should rotate off the default 45° waves"
+        );
+    }
+
+    #[test]
+    fn cube_infill_wall_overlap_lengthens_sparse() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.detect_narrow_internal_solid_infill = false;
+        settings.infill_wall_overlap = 0.0;
+        let none = slice_mesh(&mesh, &settings).unwrap();
+        settings.infill_wall_overlap = 0.15;
+        let overlap = slice_mesh(&mesh, &settings).unwrap();
+        let path_len = |paths: &[bambu_geom::Polyline]| {
+            paths
+                .iter()
+                .map(|path| path.windows(2).map(|w| w[0].distance_mm(w[1])).sum::<f64>())
+                .sum::<f64>()
+        };
+        let mid_none = &none.layers[none.layers.len() / 2];
+        let mid_over = &overlap.layers[overlap.layers.len() / 2];
+        assert!(mid_none.solid_infill.is_empty());
+        assert!(mid_over.solid_infill.is_empty());
+        assert!(!mid_none.infill.is_empty());
+        assert!(!mid_over.infill.is_empty());
+        let area_none: f64 = mid_none.infill_region.iter().map(contour_area_mm2).sum();
+        let area_over: f64 = mid_over.infill_region.iter().map(contour_area_mm2).sum();
+        assert!(
+            area_over > area_none + 2.0,
+            "15% wall overlap should grow the sparse region: none={area_none} overlap={area_over}"
+        );
+        let len_none = path_len(&mid_none.infill);
+        let len_over = path_len(&mid_over.infill);
+        assert!(
+            len_over > len_none,
+            "grown region should lengthen sparse paths: none={len_none} overlap={len_over}"
+        );
+    }
+
     fn solid_path_len_mm(layers: &[Layer]) -> f64 {
         layers
             .iter()
