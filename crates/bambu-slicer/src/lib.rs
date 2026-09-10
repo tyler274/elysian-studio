@@ -1150,6 +1150,41 @@ mod tests {
     }
 
     #[test]
+    fn build_plate_only_skips_overhangs_above_the_model() {
+        let mesh = TriangleMesh::pedestal_cap(20.0, 6.0, 16.0, 4.0, 8.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let on_model = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        settings.support_on_build_plate_only = true;
+        let plate_only = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        assert!(
+            on_model >= 8,
+            "cap overhangs should rest on the model without the flag, got {on_model}"
+        );
+        assert!(
+            plate_only < on_model / 2,
+            "C++ buildplate_covered should drop cap overhangs above the base: on_model={on_model} plate_only={plate_only}"
+        );
+    }
+
+    #[test]
+    fn build_plate_only_still_supports_table_overhang() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.support_on_build_plate_only = true;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let n = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        assert!(
+            n >= 10,
+            "slab wings sit outside the pillar silhouette, got {n}"
+        );
+    }
+
+    #[test]
     fn table_overhang_gets_tree_support() {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
         let mut tree = SliceSettings::default();

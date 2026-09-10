@@ -791,6 +791,8 @@ pub struct SliceSettings {
     /// First raft layer fill fraction (`raft_first_layer_density`, C++ percent).
     pub raft_first_layer_density: f64,
     pub enable_support: bool,
+    /// C++ `support_on_build_plate_only`. Don't rest support on the model.
+    pub support_on_build_plate_only: bool,
     /// C++ `support_type`. Default is classic columns; BBL profiles use tree.
     pub support_type: SupportType,
     /// Maximum overhang angle from vertical that does not need support (degrees).
@@ -1140,6 +1142,7 @@ impl Default for SliceSettings {
             raft_first_layer_expansion_mm: -1.0,
             raft_first_layer_density: 0.90,
             enable_support: false,
+            support_on_build_plate_only: false,
             support_type: SupportType::Classic,
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,

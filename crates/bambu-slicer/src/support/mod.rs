@@ -21,6 +21,9 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         return;
     }
     let mut overhangs = detect_overhangs(layers, settings);
+    if settings.support_on_build_plate_only {
+        trim_overhangs_above_model(&mut overhangs, layers);
+    }
     apply_enforcer_blocker(&mut overhangs, layers);
     match settings.support_type {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
@@ -42,6 +45,22 @@ fn detect_overhangs(layers: &[Layer], settings: &SliceSettings) -> Vec<Vec<Polyg
         *slot = difference_polygons(&layers[i].contours, &supported);
     });
     overhangs
+}
+
+/// C++ `PrintObjectSupportMaterial::buildplate_covered`: union of slices
+/// below the current layer, then `diff` overhangs so support cannot rest on
+/// the model.
+fn trim_overhangs_above_model(overhangs: &mut [Vec<Polygon>], layers: &[Layer]) {
+    let mut covered: Vec<Polygon> = Vec::new();
+    for i in 0..layers.len() {
+        if i > 0 && !covered.is_empty() {
+            overhangs[i] = difference_polygons(&overhangs[i], &covered);
+        }
+        let grown = offset_polygons(&layers[i].contours, 0.01);
+        let mut acc = covered;
+        acc.extend(grown);
+        covered = union_polygons(&acc);
+    }
 }
 
 /// C++ `SupportAnnotations`: enforcers are 90° contacts (`intersection(lslices, enforcer)

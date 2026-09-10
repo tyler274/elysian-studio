@@ -134,6 +134,31 @@ impl TriangleMesh {
         mesh
     }
 
+    /// Wide plate, thin stem, and a cap whose XY sits inside the plate.
+    /// Overhangs of the cap cannot reach the build plate without resting on the model.
+    pub fn pedestal_cap(
+        base_xy: f32,
+        stem_xy: f32,
+        cap_xy: f32,
+        base_z: f32,
+        stem_z: f32,
+        cap_z: f32,
+    ) -> Self {
+        let stem_inset = (base_xy - stem_xy) * 0.5;
+        let cap_inset = (base_xy - cap_xy) * 0.5;
+        let mut mesh = Self::aabb_box(Vec3::ZERO, Vec3::new(base_xy, base_xy, base_z));
+        mesh.append(&Self::aabb_box(
+            Vec3::new(stem_inset, stem_inset, base_z),
+            Vec3::new(stem_inset + stem_xy, stem_inset + stem_xy, base_z + stem_z),
+        ));
+        let cap_z0 = base_z + stem_z;
+        mesh.append(&Self::aabb_box(
+            Vec3::new(cap_inset, cap_inset, cap_z0),
+            Vec3::new(cap_inset + cap_xy, cap_inset + cap_xy, cap_z0 + cap_z),
+        ));
+        mesh
+    }
+
     /// Square frustum from `base` mm at z=0 to `top` mm at z=`height`.
     pub fn frustum(base: f32, top: f32, height: f32) -> Self {
         let inset = (base - top) * 0.5;

@@ -242,6 +242,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         pct_str(settings.raft_first_layer_density),
     );
     insert_bool(&mut map, "enable_support", settings.enable_support);
+    insert_bool(
+        &mut map,
+        "support_on_build_plate_only",
+        settings.support_on_build_plate_only,
+    );
     insert(&mut map, "support_type", settings.support_type.as_str());
     insert(
         &mut map,
@@ -1492,6 +1497,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = bool_val(map, "enable_support") {
         s.enable_support = v;
     }
+    if let Some(v) = bool_val(map, "support_on_build_plate_only") {
+        s.support_on_build_plate_only = v;
+    }
     if let Some(name) = text(map, "support_type") {
         if let Some(t) = SupportType::from_name(&name) {
             s.support_type = t;
@@ -2571,6 +2579,7 @@ mod tests {
         assert!(s.enable_arc_fitting);
         assert!((s.resolution_mm - 0.012).abs() < 1e-9);
         assert!(!s.enable_support);
+        assert!(!s.support_on_build_plate_only);
         assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
         assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
@@ -2990,6 +2999,7 @@ mod tests {
         src.infill_density = 0.15;
         src.wall_loops = 3;
         src.enable_support = true;
+        src.support_on_build_plate_only = true;
         src.support_type = crate::SupportType::Tree;
         src.ironing_type = crate::IroningType::TopSurfaces;
         src.temperature_c = 215;
@@ -3010,6 +3020,7 @@ mod tests {
         assert!((loaded.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(loaded.wall_loops, 3);
         assert!(loaded.enable_support);
+        assert!(loaded.support_on_build_plate_only);
         assert_eq!(loaded.support_type, crate::SupportType::Tree);
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
         assert_eq!(loaded.temperature_c, 215);
@@ -3093,6 +3104,7 @@ mod tests {
         pairs.insert("extruder".into(), "3".into());
         pairs.insert("layer_height".into(), "0.08".into());
         pairs.insert("enable_support".into(), "1".into());
+        pairs.insert("support_on_build_plate_only".into(), "1".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert!((s.infill_density - 1.0).abs() < 1e-9);
         assert_eq!(s.wall_loops, 6);
@@ -3101,9 +3113,11 @@ mod tests {
         assert_eq!(s.solid_infill_filament, 3);
         assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
         assert!(!s.enable_support);
+        assert!(!s.support_on_build_plate_only);
         apply_config_pairs(&mut s, &pairs, false);
         assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
         assert!(s.enable_support);
+        assert!(s.support_on_build_plate_only);
     }
 
     #[test]
