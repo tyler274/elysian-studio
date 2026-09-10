@@ -17,6 +17,8 @@ pub use placeholder::{expand_placeholders, PlaceholderContext};
 pub const SPARSE_INFILL_RESOLUTION_MM: f64 = 0.04;
 /// C++ `SUPPORT_RESOLUTION` (mm). Support arc-fits coarser than walls.
 pub const SUPPORT_RESOLUTION_MM: f64 = 0.0375;
+/// C++ `LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER` for concentric fill loops.
+pub const LOOP_CLIPPING_OVER_NOZZLE: f64 = 0.15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InfillPattern {

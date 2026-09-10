@@ -34,6 +34,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         let first = layer_i == 0;
         w.state.lift_overhangs = lift_overhangs_in_window(&sliced.layers, layer.print_z_mm);
         w.state.internal_islands = layer.infill_region.clone();
+        w.state.support_islands = layer.support_region.clone();
         w.state.wall_paths = layer
             .outer_walls
             .iter()
@@ -282,7 +283,6 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
             w.emit_feature("Ironing", iron_flow.width_mm)?;
-            let iron_closed = layer.ironing.iter().any(|p| p.len() > 2);
             w.emit_marked(
                 settings.ironing_fan_speed >= 0,
                 ";_IRONING_FAN_START",
@@ -290,7 +290,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 |w| {
                     w.emit_paths(Extrude {
                         paths: &layer.ironing,
-                        closed: iron_closed,
+                        // C++ ironing is `ExtrusionPath`, not a closed loop.
+                        closed: false,
                         e_per_mm: iron_flow.e_per_mm(),
                         print_f: settings.ironing_speed_mm_s * 60.0,
                         mm3_per_mm: iron_flow.mm3_per_mm(),
@@ -333,6 +334,7 @@ impl Writer<'_> {
         }
         self.emit_feature(feature, job.width_mm)?;
         self.set_print_role(role);
+        self.state.dest_is_support = feature == "Support";
         self.emit_paths(job)
     }
 }

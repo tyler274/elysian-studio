@@ -141,6 +141,10 @@ impl Writer<'_> {
                         job.arc_tolerance_mm,
                     )
                 })?;
+                // C++ `erOverhangPerimeter` is a perimeter but not `erPerimeter`.
+                if total {
+                    self.state.last_leave_forces_retract = true;
+                }
             }
         }
         Ok(())

@@ -362,6 +362,7 @@ fn emit_shells(
             i,
             settings.top_surface_pattern,
             settings.infill_direction_deg,
+            settings.nozzle_diameter_mm,
         );
         let bottom_paths = infill::solid_surface(
             &shells.bottom[i],
@@ -369,10 +370,16 @@ fn emit_shells(
             i.wrapping_add(1),
             settings.bottom_surface_pattern,
             settings.infill_direction_deg,
+            settings.nozzle_diameter_mm,
         );
         let mut solid_infill = infill::solid(&wide, solid_w, i, settings.infill_direction_deg);
-        solid_infill.extend(closed_concentric(&narrow, solid_w));
-        let floating_vertical_shell = closed_concentric(&floating, solid_w);
+        solid_infill.extend(closed_concentric(
+            &narrow,
+            solid_w,
+            settings.nozzle_diameter_mm,
+        ));
+        let floating_vertical_shell =
+            closed_concentric(&floating, solid_w, settings.nozzle_diameter_mm);
         let infill = sparse_paths[i].clone();
         if append {
             append_union(&mut layer.top_region, top_region);
@@ -447,18 +454,12 @@ fn overlaps_lower_internal(poly: &Polygon, lower: &[Polygon]) -> bool {
     !intersect_polygons(&grown, lower).is_empty()
 }
 
-fn closed_concentric(region: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
-    infill::concentric(region, spacing_mm)
-        .into_iter()
-        .map(|mut ring| {
-            if let (Some(&first), Some(&last)) = (ring.first(), ring.last()) {
-                if first != last {
-                    ring.push(first);
-                }
-            }
-            ring
-        })
-        .collect()
+fn closed_concentric(region: &[Polygon], spacing_mm: f64, nozzle_mm: f64) -> Vec<Polyline> {
+    infill::concentric(
+        region,
+        spacing_mm,
+        nozzle_mm.max(0.0) * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
+    )
 }
 
 fn sparse_paths(

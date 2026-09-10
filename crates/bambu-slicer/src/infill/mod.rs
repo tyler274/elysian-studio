@@ -1,7 +1,7 @@
 //! Sparse infill patterns (classic Slic3r / Bambu set).
 
-use bambu_config::{InfillPattern, SliceSettings, SurfacePattern};
-use bambu_geom::{offset_polygons, scale, Point, Polygon, Polyline};
+use bambu_config::{InfillPattern, SliceSettings, SurfacePattern, LOOP_CLIPPING_OVER_NOZZLE};
+use bambu_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline};
 use wide::{i64x4, CmpLt};
 
 use crate::clip::clip_polylines;
@@ -33,7 +33,11 @@ pub fn generate(
             lines.extend(vertical(region, spacing, 1, settings.infill_direction_deg));
             lines
         }
-        InfillPattern::Concentric => concentric(region, spacing),
+        InfillPattern::Concentric => concentric(
+            region,
+            spacing,
+            settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE,
+        ),
         // C++ `FillGyroid::CorrectionAngle` (−45°) cancels the default 45° direction.
         InfillPattern::Gyroid => fill_at_angle(region, settings.infill_direction_deg - 45.0, |r| {
             gyroid::fill(r, spacing, settings.infill_density, z_mm)
@@ -104,9 +108,14 @@ pub fn solid_surface(
     layer_index: usize,
     pattern: SurfacePattern,
     angle_deg: f64,
+    nozzle_mm: f64,
 ) -> Vec<Polyline> {
     match pattern {
-        SurfacePattern::Concentric => concentric(polygons, spacing_mm),
+        SurfacePattern::Concentric => concentric(
+            polygons,
+            spacing_mm,
+            nozzle_mm.max(0.0) * LOOP_CLIPPING_OVER_NOZZLE,
+        ),
         SurfacePattern::Rectilinear => solid(polygons, spacing_mm, layer_index, angle_deg),
         SurfacePattern::Monotonic | SurfacePattern::MonotonicLine => {
             solid_monotonic(polygons, spacing_mm, layer_index, angle_deg)
@@ -318,7 +327,7 @@ fn collect_scanline_us(edges: &[ScanEdge], v: i64) -> Vec<i64> {
     us
 }
 
-pub(crate) fn concentric(polygons: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
+pub(crate) fn concentric(polygons: &[Polygon], spacing_mm: f64, clip_mm: f64) -> Vec<Polyline> {
     let mut out = Vec::new();
     let mut current = polygons.to_vec();
     for _ in 0..64 {
@@ -326,7 +335,18 @@ pub(crate) fn concentric(polygons: &[Polygon], spacing_mm: f64) -> Vec<Polyline>
         if rings.is_empty() {
             break;
         }
-        out.extend(rings.iter().filter(|r| r.len() >= 3).cloned());
+        for mut ring in rings.iter().filter(|r| r.len() >= 3).cloned() {
+            if let (Some(&first), Some(&last)) = (ring.first(), ring.last()) {
+                if first != last {
+                    ring.push(first);
+                }
+            }
+            // C++ `FillConcentric` `clip_end(loop_clipping)` so G-code sees an open loop.
+            let clipped = clip_end(&ring, clip_mm);
+            if clipped.len() >= 2 {
+                out.push(clipped);
+            }
+        }
         current = rings;
     }
     out
@@ -483,6 +503,24 @@ mod tests {
         assert!(
             (x0 - y0).abs() < 0.35,
             "0° gyroid should be diagonal after −45° correction, got ({x0}, {y0})"
+        );
+    }
+
+    #[test]
+    fn concentric_closes_loop_then_clips_nozzle_gap() {
+        let region = square_mm(20.0);
+        let clip = 0.4 * LOOP_CLIPPING_OVER_NOZZLE;
+        let paths = concentric(&region, 2.0, clip);
+        assert!(!paths.is_empty());
+        let ring = &paths[0];
+        assert!(ring.len() >= 4);
+        let first = ring[0];
+        let last = *ring.last().unwrap();
+        assert_ne!(first, last);
+        let gap = first.distance_mm(last);
+        assert!(
+            (gap - clip).abs() < 0.02,
+            "C++ loop_clipping is 0.15×nozzle, got {gap} want {clip}"
         );
     }
 }

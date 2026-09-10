@@ -19,6 +19,8 @@ pub use clipper::{
     union_polygons,
 };
 pub use mesh::{Aabb3, TriangleMesh};
-pub use point::{scale, unscale, Point, Polygon, Polyline, SCALING_FACTOR, SCALING_FACTOR_F64};
+pub use point::{
+    clip_end, scale, unscale, Point, Polygon, Polyline, SCALING_FACTOR, SCALING_FACTOR_F64,
+};
 
 pub type Polygons = Vec<Polygon>;

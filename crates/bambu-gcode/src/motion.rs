@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use bambu_config::{PrintAccel, SliceSettings, ZHopType};
 use bambu_geom::{
-    douglas_peucker, fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit,
+    clip_end, douglas_peucker, fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit,
     PathFitKind, Point, Polygon, Polyline,
 };
 use bambu_slicer::{point_in_polygons, Layer};
@@ -50,12 +50,18 @@ pub(crate) struct WriterState {
     pub(crate) short_travel_role: bool,
     /// C++ `is_perimeter(role)` for the extrusion this travel is heading toward.
     pub(crate) dest_is_perimeter: bool,
+    /// C++ destination `erSupportMaterial` / `erSupportTransition`.
+    pub(crate) dest_is_support: bool,
+    /// C++ `is_perimeter(last) && last != erPerimeter` after the previous extrusion.
+    pub(crate) last_leave_forces_retract: bool,
     /// Last `; LINE_WIDTH:` value (C++ `m_last_width`).
     pub(crate) last_line_width: Option<f64>,
     /// C++ internal infill islands for `travel_inside_internal_regions`.
     pub(crate) internal_islands: Vec<Polygon>,
     /// Current-layer wall polylines for `travel_cross_perimeters`.
     pub(crate) wall_paths: Vec<Polyline>,
+    /// C++ `SupportLayer::support_islands` for support-island travel.
+    pub(crate) support_islands: Vec<Polygon>,
 }
 
 impl<'a> Writer<'a> {
@@ -87,6 +93,7 @@ impl<'a> Writer<'a> {
         self.state.short_travel_role = kind == PrintAccel::OuterWall;
         self.state.dest_is_perimeter =
             matches!(kind, PrintAccel::OuterWall | PrintAccel::InnerWall);
+        self.state.dest_is_support = false;
     }
 
     pub(crate) fn emit_accel(&mut self, accel: f64) -> Result<(), GcodeError> {
@@ -329,7 +336,7 @@ impl<'a> Writer<'a> {
                 return Ok(());
             }
             if dist + 1e-9 >= self.settings.retraction_minimum_travel_mm
-                && !self.skip_infill_retract(prev, dest)
+                && !self.skip_retract(prev, dest)
             {
                 self.retract()?;
             }
@@ -355,6 +362,25 @@ impl<'a> Writer<'a> {
         }
         self.state.last = Some(dest);
         Ok(())
+    }
+
+    /// C++ `GCode::needs_retraction` after the minimum-travel check.
+    fn skip_retract(&self, from: (f64, f64), dest: (f64, f64)) -> bool {
+        // Leaving external/overhang perimeter always retracts (C++ `erExternalPerimeter`).
+        if self.state.last_leave_forces_retract {
+            return false;
+        }
+        if self.skip_support_island_retract(from, dest) {
+            return true;
+        }
+        self.skip_infill_retract(from, dest)
+    }
+
+    /// C++ support-material travel fully inside `support_islands`.
+    fn skip_support_island_retract(&self, from: (f64, f64), dest: (f64, f64)) -> bool {
+        self.state.dest_is_support
+            && !self.state.support_islands.is_empty()
+            && travel_inside_islands(from, dest, &self.state.support_islands)
     }
 
     /// C++ `reduce_infill_retraction` + `travel_inside_internal_regions_no_wall_crossing`.
@@ -391,7 +417,7 @@ impl<'a> Writer<'a> {
         if closed && !self.settings.spiral_mode {
             let gap = self.settings.seam_gap_mm();
             if gap > TRAVEL_EPS_MM {
-                pts = clip_suffix_points(&pts, gap);
+                pts = clip_end(&pts, gap);
             }
         }
         if pts.len() < 2 {
@@ -417,6 +443,8 @@ impl<'a> Writer<'a> {
             self.emit_linear_path(&simplified, e_per_mm, print_f, marker)?;
         }
         self.state.last_print_f = print_f;
+        // C++ `m_last_processor_extrusion_role`: outer walls are `erExternalPerimeter`.
+        self.state.last_leave_forces_retract = external_perimeter;
         Ok(())
     }
 
@@ -551,30 +579,6 @@ fn clip_prefix(path: &[(f64, f64)], max_len: f64) -> Vec<(f64, f64)> {
     out
 }
 
-/// C++ `Polyline::clip_end`: drop `max_len_mm` from the tail of a scaled path.
-fn clip_suffix_points(path: &[Point], max_len_mm: f64) -> Vec<Point> {
-    if path.len() < 2 || max_len_mm <= TRAVEL_EPS_MM {
-        return path.to_vec();
-    }
-    let mut pts = path.to_vec();
-    let mut remaining = max_len_mm;
-    while remaining > TRAVEL_EPS_MM && pts.len() >= 2 {
-        let last = pts.pop().expect("len >= 2");
-        let prev = *pts.last().expect("len >= 1");
-        let d = prev.distance_mm(last);
-        if d <= remaining {
-            remaining -= d;
-            continue;
-        }
-        let t = remaining / d;
-        let (px, py) = prev.to_mm();
-        let (lx, ly) = last.to_mm();
-        pts.push(Point::from_mm(lx + (px - lx) * t, ly + (py - ly) * t));
-        break;
-    }
-    pts
-}
-
 fn spiral_radius(hop: f64) -> f64 {
     hop / (2.0 * std::f64::consts::PI * SLOPE_THRESHOLD_RAD.atan())
 }
@@ -698,6 +702,7 @@ fn xy(p: Point) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bambu_config::ReduceInfillRetractionMode;
 
     #[test]
     fn clip_suffix_shortens_closed_square() {
@@ -708,7 +713,7 @@ mod tests {
             Point::from_mm(0.0, 10.0),
             Point::from_mm(0.0, 0.0),
         ];
-        let clipped = clip_suffix_points(&path, 0.06);
+        let clipped = clip_end(&path, 0.06);
         assert_eq!(clipped.len(), 5);
         let (x, y) = clipped.last().unwrap().to_mm();
         assert!(x.abs() < 1e-6, "{x}");
@@ -729,5 +734,59 @@ mod tests {
             (1.0, 0.0),
             (2.0, 0.0)
         ));
+    }
+
+    fn island_square() -> Vec<Polygon> {
+        vec![vec![
+            Point::from_mm(0.0, 0.0),
+            Point::from_mm(10.0, 0.0),
+            Point::from_mm(10.0, 10.0),
+            Point::from_mm(0.0, 10.0),
+        ]]
+    }
+
+    #[test]
+    fn skip_retract_inside_infill_islands() {
+        let mut settings = SliceSettings::default();
+        settings.reduce_infill_retraction_mode = ReduceInfillRetractionMode::Enabled;
+        settings.infill_density = 0.2;
+        let mut w = Writer::new(&settings);
+        w.state.internal_islands = island_square();
+        w.state.dest_is_perimeter = false;
+        w.state.last_leave_forces_retract = false;
+        assert!(w.skip_retract((1.0, 1.0), (8.0, 8.0)));
+    }
+
+    #[test]
+    fn leaving_external_perimeter_forces_retract() {
+        let mut settings = SliceSettings::default();
+        settings.reduce_infill_retraction_mode = ReduceInfillRetractionMode::Enabled;
+        settings.infill_density = 0.2;
+        let mut w = Writer::new(&settings);
+        w.state.internal_islands = island_square();
+        w.state.dest_is_perimeter = false;
+        w.state.last_leave_forces_retract = true;
+        assert!(!w.skip_retract((1.0, 1.0), (8.0, 8.0)));
+    }
+
+    #[test]
+    fn skip_retract_inside_support_islands() {
+        let settings = SliceSettings::default();
+        let mut w = Writer::new(&settings);
+        w.state.dest_is_support = true;
+        w.state.support_islands = island_square();
+        w.state.last_leave_forces_retract = false;
+        assert!(w.skip_retract((1.0, 1.0), (8.0, 8.0)));
+    }
+
+    #[test]
+    fn support_interface_does_not_use_support_islands() {
+        let settings = SliceSettings::default();
+        let mut w = Writer::new(&settings);
+        w.state.dest_is_support = false;
+        w.state.support_islands = island_square();
+        w.state.internal_islands.clear();
+        w.state.last_leave_forces_retract = false;
+        assert!(!w.skip_retract((1.0, 1.0), (8.0, 8.0)));
     }
 }

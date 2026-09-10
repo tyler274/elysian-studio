@@ -30,7 +30,11 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
             return;
         }
         layer.ironing = match settings.ironing_pattern {
-            IroningPattern::Concentric => infill::concentric(&inset_area, spacing),
+            IroningPattern::Concentric => infill::concentric(
+                &inset_area,
+                spacing,
+                settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
+            ),
             IroningPattern::Rectilinear => {
                 infill::solid_monotonic(&inset_area, spacing, i, settings.infill_direction_deg)
             }

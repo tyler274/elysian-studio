@@ -300,6 +300,30 @@ fn table_gcode_has_support() {
 }
 
 #[test]
+fn support_island_travel_skips_some_retracts() {
+    let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_support = true;
+    settings.wipe = false;
+    settings.retract_when_changing_layer = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retraction_minimum_travel_mm = 1.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let hops: usize = sliced
+        .layers
+        .iter()
+        .map(|l| l.support.len().saturating_sub(1))
+        .sum();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let retracts = feature_retract_count(&gcode, "Support");
+    assert!(hops > 10, "need enough support hops, got {hops}");
+    assert!(
+        retracts < hops,
+        "C++ skips retract inside support_islands: retracts={retracts} hops={hops}"
+    );
+}
+
+#[test]
 fn support_interface_uses_interface_speed() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
