@@ -127,6 +127,42 @@ impl WallGenerator {
     }
 }
 
+/// C++ `WallSequence` (`wall_sequence`). Legacy `wall_infill_order` remaps here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WallSequence {
+    /// Inner FEATURE bucket, then outer (`inner wall/outer wall`). C++ default.
+    #[default]
+    InnerOuter,
+    /// Outer FEATURE bucket, then inner (`outer wall/inner wall`).
+    OuterInner,
+    /// C++ weaves first-inner / outer / remaining-inners. Rewrite emits Inner then Outer.
+    InnerOuterInner,
+}
+
+impl WallSequence {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "inner wall/outer wall" | "inner/outer" | "innerouter" => Self::InnerOuter,
+            "outer wall/inner wall" | "outer/inner" | "outerinner" => Self::OuterInner,
+            "inner-outer-inner wall" | "inner-outer-inner" | "inner wall/outer wall/inner wall" => {
+                Self::InnerOuterInner
+            }
+            "inner wall/outer wall/infill" | "infill/inner wall/outer wall" => Self::InnerOuter,
+            "outer wall/inner wall/infill" | "infill/outer wall/inner wall" => Self::OuterInner,
+            "inner-outer-inner wall/infill" => Self::InnerOuterInner,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InnerOuter => "inner wall/outer wall",
+            Self::OuterInner => "outer wall/inner wall",
+            Self::InnerOuterInner => "inner-outer-inner wall",
+        }
+    }
+}
+
 /// C++ `OverhangFanThreshold` (`overhang_fan_threshold`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(u8)]
@@ -561,6 +597,10 @@ pub struct SliceSettings {
     pub infill_wall_overlap: f64,
     pub seam: SeamPosition,
     pub wall_generator: WallGenerator,
+    /// C++ `wall_sequence`. BBL `wall_infill_order` remaps onto this.
+    pub wall_sequence: WallSequence,
+    /// C++ `is_infill_first`. Print infill before walls except on G-code layer 0.
+    pub is_infill_first: bool,
     /// C++ `min_feature_size` as a fraction of nozzle diameter (default 25%).
     pub min_feature_size: f64,
     /// C++ `min_bead_width` as a fraction of nozzle diameter (default 85%).
@@ -938,6 +978,8 @@ impl Default for SliceSettings {
             infill_wall_overlap: 0.15,
             seam: SeamPosition::Aligned,
             wall_generator: WallGenerator::Classic,
+            wall_sequence: WallSequence::InnerOuter,
+            is_infill_first: false,
             min_feature_size: 0.25,
             min_bead_width: 0.85,
             fuzzy_skin: FuzzySkinType::None,
@@ -1161,6 +1203,14 @@ impl SliceSettings {
         } else {
             self.line_width_mm
         }
+    }
+
+    /// C++ Classic `is_outer_wall_first` for the two FEATURE buckets.
+    ///
+    /// InnerOuterInner weaves in C++; rewrite still emits Inner then Outer.
+    /// The layer-0 `btOuterOnly` brim reverse is skipped: BBL brim is `auto_brim`.
+    pub fn outer_walls_first(&self) -> bool {
+        matches!(self.wall_sequence, WallSequence::OuterInner)
     }
 
     /// C++ `LayerRegion::simplify_path` / `Layer::simplify_support_path` arc-fit epsilon.

@@ -130,123 +130,145 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             ),
         )?;
 
-        w.set_print_role(PrintAccel::OuterWall);
-        w.emit_wall_paths(
-            "Outer wall",
-            e(
-                &layer.outer_walls,
-                true,
-                feeds.wall,
-                FlowRole::ExternalPerimeter,
-                object_first,
-            ),
-            support_polys.as_deref(),
-            settings.enable_overhang_speed,
-            !first,
-        )?;
-        w.set_print_role(PrintAccel::InnerWall);
-        w.emit_wall_paths(
-            "Inner wall",
-            e(
-                &layer.inner_walls,
-                true,
-                feeds.inner,
-                FlowRole::Perimeter,
-                object_first,
-            ),
-            support_polys.as_deref(),
-            settings.enable_overhang_speed,
-            !first,
-        )?;
-        w.emit_role(
-            "Gap infill",
-            PrintAccel::Default,
-            e(
-                &layer.gap_infill,
-                false,
-                feeds.gap,
-                FlowRole::Perimeter,
-                object_first,
-            ),
-        )?;
-        w.emit_role(
-            "Sparse infill",
-            PrintAccel::SparseInfill,
-            e(
-                &layer.infill,
-                false,
-                feeds.sparse,
-                FlowRole::SparseInfill,
-                object_first,
-            ),
-        )?;
-        w.emit_role(
-            "Internal solid infill",
-            PrintAccel::Default,
-            e(
-                &layer.solid_infill,
-                false,
-                feeds.solid,
-                FlowRole::SolidInfill,
-                object_first,
-            ),
-        )?;
-        w.emit_floating_shell_paths(
-            e(
-                &layer.floating_vertical_shell,
-                false,
-                feeds.vertical_shell,
-                FlowRole::SolidInfill,
-                object_first,
-            ),
-            &layer.floating_areas,
-            feeds.bridge,
-            first,
-        )?;
-        if !layer.bridge.is_empty() {
-            let bridge_flow = Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first)
-                .with_flow_ratio(settings.bridge_flow);
-            w.emit_feature("Bridge", bridge_flow.width_mm)?;
-            w.set_print_role(PrintAccel::Default);
-            w.emit_marked(
-                settings.overhang_fan_applies(5, true, false),
-                ";_OVERHANG_FAN_START",
-                ";_OVERHANG_FAN_END",
-                |w| {
-                    w.emit_paths(Extrude {
-                        paths: &layer.bridge,
-                        closed: false,
-                        e_per_mm: bridge_flow.e_per_mm(),
-                        print_f: feeds.bridge,
-                        mm3_per_mm: bridge_flow.mm3_per_mm(),
-                        width_mm: bridge_flow.width_mm,
-                        arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::Perimeter),
-                    })
-                },
-            )?;
+        // C++ `is_infill_first && !first_layer`: infill before perimeters.
+        // Ironing stays last (`extrude_infill(..., true)`).
+        let infill_first = settings.is_infill_first && !first;
+        let outer_first = settings.outer_walls_first();
+        for walls_now in [!infill_first, infill_first] {
+            if walls_now {
+                let emit_outer = |w: &mut Writer<'_>| {
+                    w.set_print_role(PrintAccel::OuterWall);
+                    w.emit_wall_paths(
+                        "Outer wall",
+                        e(
+                            &layer.outer_walls,
+                            true,
+                            feeds.wall,
+                            FlowRole::ExternalPerimeter,
+                            object_first,
+                        ),
+                        support_polys.as_deref(),
+                        settings.enable_overhang_speed,
+                        !first,
+                    )
+                };
+                let emit_inner = |w: &mut Writer<'_>| {
+                    w.set_print_role(PrintAccel::InnerWall);
+                    w.emit_wall_paths(
+                        "Inner wall",
+                        e(
+                            &layer.inner_walls,
+                            true,
+                            feeds.inner,
+                            FlowRole::Perimeter,
+                            object_first,
+                        ),
+                        support_polys.as_deref(),
+                        settings.enable_overhang_speed,
+                        !first,
+                    )
+                };
+                if outer_first {
+                    emit_outer(&mut w)?;
+                    emit_inner(&mut w)?;
+                } else {
+                    emit_inner(&mut w)?;
+                    emit_outer(&mut w)?;
+                }
+                w.emit_role(
+                    "Gap infill",
+                    PrintAccel::Default,
+                    e(
+                        &layer.gap_infill,
+                        false,
+                        feeds.gap,
+                        FlowRole::Perimeter,
+                        object_first,
+                    ),
+                )?;
+            } else {
+                w.emit_role(
+                    "Sparse infill",
+                    PrintAccel::SparseInfill,
+                    e(
+                        &layer.infill,
+                        false,
+                        feeds.sparse,
+                        FlowRole::SparseInfill,
+                        object_first,
+                    ),
+                )?;
+                w.emit_role(
+                    "Internal solid infill",
+                    PrintAccel::Default,
+                    e(
+                        &layer.solid_infill,
+                        false,
+                        feeds.solid,
+                        FlowRole::SolidInfill,
+                        object_first,
+                    ),
+                )?;
+                w.emit_floating_shell_paths(
+                    e(
+                        &layer.floating_vertical_shell,
+                        false,
+                        feeds.vertical_shell,
+                        FlowRole::SolidInfill,
+                        object_first,
+                    ),
+                    &layer.floating_areas,
+                    feeds.bridge,
+                    first,
+                )?;
+                if !layer.bridge.is_empty() {
+                    let bridge_flow =
+                        Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first)
+                            .with_flow_ratio(settings.bridge_flow);
+                    w.emit_feature("Bridge", bridge_flow.width_mm)?;
+                    w.set_print_role(PrintAccel::Default);
+                    w.emit_marked(
+                        settings.overhang_fan_applies(5, true, false),
+                        ";_OVERHANG_FAN_START",
+                        ";_OVERHANG_FAN_END",
+                        |w| {
+                            w.emit_paths(Extrude {
+                                paths: &layer.bridge,
+                                closed: false,
+                                e_per_mm: bridge_flow.e_per_mm(),
+                                print_f: feeds.bridge,
+                                mm3_per_mm: bridge_flow.mm3_per_mm(),
+                                width_mm: bridge_flow.width_mm,
+                                arc_tolerance_mm: settings
+                                    .arc_fit_tolerance_mm(FlowRole::Perimeter),
+                            })
+                        },
+                    )?;
+                }
+                w.emit_role(
+                    "Bottom surface",
+                    PrintAccel::Default,
+                    e(
+                        &layer.bottom_surface,
+                        false,
+                        feeds.wall,
+                        FlowRole::SolidInfill,
+                        object_first,
+                    ),
+                )?;
+                w.emit_role(
+                    "Top surface",
+                    PrintAccel::TopSurface,
+                    e(
+                        &layer.top_surface,
+                        false,
+                        feeds.top,
+                        FlowRole::TopSolidInfill,
+                        object_first,
+                    ),
+                )?;
+            }
         }
-        w.emit_role(
-            "Bottom surface",
-            PrintAccel::Default,
-            e(
-                &layer.bottom_surface,
-                false,
-                feeds.wall,
-                FlowRole::SolidInfill,
-                object_first,
-            ),
-        )?;
-        w.emit_role(
-            "Top surface",
-            PrintAccel::TopSurface,
-            e(
-                &layer.top_surface,
-                false,
-                feeds.top,
-                FlowRole::TopSolidInfill,
-                object_first,
-            ),
-        )?;
         if !layer.ironing.is_empty() {
             w.set_print_role(PrintAccel::Default);
             let iron_flow =

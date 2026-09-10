@@ -1,6 +1,6 @@
 use super::*;
 use crate::parse::parse_axis;
-use bambu_config::SliceSettings;
+use bambu_config::{SliceSettings, WallSequence};
 use bambu_geom::TriangleMesh;
 use bambu_slicer::slice_mesh;
 
@@ -29,6 +29,57 @@ fn cube_gcode_has_layers() {
     let report = parse_gcode(&gcode);
     assert_eq!(report.layer_changes, stats.layer_comments);
     assert!(report.features.contains("Outer wall"));
+}
+
+#[test]
+fn inner_outer_emits_inner_walls_first() {
+    let mesh = TriangleMesh::cube(20.0);
+    let settings = SliceSettings::default();
+    assert!(!settings.outer_walls_first());
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert_feature_before(layer1, "Inner wall", "Outer wall");
+}
+
+#[test]
+fn outer_inner_emits_outer_walls_first() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.wall_sequence = WallSequence::OuterInner;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert_feature_before(layer1, "Outer wall", "Inner wall");
+}
+
+#[test]
+fn bbl_inner_outer_keeps_inner_first_with_auto_brim() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer0 = layer_block(&gcode, 0).expect("layer 0");
+    assert_feature_before(layer0, "Brim", "Inner wall");
+    assert_feature_before(layer0, "Inner wall", "Outer wall");
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert_feature_before(layer1, "Inner wall", "Outer wall");
+}
+
+#[test]
+fn infill_first_prints_fill_before_walls_after_layer_zero() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.is_infill_first = true;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer0 = layer_block(&gcode, 0).expect("layer 0");
+    assert_feature_before(layer0, "Inner wall", "Bottom surface");
+    let mid = layer_block(&gcode, 10).expect("layer 10");
+    assert_feature_before(mid, "Sparse infill", "Inner wall");
+    assert_feature_before(mid, "Sparse infill", "Outer wall");
 }
 
 #[test]
@@ -1765,6 +1816,18 @@ fn wrapping_g39_layers(exec: &str) -> Vec<usize> {
         }
     }
     hits
+}
+
+fn assert_feature_before(block: &str, first: &str, second: &str) {
+    let a = format!("; FEATURE: {first}");
+    let b = format!("; FEATURE: {second}");
+    let pa = block
+        .find(&a)
+        .unwrap_or_else(|| panic!("missing {first}\n{block}"));
+    let pb = block
+        .find(&b)
+        .unwrap_or_else(|| panic!("missing {second}\n{block}"));
+    assert!(pa < pb, "{first} should precede {second}\n{block}");
 }
 
 fn feature_extrusion(gcode: &str, feature: &str) -> f64 {

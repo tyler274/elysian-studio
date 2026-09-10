@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, IroningPattern, IroningType,
     OverhangFanThreshold, SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType,
-    WallGenerator, ZHopType,
+    WallGenerator, WallSequence, ZHopType,
 };
 
 #[derive(Debug, Error)]
@@ -175,6 +175,8 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(&mut map, "seam_position", settings.seam.as_str());
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
+    insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());
+    insert_bool(&mut map, "is_infill_first", settings.is_infill_first);
     insert(
         &mut map,
         "min_feature_size",
@@ -1198,6 +1200,8 @@ pub fn is_region_key(key: &str) -> bool {
             | "infill_wall_overlap"
             | "seam_position"
             | "wall_generator"
+            | "wall_sequence"
+            | "wall_infill_order"
             | "min_feature_size"
             | "min_bead_width"
             | "fuzzy_skin"
@@ -1384,6 +1388,24 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(g) = WallGenerator::from_name(&name) {
             s.wall_generator = g;
         }
+    }
+    // C++ `handle_legacy`: `wall_infill_order` remaps to `wall_sequence`.
+    // Config.cpp also sets `is_infill_first` when the legacy value starts with infill.
+    if let Some(name) = text(map, "wall_infill_order") {
+        if let Some(seq) = WallSequence::from_name(&name) {
+            s.wall_sequence = seq;
+        }
+        if name.trim().to_ascii_lowercase().starts_with("infill/") {
+            s.is_infill_first = true;
+        }
+    }
+    if let Some(name) = text(map, "wall_sequence") {
+        if let Some(seq) = WallSequence::from_name(&name) {
+            s.wall_sequence = seq;
+        }
+    }
+    if let Some(v) = bool_val(map, "is_infill_first") {
+        s.is_infill_first = v;
     }
     if let Some(v) = percent(map, "min_feature_size") {
         s.min_feature_size = v.max(0.0);
@@ -2390,6 +2412,45 @@ mod tests {
     }
 
     #[test]
+    fn wall_infill_order_remaps_to_wall_sequence() {
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert(
+            "wall_infill_order".into(),
+            "outer wall/inner wall/infill".into(),
+        );
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(s.wall_sequence, crate::WallSequence::OuterInner);
+        assert!(!s.is_infill_first);
+
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert(
+            "wall_infill_order".into(),
+            "infill/inner wall/outer wall".into(),
+        );
+        apply_config_pairs(&mut s, &pairs, false);
+        assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
+        assert!(s.is_infill_first);
+
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert(
+            "wall_infill_order".into(),
+            "inner-outer-inner wall/infill".into(),
+        );
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuterInner);
+
+        let mut s = SliceSettings::default();
+        let mut pairs = BTreeMap::new();
+        pairs.insert("wall_sequence".into(), "outer wall/inner wall".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(s.wall_sequence, crate::WallSequence::OuterInner);
+        assert!(s.outer_walls_first());
+    }
+
+    #[test]
     fn upstream_fdm_process_0_20() {
         let Some(res) = bbl_resources_dir() else {
             panic!(
@@ -2441,6 +2502,8 @@ mod tests {
         assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
         assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
         assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
+        assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
+        assert!(!s.is_infill_first);
         assert!((s.min_feature_size - 0.25).abs() < 1e-9);
         assert!((s.min_bead_width - 0.85).abs() < 1e-9);
         assert!(s.small_perimeter_speed_is_percent);
@@ -2528,6 +2591,10 @@ mod tests {
         assert_eq!(
             value_text(obj.get("skirt_loops").unwrap()).as_deref(),
             Some("0")
+        );
+        assert_eq!(
+            value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
+            Some("inner wall/outer wall/infill")
         );
         assert_eq!(
             value_text(obj.get("brim_width").unwrap()).as_deref(),
@@ -2857,10 +2924,14 @@ mod tests {
         assert!(!loaded.enable_arc_fitting);
         src.enable_arc_fitting = true;
         src.resolution_mm = 0.012;
+        src.wall_sequence = crate::WallSequence::OuterInner;
+        src.is_infill_first = true;
         let json = crate::project_settings_json(&src).unwrap();
         let loaded = crate::settings_from_json(&json).unwrap();
         assert!(loaded.enable_arc_fitting);
         assert!((loaded.resolution_mm - 0.012).abs() < 1e-9);
+        assert_eq!(loaded.wall_sequence, crate::WallSequence::OuterInner);
+        assert!(loaded.is_infill_first);
     }
 
     #[test]
