@@ -93,7 +93,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 true,
                 feeds.wall,
                 FlowRole::ExternalPerimeter,
-                first,
+                // C++ `skirt_flow()` keeps first-layer width so loops stay aligned.
+                true,
             ),
         )?;
         w.emit_role(

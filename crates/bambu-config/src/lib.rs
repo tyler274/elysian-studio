@@ -586,6 +586,8 @@ pub struct SliceSettings {
     pub wall_loops: u32,
     /// C++ `top_one_wall_type` (BBL default is `all top`).
     pub top_one_wall: TopOneWallType,
+    /// C++ `only_one_wall_first_layer`. Drop inner walls on object layer 0.
+    pub only_one_wall_first_layer: bool,
     pub infill_density: f64,
     pub infill_pattern: InfillPattern,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
@@ -596,6 +598,8 @@ pub struct SliceSettings {
     /// C++ `infill_wall_overlap` as a fraction of line width (BBL default 15%).
     pub infill_wall_overlap: f64,
     pub seam: SeamPosition,
+    /// C++ `seam_gap` as a fraction of nozzle diameter (default 15%).
+    pub seam_gap: f64,
     pub wall_generator: WallGenerator,
     /// C++ `wall_sequence`. BBL `wall_infill_order` remaps onto this.
     pub wall_sequence: WallSequence,
@@ -669,6 +673,8 @@ pub struct SliceSettings {
     pub small_perimeter_threshold_mm: f64,
     /// Skirt loops around layer 0 (0 disables).
     pub skirt_loops: u32,
+    /// C++ `skirt_height` (layers). 0 disables the skirt even when loops > 0.
+    pub skirt_height: u32,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
     pub skirt_distance_mm: f64,
     /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
@@ -971,12 +977,14 @@ impl Default for SliceSettings {
             support_line_width_mm: 0.0,
             wall_loops: 2,
             top_one_wall: TopOneWallType::None,
+            only_one_wall_first_layer: false,
             infill_density: 0.20,
             infill_pattern: InfillPattern::Gyroid,
             infill_direction_deg: 45.0,
             minimum_sparse_infill_area_mm2: 15.0,
             infill_wall_overlap: 0.15,
             seam: SeamPosition::Aligned,
+            seam_gap: 0.15,
             wall_generator: WallGenerator::Classic,
             wall_sequence: WallSequence::InnerOuter,
             is_infill_first: false,
@@ -1018,6 +1026,7 @@ impl Default for SliceSettings {
             small_perimeter_speed_is_percent: true,
             small_perimeter_threshold_mm: 0.0,
             skirt_loops: 2,
+            skirt_height: 1,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
             brim_object_gap_mm: 0.0,
@@ -1211,6 +1220,25 @@ impl SliceSettings {
     /// The layer-0 `btOuterOnly` brim reverse is skipped: BBL brim is `auto_brim`.
     pub fn outer_walls_first(&self) -> bool {
         matches!(self.wall_sequence, WallSequence::OuterInner)
+    }
+
+    /// C++ `scale_(nozzle_diameter) * (seam_gap / 100)` in millimetres.
+    pub fn seam_gap_mm(&self) -> f64 {
+        self.nozzle_diameter_mm.max(0.0) * self.seam_gap.max(0.0)
+    }
+
+    /// C++ `Print::has_skirt` without draft-shield (not parsed).
+    pub fn has_skirt(&self) -> bool {
+        self.skirt_height > 0 && self.skirt_loops > 0
+    }
+
+    /// C++ `min(skirt_height, layer_count)` when a skirt is enabled.
+    pub fn skirt_layer_count(&self, layer_count: usize) -> usize {
+        if self.has_skirt() {
+            (self.skirt_height as usize).min(layer_count)
+        } else {
+            0
+        }
     }
 
     /// C++ `LayerRegion::simplify_path` / `Layer::simplify_support_path` arc-fit epsilon.

@@ -34,7 +34,7 @@ pub fn brim(contours: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
 }
 
 pub fn skirt(footprint: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
-    if settings.skirt_loops == 0 {
+    if !settings.has_skirt() {
         return Vec::new();
     }
     let brim_outer = if settings.brim_width_mm > 0.0 {
@@ -108,5 +108,14 @@ mod tests {
             skirt_inner < brim_outer - 1.5,
             "skirt should sit outside the gapped brim: brim_outer={brim_outer} skirt_inner={skirt_inner}"
         );
+    }
+
+    #[test]
+    fn skirt_height_zero_emits_no_loops() {
+        let contour = square(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_loops = 2;
+        settings.skirt_height = 0;
+        assert!(skirt(&[contour], &settings).is_empty());
     }
 }

@@ -148,6 +148,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "top_one_wall_type",
         settings.top_one_wall.as_str(),
     );
+    insert_bool(
+        &mut map,
+        "only_one_wall_first_layer",
+        settings.only_one_wall_first_layer,
+    );
     insert(
         &mut map,
         "sparse_infill_density",
@@ -174,6 +179,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         pct_str(settings.infill_wall_overlap),
     );
     insert(&mut map, "seam_position", settings.seam.as_str());
+    insert(&mut map, "seam_gap", pct_str(settings.seam_gap));
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());
     insert_bool(&mut map, "is_infill_first", settings.is_infill_first);
@@ -200,6 +206,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.fuzzy_skin_first_layer,
     );
     insert(&mut map, "skirt_loops", settings.skirt_loops.to_string());
+    insert(&mut map, "skirt_height", settings.skirt_height.to_string());
     insert(
         &mut map,
         "skirt_distance",
@@ -1193,12 +1200,14 @@ pub fn is_region_key(key: &str) -> bool {
             | "wall_loops"
             | "only_one_wall_top"
             | "top_one_wall_type"
+            | "only_one_wall_first_layer"
             | "sparse_infill_density"
             | "sparse_infill_pattern"
             | "infill_direction"
             | "minimum_sparse_infill_area"
             | "infill_wall_overlap"
             | "seam_position"
+            | "seam_gap"
             | "wall_generator"
             | "wall_sequence"
             | "wall_infill_order"
@@ -1362,6 +1371,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
             s.top_one_wall = t;
         }
     }
+    if let Some(v) = bool_val(map, "only_one_wall_first_layer") {
+        s.only_one_wall_first_layer = v;
+    }
     if let Some(v) = percent(map, "sparse_infill_density") {
         s.infill_density = v;
     }
@@ -1383,6 +1395,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = SeamPosition::from_name(&name) {
             s.seam = p;
         }
+    }
+    if let Some(v) = percent(map, "seam_gap") {
+        s.seam_gap = v.max(0.0);
     }
     if let Some(name) = text(map, "wall_generator") {
         if let Some(g) = WallGenerator::from_name(&name) {
@@ -1429,6 +1444,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = u32_val(map, "skirt_loops") {
         s.skirt_loops = v;
+    }
+    if let Some(v) = u32_val(map, "skirt_height") {
+        s.skirt_height = v;
     }
     if let Some(v) = num(map, "skirt_distance") {
         s.skirt_distance_mm = v;
@@ -2409,6 +2427,18 @@ mod tests {
         assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
         assert!((s.bridge_flow - 0.95).abs() < 1e-9);
+        pairs.insert("seam_gap".into(), "20%".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert!((s.seam_gap - 0.20).abs() < 1e-9);
+        assert!((s.seam_gap_mm() - 0.08).abs() < 1e-9);
+        pairs.insert("only_one_wall_first_layer".into(), "1".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert!(s.only_one_wall_first_layer);
+        pairs.insert("skirt_height".into(), "3".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(s.skirt_height, 1);
+        apply_config_pairs(&mut s, &pairs, false);
+        assert_eq!(s.skirt_height, 3);
     }
 
     #[test]
@@ -2471,6 +2501,7 @@ mod tests {
             crate::EnsureVerticalShellThickness::Enabled
         );
         assert_eq!(s.skirt_loops, 0);
+        assert_eq!(s.skirt_height, 1);
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
         assert!((s.brim_object_gap_mm - 0.1).abs() < 1e-9);
         assert!((s.line_width_mm - 0.42).abs() < 1e-9);
@@ -2500,10 +2531,13 @@ mod tests {
         assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
         assert_eq!(s.raft_layers, 0);
         assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
+        assert!(!s.only_one_wall_first_layer);
         assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
         assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
         assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
         assert!(!s.is_infill_first);
+        assert!((s.seam_gap - 0.15).abs() < 1e-9);
+        assert!((s.seam_gap_mm() - 0.06).abs() < 1e-9);
         assert!((s.min_feature_size - 0.25).abs() < 1e-9);
         assert!((s.min_bead_width - 0.85).abs() < 1e-9);
         assert!(s.small_perimeter_speed_is_percent);
@@ -2593,6 +2627,10 @@ mod tests {
             Some("0")
         );
         assert_eq!(
+            value_text(obj.get("skirt_height").unwrap()).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
             value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
             Some("inner wall/outer wall/infill")
         );
@@ -2619,6 +2657,7 @@ mod tests {
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
+        assert_eq!(s.skirt_height, 1);
         assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
         assert!((s.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((s.initial_layer_acceleration_mm_s2 - 500.0).abs() < 1.0);
@@ -2926,12 +2965,14 @@ mod tests {
         src.resolution_mm = 0.012;
         src.wall_sequence = crate::WallSequence::OuterInner;
         src.is_infill_first = true;
+        src.skirt_height = 4;
         let json = crate::project_settings_json(&src).unwrap();
         let loaded = crate::settings_from_json(&json).unwrap();
         assert!(loaded.enable_arc_fitting);
         assert!((loaded.resolution_mm - 0.012).abs() < 1e-9);
         assert_eq!(loaded.wall_sequence, crate::WallSequence::OuterInner);
         assert!(loaded.is_infill_first);
+        assert_eq!(loaded.skirt_height, 4);
     }
 
     #[test]

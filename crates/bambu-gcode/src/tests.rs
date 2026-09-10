@@ -32,6 +32,21 @@ fn cube_gcode_has_layers() {
 }
 
 #[test]
+fn skirt_height_emits_on_early_layers() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_height = 3;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    for i in 0..3 {
+        let block = layer_block(&gcode, i).expect("skirt layer");
+        assert!(block.contains("; FEATURE: Skirt"), "layer {i}");
+    }
+    let later = layer_block(&gcode, 3).expect("layer 3");
+    assert!(!later.contains("; FEATURE: Skirt"));
+}
+
+#[test]
 fn inner_outer_emits_inner_walls_first() {
     let mesh = TriangleMesh::cube(20.0);
     let settings = SliceSettings::default();
@@ -80,6 +95,74 @@ fn infill_first_prints_fill_before_walls_after_layer_zero() {
     let mid = layer_block(&gcode, 10).expect("layer 10");
     assert_feature_before(mid, "Sparse infill", "Inner wall");
     assert_feature_before(mid, "Sparse infill", "Outer wall");
+}
+
+#[test]
+fn seam_gap_shortens_closed_outer_walls() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.seam_gap = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let closed = feature_extrusion(&write_gcode(&settings, &sliced).unwrap(), "Outer wall");
+    settings.seam_gap = 0.15;
+    let gapped = feature_extrusion(&write_gcode(&settings, &sliced).unwrap(), "Outer wall");
+    assert!(closed > 0.0);
+    assert!(
+        gapped < closed,
+        "15% nozzle seam gap should shorten closed walls: closed={closed} gapped={gapped}"
+    );
+}
+
+#[test]
+fn only_one_wall_first_layer_skips_inner_feature_on_layer_zero() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.only_one_wall_first_layer = true;
+    settings.top_one_wall = bambu_config::TopOneWallType::None;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer0 = layer_block(&gcode, 0).expect("layer 0");
+    assert!(layer0.contains("; FEATURE: Outer wall"));
+    assert!(
+        !layer0.contains("; FEATURE: Inner wall"),
+        "first layer should have one wall\n{layer0}"
+    );
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(layer1.contains("; FEATURE: Inner wall"));
+}
+
+#[test]
+fn spiral_mode_skips_seam_gap() {
+    let path = vec![
+        bambu_geom::Point::from_mm(0.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 10.0),
+        bambu_geom::Point::from_mm(0.0, 10.0),
+    ];
+    let mut layer = empty_gcode_layer(0, 0.2);
+    layer.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer],
+    };
+    let mut settings = SliceSettings::default();
+    settings.spiral_mode = true;
+    settings.enable_arc_fitting = false;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.seam_gap = 0.15;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let last = last_extrude_xy(&gcode).expect("last extrusion");
+    assert!(
+        last.0.abs() < 0.02 && last.1.abs() < 0.02,
+        "spiral vase should still close the loop, got {last:?}\n{gcode}"
+    );
 }
 
 #[test]
@@ -1859,6 +1942,24 @@ fn feature_extrusion(gcode: &str, feature: &str) -> f64 {
 fn line_e(line: &str) -> Option<f64> {
     line.split_whitespace()
         .find_map(|tok| tok.strip_prefix('E').and_then(|rest| rest.parse().ok()))
+}
+
+fn last_extrude_xy(gcode: &str) -> Option<(f64, f64)> {
+    let mut last = None;
+    for line in gcode.lines() {
+        if line_e(line).is_none() {
+            continue;
+        }
+        let upper = line.to_ascii_uppercase();
+        let Some(x) = parse_axis(&upper, b'X') else {
+            continue;
+        };
+        let Some(y) = parse_axis(&upper, b'Y') else {
+            continue;
+        };
+        last = Some((x, y));
+    }
+    last
 }
 
 fn executable_block(gcode: &str) -> &str {

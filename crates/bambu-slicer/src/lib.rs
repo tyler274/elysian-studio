@@ -607,22 +607,23 @@ fn slice_prepared(
     support::apply(&mut out, settings);
     raft::apply(&mut out, settings);
     lift::detect_overhangs_for_lift(&mut out, settings.line_width_mm);
-    if let Some(first) = out.first() {
+    if !out.is_empty() {
         let rafted = settings.raft_layers > 0;
         let brim = if rafted {
             Vec::new()
         } else {
-            skirt_brim::brim(&first.contours, settings)
+            skirt_brim::brim(&out[0].contours, settings)
         };
-        let footprint = support::first_layer_footprint(first);
+        let n_skirt = settings.skirt_layer_count(out.len());
         let mut skirt_settings = settings.clone();
         if rafted {
             skirt_settings.brim_width_mm = 0.0;
         }
+        let footprint = support::layers_footprint(&out[..n_skirt]);
         let skirt = skirt_brim::skirt(&footprint, &skirt_settings);
-        if let Some(first) = out.first_mut() {
-            first.brim = brim;
-            first.skirt = skirt;
+        out[0].brim = brim;
+        for layer in out.iter_mut().take(n_skirt) {
+            layer.skirt = skirt.clone();
         }
     }
 
@@ -890,6 +891,25 @@ mod tests {
     }
 
     #[test]
+    fn only_one_wall_first_layer_drops_first_inner_walls() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.wall_loops = 2;
+        settings.top_one_wall = TopOneWallType::None;
+        settings.only_one_wall_first_layer = true;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let first = &result.layers[0];
+        let mid = &result.layers[result.layers.len() / 2];
+        assert!(!first.outer_walls.is_empty());
+        assert!(
+            first.inner_walls.is_empty(),
+            "C++ only_one_wall_first_layer drops inner walls on layer 0"
+        );
+        assert!(!mid.inner_walls.is_empty());
+    }
+
+    #[test]
     fn one_wall_all_top_opens_terrace() {
         let mut mesh = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(20.0, 20.0, 10.0));
         mesh.append(&TriangleMesh::aabb_box(
@@ -1004,6 +1024,30 @@ mod tests {
         assert_eq!(first.skirt.len(), settings.skirt_loops as usize);
         assert!(first.brim.is_empty());
         assert!(result.layers.iter().all(|l| l.support.is_empty()));
+        assert!(result.layers[1..].iter().all(|l| l.skirt.is_empty()));
+    }
+
+    #[test]
+    fn skirt_height_copies_loops_onto_early_layers() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_height = 3;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = settings.skirt_loops as usize;
+        assert_eq!(result.layers[0].skirt.len(), n);
+        assert_eq!(result.layers[1].skirt.len(), n);
+        assert_eq!(result.layers[2].skirt.len(), n);
+        assert!(result.layers[3].skirt.is_empty());
+    }
+
+    #[test]
+    fn skirt_height_zero_disables_skirt() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_loops = 2;
+        settings.skirt_height = 0;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert!(result.layers.iter().all(|l| l.skirt.is_empty()));
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! for `AllTop`, terraces not covered by the layer above) keep a single outer
 //! wall so top infill can fill the rest. Extra inner walls continue only under
 //! the layer above (C++ `generate_one_wall_by_top_most` / `Alltop`).
+//! `only_one_wall_first_layer` does the same on object layer 0.
 
 use bambu_config::{FlowRole, SliceSettings, TopOneWallType, WallGenerator};
 use bambu_geom::{
@@ -56,6 +57,13 @@ impl WallSpacing {
     }
 }
 
+/// C++ `generate_one_wall_by_top_most` / `only_one_wall_first_layer`.
+fn use_single_wall(settings: &SliceSettings, loops: u32, topmost: bool, first_layer: bool) -> bool {
+    loops > 1
+        && ((settings.top_one_wall != TopOneWallType::None && topmost)
+            || (settings.only_one_wall_first_layer && first_layer))
+}
+
 pub struct PerimeterResult {
     pub outer: Vec<Polyline>,
     pub inner: Vec<Polyline>,
@@ -91,8 +99,7 @@ fn classic_perimeters(
     let walls = WallSpacing::from_settings(settings, first_layer);
     let loops = settings.wall_loops.max(1);
     let upper = upper.filter(|u| !u.is_empty());
-    let one_wall_layer =
-        loops > 1 && settings.top_one_wall != TopOneWallType::None && upper.is_none();
+    let one_wall_layer = use_single_wall(settings, loops, upper.is_none(), first_layer);
 
     let mut hint = seam_hint;
     let (outer, mut inner) = if one_wall_layer {
@@ -151,9 +158,7 @@ fn arachne_perimeters(
     let walls = WallSpacing::from_settings(settings, first_layer);
     let loops = settings.wall_loops.max(1);
     let upper = upper.filter(|u| !u.is_empty());
-    let one_wall_layer =
-        loops > 1 && settings.top_one_wall != TopOneWallType::None && upper.is_none();
-
+    let one_wall_layer = use_single_wall(settings, loops, upper.is_none(), first_layer);
     let mut hint = seam_hint;
     let target = if one_wall_layer { 1 } else { loops };
     let (outer, mut inner) = arachne_split(contours, target, walls, settings, &mut hint);

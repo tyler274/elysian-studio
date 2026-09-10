@@ -363,6 +363,17 @@ impl<'a> Writer<'a> {
         if closed && pts.first() != pts.last() {
             pts.push(pts[0]);
         }
+        // C++ `GCode::extrude_loop`: clip `seam_gap` from the end unless spiral vase
+        // disabled loop clipping or a scarf seam is active (BBL scarf is `none`).
+        if closed && !self.settings.spiral_mode {
+            let gap = self.settings.seam_gap_mm();
+            if gap > TRAVEL_EPS_MM {
+                pts = clip_suffix_points(&pts, gap);
+            }
+        }
+        if pts.len() < 2 {
+            return Ok(());
+        }
         let start = xy(pts[0]);
         self.travel_to(start)?;
         self.unretract()?;
@@ -517,6 +528,30 @@ fn clip_prefix(path: &[(f64, f64)], max_len: f64) -> Vec<(f64, f64)> {
     out
 }
 
+/// C++ `Polyline::clip_end`: drop `max_len_mm` from the tail of a scaled path.
+fn clip_suffix_points(path: &[Point], max_len_mm: f64) -> Vec<Point> {
+    if path.len() < 2 || max_len_mm <= TRAVEL_EPS_MM {
+        return path.to_vec();
+    }
+    let mut pts = path.to_vec();
+    let mut remaining = max_len_mm;
+    while remaining > TRAVEL_EPS_MM && pts.len() >= 2 {
+        let last = pts.pop().expect("len >= 2");
+        let prev = *pts.last().expect("len >= 1");
+        let d = prev.distance_mm(last);
+        if d <= remaining {
+            remaining -= d;
+            continue;
+        }
+        let t = remaining / d;
+        let (px, py) = prev.to_mm();
+        let (lx, ly) = last.to_mm();
+        pts.push(Point::from_mm(lx + (px - lx) * t, ly + (py - ly) * t));
+        break;
+    }
+    pts
+}
+
 fn spiral_radius(hop: f64) -> f64 {
     hop / (2.0 * std::f64::consts::PI * SLOPE_THRESHOLD_RAD.atan())
 }
@@ -590,4 +625,25 @@ pub(crate) fn lift_overhangs_in_window(layers: &[Layer], print_z: f64) -> Vec<Po
 
 fn xy(p: Point) -> (f64, f64) {
     (unscale(p.x), unscale(p.y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_suffix_shortens_closed_square() {
+        let path = vec![
+            Point::from_mm(0.0, 0.0),
+            Point::from_mm(10.0, 0.0),
+            Point::from_mm(10.0, 10.0),
+            Point::from_mm(0.0, 10.0),
+            Point::from_mm(0.0, 0.0),
+        ];
+        let clipped = clip_suffix_points(&path, 0.06);
+        assert_eq!(clipped.len(), 5);
+        let (x, y) = clipped.last().unwrap().to_mm();
+        assert!(x.abs() < 1e-6, "{x}");
+        assert!((y - 0.06).abs() < 1e-6, "{y}");
+    }
 }

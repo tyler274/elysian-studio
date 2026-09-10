@@ -103,8 +103,12 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
     });
 }
 
-pub fn first_layer_footprint(layer: &Layer) -> Vec<Polygon> {
-    let mut acc = layer.contours.clone();
-    acc.extend(layer.support_region.iter().cloned());
+/// C++ `_make_skirt` hull of object + support contours up to `skirt_height`.
+pub fn layers_footprint(layers: &[Layer]) -> Vec<Polygon> {
+    let mut acc = Vec::new();
+    for layer in layers {
+        acc.extend(layer.contours.iter().cloned());
+        acc.extend(layer.support_region.iter().cloned());
+    }
     union_polygons(&acc)
 }
