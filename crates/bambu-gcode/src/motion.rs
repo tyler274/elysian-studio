@@ -3,7 +3,10 @@
 use std::fmt::Write as _;
 
 use bambu_config::{PrintAccel, SliceSettings, ZHopType};
-use bambu_geom::{intersect_polygons, unscale, Point, Polygon};
+use bambu_geom::{
+    fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit, PathFitKind, Point,
+    Polygon,
+};
 use bambu_slicer::Layer;
 
 use crate::cooling::{apply_layer_cooling_slowdown, apply_part_cooling};
@@ -355,24 +358,46 @@ impl<'a> Writer<'a> {
         if path.len() < 2 {
             return Ok(());
         }
-        let pts: Vec<(f64, f64)> = path.iter().copied().map(xy).collect();
-        let start = pts[0];
+        let mut pts = path.to_vec();
+        if closed && pts.first() != pts.last() {
+            pts.push(pts[0]);
+        }
+        let start = xy(pts[0]);
         self.travel_to(start)?;
         self.unretract()?;
         let print_accel = self.state.print_accel;
         self.emit_accel(print_accel)?;
-        let n = pts.len();
-        let end = if closed { n } else { n - 1 };
-        let mut trail = vec![start];
         let marker = if external_perimeter {
             ";_EXTRUDE_SET_SPEED;_EXTERNAL_PERIMETER"
         } else {
             ""
         };
-        for i in 0..end {
-            let a = pts[i];
-            let b = pts[(i + 1) % n];
+        if self.settings.enable_arc_fitting && !self.settings.spiral_mode {
+            let (simplified, fits) =
+                fit_arcs_and_simplify(&pts, self.settings.resolution_mm.max(0.001));
+            self.emit_fitted_path(&simplified, &fits, e_per_mm, print_f, marker)?;
+        } else {
+            self.emit_linear_path(&pts, e_per_mm, print_f, marker)?;
+        }
+        self.state.last_print_f = print_f;
+        Ok(())
+    }
+
+    fn emit_linear_path(
+        &mut self,
+        pts: &[Point],
+        e_per_mm: f64,
+        print_f: f64,
+        marker: &str,
+    ) -> Result<(), GcodeError> {
+        let mut trail = vec![xy(pts[0])];
+        for window in pts.windows(2) {
+            let a = xy(window[0]);
+            let b = xy(window[1]);
             let dist = xy_dist(a, b);
+            if dist < TRAVEL_EPS_MM {
+                continue;
+            }
             self.state.e += dist * e_per_mm;
             writeln!(
                 self.out,
@@ -382,7 +407,74 @@ impl<'a> Writer<'a> {
             self.state.last = Some(b);
             trail.push(b);
         }
-        self.state.last_print_f = print_f;
+        self.state.wipe = trail.into_iter().rev().collect();
+        Ok(())
+    }
+
+    fn emit_fitted_path(
+        &mut self,
+        pts: &[Point],
+        fits: &[PathFit],
+        e_per_mm: f64,
+        print_f: f64,
+        marker: &str,
+    ) -> Result<(), GcodeError> {
+        if pts.len() < 2 {
+            return Ok(());
+        }
+        let mut trail = vec![xy(pts[0])];
+        for fit in fits {
+            match fit.kind {
+                PathFitKind::Linear => {
+                    for i in (fit.start + 1)..=fit.end {
+                        let b = xy(pts[i]);
+                        let a = *trail.last().unwrap_or(&xy(pts[fit.start]));
+                        let dist = xy_dist(a, b);
+                        if dist < TRAVEL_EPS_MM {
+                            continue;
+                        }
+                        self.state.e += dist * e_per_mm;
+                        writeln!(
+                            self.out,
+                            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}{marker}",
+                            b.0, b.1, self.state.e, print_f
+                        )?;
+                        self.state.last = Some(b);
+                        trail.push(b);
+                    }
+                }
+                PathFitKind::Arc(arc) => {
+                    if arc.length_mm < TRAVEL_EPS_MM {
+                        continue;
+                    }
+                    let end = xy(arc.end);
+                    let start = xy(arc.start);
+                    let i = arc.center_mm.0 - start.0;
+                    let j = arc.center_mm.1 - start.1;
+                    let cmd = match arc.dir {
+                        ArcDir::Ccw => "G3",
+                        ArcDir::Cw => "G2",
+                    };
+                    self.state.e += arc.length_mm * e_per_mm;
+                    writeln!(
+                        self.out,
+                        "{cmd} X{:.3} Y{:.3} I{:.3} J{:.3} E{:.5} F{:.0}{marker}",
+                        end.0, end.1, i, j, self.state.e, print_f
+                    )?;
+                    self.state.last = Some(end);
+                    for p in pts
+                        .iter()
+                        .take(fit.end.min(pts.len() - 1) + 1)
+                        .skip(fit.start + 1)
+                    {
+                        trail.push(xy(*p));
+                    }
+                    if trail.last().copied() != Some(end) {
+                        trail.push(end);
+                    }
+                }
+            }
+        }
         self.state.wipe = trail.into_iter().rev().collect();
         Ok(())
     }

@@ -142,11 +142,20 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         if !layer.bridge.is_empty() {
             w.emit_feature("Bridge")?;
             w.set_print_role(PrintAccel::Default);
+            let bridge_flow = flow.with_flow_ratio(settings.bridge_flow);
             w.emit_marked(
                 settings.overhang_fan_applies(5, true, false),
                 ";_OVERHANG_FAN_START",
                 ";_OVERHANG_FAN_END",
-                |w| w.emit_paths(e(&layer.bridge, false, feeds.bridge)),
+                |w| {
+                    w.emit_paths(Extrude {
+                        paths: &layer.bridge,
+                        closed: false,
+                        e_per_mm: bridge_flow.e_per_mm(),
+                        print_f: feeds.bridge,
+                        mm3_per_mm: bridge_flow.mm3_per_mm(),
+                    })
+                },
             )?;
         }
         w.emit_role(

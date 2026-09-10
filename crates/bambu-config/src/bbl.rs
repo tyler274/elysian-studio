@@ -336,6 +336,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "bridge_speed",
         num_str(settings.bridge_speed_mm_s),
     );
+    insert(&mut map, "bridge_flow", num_str(settings.bridge_flow));
     insert(
         &mut map,
         "top_surface_speed",
@@ -778,6 +779,8 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.farthest_point_timelapse,
     );
     insert_bool(&mut map, "spiral_mode", settings.spiral_mode);
+    insert_bool(&mut map, "enable_arc_fitting", settings.enable_arc_fitting);
+    insert(&mut map, "resolution", num_str(settings.resolution_mm));
     insert_bool(
         &mut map,
         "enable_wrapping_detection",
@@ -1173,6 +1176,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "overhang_3_4_speed"
             | "overhang_4_4_speed"
             | "bridge_speed"
+            | "bridge_flow"
             | "top_surface_speed"
             | "small_perimeter_speed"
             | "small_perimeter_threshold"
@@ -1457,6 +1461,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "bridge_speed") {
         s.bridge_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "bridge_flow") {
+        s.bridge_flow = v.max(0.0);
     }
     if let Some(v) = num(map, "top_surface_speed") {
         s.top_surface_speed_mm_s = v.max(0.0);
@@ -1746,6 +1753,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = bool_val(map, "spiral_mode") {
         s.spiral_mode = v;
+    }
+    if let Some(v) = bool_val(map, "enable_arc_fitting") {
+        s.enable_arc_fitting = v;
+    }
+    if let Some(v) = num(map, "resolution") {
+        s.resolution_mm = v.max(0.001);
     }
     if let Some(v) = bool_val(map, "enable_wrapping_detection") {
         s.enable_wrapping_detection = v;
@@ -2293,6 +2306,7 @@ mod tests {
         pairs.insert("minimum_sparse_infill_area".into(), "12".into());
         pairs.insert("infill_direction".into(), "30".into());
         pairs.insert("infill_wall_overlap".into(), "25%".into());
+        pairs.insert("bridge_flow".into(), "0.95".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(
             s.ensure_vertical_shell_thickness,
@@ -2303,6 +2317,7 @@ mod tests {
         assert!((s.minimum_sparse_infill_area_mm2 - 12.0).abs() < 1e-9);
         assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
+        assert!((s.bridge_flow - 0.95).abs() < 1e-9);
     }
 
     #[test]
@@ -2332,6 +2347,9 @@ mod tests {
         assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
+        assert!((s.bridge_flow - 1.0).abs() < 1e-9);
+        assert!(s.enable_arc_fitting);
+        assert!((s.resolution_mm - 0.012).abs() < 1e-9);
         assert!(!s.enable_support);
         assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
@@ -2717,6 +2735,13 @@ mod tests {
         assert!((loaded.wipe_tower_x_mm - src.wipe_tower_x_mm).abs() < 1e-9);
         assert!((loaded.prime_tower_width_mm - src.prime_tower_width_mm).abs() < 1e-9);
         assert_eq!(loaded.filament_count, src.filament_count);
+        assert!(!loaded.enable_arc_fitting);
+        src.enable_arc_fitting = true;
+        src.resolution_mm = 0.012;
+        let json = crate::project_settings_json(&src).unwrap();
+        let loaded = crate::settings_from_json(&json).unwrap();
+        assert!(loaded.enable_arc_fitting);
+        assert!((loaded.resolution_mm - 0.012).abs() < 1e-9);
     }
 
     #[test]

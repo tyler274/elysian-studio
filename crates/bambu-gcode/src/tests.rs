@@ -244,6 +244,88 @@ fn bridge_uses_bridge_speed() {
 }
 
 #[test]
+fn bridge_flow_scales_bridge_extrusion() {
+    let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_support = false;
+    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.bridge_flow = 1.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let e_full = feature_extrusion(&write_gcode(&settings, &sliced).unwrap(), "Bridge");
+    settings.bridge_flow = 0.5;
+    let e_half = feature_extrusion(&write_gcode(&settings, &sliced).unwrap(), "Bridge");
+    assert!(e_full > 0.0, "expected bridge extrusion");
+    assert!(
+        (e_half / e_full - 0.5).abs() < 1e-6,
+        "bridge_flow 0.5 should halve E: full={e_full} half={e_half}"
+    );
+}
+
+#[test]
+fn arc_fitting_emits_g2_or_g3() {
+    let path: Vec<_> = (0..=48)
+        .map(|i| {
+            let t = f64::from(i) / 48.0 * std::f64::consts::PI;
+            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+        })
+        .collect();
+    let mut layer = empty_gcode_layer(0, 0.2);
+    layer.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer],
+    };
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = true;
+    settings.resolution_mm = 0.012;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(
+        gcode
+            .lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")),
+        "expected G2/G3 for a semicircle wall\n{gcode}"
+    );
+    settings.enable_arc_fitting = false;
+    let linear = write_gcode(&settings, &sliced).unwrap();
+    assert!(
+        !linear
+            .lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")),
+        "enable_arc_fitting 0 should stay G1\n{linear}"
+    );
+}
+
+#[test]
+fn spiral_mode_skips_arc_fitting() {
+    let path: Vec<_> = (0..=48)
+        .map(|i| {
+            let t = f64::from(i) / 48.0 * std::f64::consts::PI;
+            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+        })
+        .collect();
+    let mut layer = empty_gcode_layer(0, 0.2);
+    layer.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer],
+    };
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = true;
+    settings.spiral_mode = true;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(
+        !gcode
+            .lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")),
+        "C++ skips G2/G3 in spiral_mode\n{gcode}"
+    );
+}
+
+#[test]
 fn top_surface_uses_top_speed() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
@@ -1573,6 +1655,37 @@ fn wrapping_g39_layers(exec: &str) -> Vec<usize> {
         }
     }
     hits
+}
+
+fn feature_extrusion(gcode: &str, feature: &str) -> f64 {
+    let mut in_feat = false;
+    let mut last_e = None;
+    let mut acc = 0.0;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; FEATURE: ") {
+            in_feat = rest == feature;
+        }
+        let Some(e) = line_e(line) else {
+            continue;
+        };
+        let has_xy = line
+            .split_whitespace()
+            .any(|tok| tok.starts_with('X') || tok.starts_with('Y'));
+        if in_feat && has_xy {
+            if let Some(prev) = last_e {
+                if e > prev {
+                    acc += e - prev;
+                }
+            }
+        }
+        last_e = Some(e);
+    }
+    acc
+}
+
+fn line_e(line: &str) -> Option<f64> {
+    line.split_whitespace()
+        .find_map(|tok| tok.strip_prefix('E').and_then(|rest| rest.parse().ok()))
 }
 
 fn executable_block(gcode: &str) -> &str {

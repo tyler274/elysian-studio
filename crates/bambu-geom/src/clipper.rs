@@ -64,12 +64,21 @@ pub fn intersect_polygons(a: &[Polygon], b: &[Polygon]) -> Vec<Polygon> {
 
 /// Offset polygons by `delta_mm` (positive = expand, negative = shrink).
 pub fn offset_polygons(polygons: &[Polygon], delta_mm: f64) -> Vec<Polygon> {
+    offset_polygons_join(polygons, delta_mm, JoinType::Miter)
+}
+
+/// C++ `ClipperLib::jtSquare` offset (`discover_vertical_shells` regularization).
+pub fn offset_polygons_square(polygons: &[Polygon], delta_mm: f64) -> Vec<Polygon> {
+    offset_polygons_join(polygons, delta_mm, JoinType::Square)
+}
+
+fn offset_polygons_join(polygons: &[Polygon], delta_mm: f64, join: JoinType) -> Vec<Polygon> {
     if polygons.is_empty() {
         return Vec::new();
     }
     let paths: Paths64 = polygons.iter().map(|p| to_path64(p)).collect();
     let delta = delta_mm * SCALING_FACTOR_F64;
-    inflate_paths_64(&paths, delta, JoinType::Miter, EndType::Polygon, 2.0, 0.25)
+    inflate_paths_64(&paths, delta, join, EndType::Polygon, 2.0, 0.25)
         .iter()
         .map(from_path64)
         .filter(|p| p.len() >= 3)

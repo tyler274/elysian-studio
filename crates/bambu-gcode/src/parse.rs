@@ -270,7 +270,11 @@ pub(crate) fn parse_axis(upper: &str, axis: u8) -> Option<f64> {
 
 fn parse_axis_g1(line: &str, axis: u8) -> Option<f64> {
     let upper = line.to_ascii_uppercase();
-    if !(upper.starts_with("G1") || upper.starts_with("G0")) {
+    if !(upper.starts_with("G1")
+        || upper.starts_with("G0")
+        || upper.starts_with("G2")
+        || upper.starts_with("G3"))
+    {
         return None;
     }
     parse_axis(&upper, axis)

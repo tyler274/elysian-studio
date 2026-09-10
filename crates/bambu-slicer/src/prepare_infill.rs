@@ -5,14 +5,15 @@
 //! slivers are not treated as shells. Shell windows follow C++ layer count **or**
 //! `top_shell_thickness` / `bottom_shell_thickness`. When
 //! `ensure_vertical_shell_thickness` is enabled, slope rings become extra
-//! internal solid (`diff(infill, intersect(neighbor infills))`). Sparse islands
-//! at or below `minimum_sparse_infill_area` become internal solid.
+//! internal solid (`diff(infill, intersect(neighbor infills))`), then C++
+//! `offset2_ex` / `shrink_ex` regularization. Sparse islands at or below
+//! `minimum_sparse_infill_area` become internal solid.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
 use bambu_config::{EnsureVerticalShellThickness, InfillPattern, SliceSettings};
 use bambu_geom::{
-    difference_polygons, intersect_polygons, offset_polygons, union_polygons, Point, Polygon,
-    Polyline, TriangleMesh,
+    difference_polygons, intersect_polygons, offset_polygons, offset_polygons_square,
+    union_polygons, Point, Polygon, Polyline, TriangleMesh,
 };
 use rayon::prelude::*;
 
@@ -22,8 +23,8 @@ use crate::Layer;
 const COVER_MM: f64 = 0.15;
 /// C++ `EPSILON` used with shell thickness windows.
 const SHELL_THICKNESS_EPSILON: f64 = 1e-4;
-/// Drop clipper crumbs from vertical-shell extra without eating slope rings.
-const VERTICAL_SHELL_SLIVER_MM: f64 = 0.05;
+/// C++ `min_perimeter_infill_spacing = solid_infill_spacing * 1.05`.
+const VERTICAL_SHELL_SPACING_SCALE: f64 = 1.05;
 
 pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&TriangleMesh>) {
     if layers.is_empty() {
@@ -288,9 +289,9 @@ fn vertical_shell_extra(
             }
         }
     }
-    drop_slivers(
+    regularize_vertical_shell(
         difference_polygons(&regions[i], &holes),
-        VERTICAL_SHELL_SLIVER_MM,
+        settings.line_width_mm,
     )
 }
 
@@ -305,11 +306,28 @@ fn combine_holes(holes: &mut Vec<Polygon>, neighbor: &[Polygon]) -> bool {
     holes.is_empty()
 }
 
-fn drop_slivers(polygons: Vec<Polygon>, delta_mm: f64) -> Vec<Polygon> {
-    if polygons.is_empty() || delta_mm <= 0.0 {
-        return polygons;
+/// C++ `discover_vertical_shells` `offset2_ex` / `shrink_ex` (jtSquare).
+/// Open regions narrower than 0.65× spacing, close gaps under 1.2× spacing,
+/// then expand by 0.2× spacing and drop crumbs smaller than 1.5× spacing mm².
+fn regularize_vertical_shell(shell: Vec<Polygon>, line_width_mm: f64) -> Vec<Polygon> {
+    if shell.is_empty() || line_width_mm <= 0.0 {
+        return shell;
     }
-    offset_polygons(&offset_polygons(&polygons, -delta_mm), delta_mm)
+    let spacing = line_width_mm * VERTICAL_SHELL_SPACING_SCALE;
+    let narrow_ensure = 0.5 * 0.65 * spacing;
+    let narrow_sparse = 0.5 * 1.2 * spacing;
+    let tiny_overlap = 0.2 * spacing;
+    let opened = offset_polygons_square(&union_polygons(&shell), -narrow_ensure);
+    if opened.is_empty() {
+        return Vec::new();
+    }
+    let closed = offset_polygons_square(&opened, narrow_ensure + narrow_sparse);
+    let grown = offset_polygons_square(&closed, -(narrow_sparse - tiny_overlap));
+    let min_area = spacing * 1.5;
+    grown
+        .into_iter()
+        .filter(|p| signed_area_mm2(p).abs() >= min_area)
+        .collect()
 }
 
 fn emit_shells(
@@ -486,4 +504,33 @@ fn append_union(dst: &mut Vec<Polygon>, extra: Vec<Polygon>) {
     let mut acc = std::mem::take(dst);
     acc.extend(extra);
     *dst = union_polygons(&acc);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::Point;
+
+    fn rect(width_mm: f64, height_mm: f64) -> Polygon {
+        vec![
+            Point::from_mm(0.0, 0.0),
+            Point::from_mm(width_mm, 0.0),
+            Point::from_mm(width_mm, height_mm),
+            Point::from_mm(0.0, height_mm),
+        ]
+    }
+
+    #[test]
+    fn regularize_drops_narrow_vertical_shell() {
+        let w = 0.42;
+        assert!(
+            regularize_vertical_shell(vec![rect(0.15, 10.0)], w).is_empty(),
+            "opening 0.65× spacing should drop a 0.15 mm ring"
+        );
+        let kept = regularize_vertical_shell(vec![rect(2.0, 10.0)], w);
+        assert!(
+            !kept.is_empty(),
+            "a 2 mm slope band should survive regularization"
+        );
+    }
 }

@@ -587,6 +587,8 @@ pub struct SliceSettings {
     pub overhang_speed_mm_s: f64,
     /// C++ `bridge_speed`.
     pub bridge_speed_mm_s: f64,
+    /// C++ `bridge_flow` (PrintConfig default 1). Scales bridge extrusion volume.
+    pub bridge_flow: f64,
     /// C++ `top_surface_speed`.
     pub top_surface_speed_mm_s: f64,
     /// C++ `small_perimeter_speed` raw value (mm/s, or percent of outer wall).
@@ -834,6 +836,10 @@ pub struct SliceSettings {
     pub farthest_point_timelapse: bool,
     /// C++ `spiral_mode`.
     pub spiral_mode: bool,
+    /// C++ `enable_arc_fitting`. Off keeps G1; BBL common default is on.
+    pub enable_arc_fitting: bool,
+    /// C++ `resolution` (mm). Arc-fit and path-simplify tolerance.
+    pub resolution_mm: f64,
     /// C++ `enable_wrapping_detection`. Off skips the per-layer insert.
     pub enable_wrapping_detection: bool,
     /// C++ `wrapping_detection_gcode`. Empty skips even when wrapping is on.
@@ -925,6 +931,7 @@ impl Default for SliceSettings {
             overhang_4_4_speed_mm_s: 10.0,
             overhang_speed_mm_s: 10.0,
             bridge_speed_mm_s: 25.0,
+            bridge_flow: 1.0,
             top_surface_speed_mm_s: 50.0,
             small_perimeter_speed: 50.0,
             small_perimeter_speed_is_percent: true,
@@ -1056,6 +1063,8 @@ impl Default for SliceSettings {
             timelapse_type: 0,
             farthest_point_timelapse: false,
             spiral_mode: false,
+            enable_arc_fitting: false,
+            resolution_mm: 0.01,
             enable_wrapping_detection: false,
             wrapping_detection_gcode: String::new(),
             filament_map: vec![1],
@@ -1454,6 +1463,8 @@ impl SliceSettings {
             elephant_foot_mm: 0.15,
             top_one_wall: TopOneWallType::AllTop,
             support_type: SupportType::Tree,
+            enable_arc_fitting: true,
+            resolution_mm: 0.012,
             travel_speed_mm_s: 1000.0,
             print_speed_mm_s: 200.0,
             inner_wall_speed_mm_s: 300.0,
@@ -1813,6 +1824,14 @@ impl Flow {
 
     pub fn mm3_per_mm(self) -> f64 {
         self.width_mm * self.height_mm * self.flow_ratio
+    }
+
+    /// C++ `Flow::with_flow_ratio` for an extra multiplier such as `bridge_flow`.
+    pub fn with_flow_ratio(self, extra: f64) -> Self {
+        Self {
+            flow_ratio: self.flow_ratio * extra.max(0.0),
+            ..self
+        }
     }
 
     pub fn e_per_mm(self) -> f64 {

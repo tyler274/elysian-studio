@@ -5,6 +5,7 @@
 //! `; model printing time` / `; total filament …` placeholders.
 
 use bambu_config::SliceSettings;
+use bambu_geom::calc_arc_length_mm;
 
 const PREVIOUS_FEEDRATE_THRESHOLD: f64 = 1e-4;
 
@@ -164,7 +165,7 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         let dz = nz - z;
         let de = ne - e;
         let xyz = if is_arc {
-            arc_move_length(&upper, dx, dy, dz)
+            arc_move_length(&upper, x, y, nx, ny, dz)
         } else {
             (dx * dx + dy * dy + dz * dz).sqrt()
         };
@@ -192,7 +193,7 @@ pub fn process_gcode(gcode: &str, settings: &SliceSettings) -> ProcessorResult {
         };
         let accel = if e_only {
             retract_accel
-        } else if is_travel || is_arc || parse_axis(&upper, b'E').is_none() {
+        } else if is_travel || parse_axis(&upper, b'E').is_none() {
             travel_accel
         } else {
             print_accel
@@ -241,16 +242,20 @@ fn is_arc_cmd(upper: &str) -> bool {
 }
 
 /// C++ `GCodeProcessor::process_G2_G3` length. `P1` is a full XY circle.
-fn arc_move_length(upper: &str, dx: f64, dy: f64, dz: f64) -> f64 {
+fn arc_move_length(upper: &str, x: f64, y: f64, nx: f64, ny: f64, dz: f64) -> f64 {
     let i = parse_axis(upper, b'I').unwrap_or(0.0);
     let j = parse_axis(upper, b'J').unwrap_or(0.0);
     if i.abs() <= 1e-12 && j.abs() <= 1e-12 {
+        let dx = nx - x;
+        let dy = ny - y;
         return (dx * dx + dy * dy + dz * dz).sqrt();
     }
     if parse_axis(upper, b'P').is_some_and(|p| (p - 1.0).abs() < 1e-9) {
         2.0 * std::f64::consts::PI * (i * i + j * j).sqrt()
     } else {
-        (dx * dx + dy * dy + dz * dz).sqrt()
+        let is_ccw = matches!(upper.split_whitespace().next(), Some("G3"));
+        let xy = calc_arc_length_mm((x, y), (nx, ny), (x + i, y + j), is_ccw);
+        (xy * xy + dz * dz).sqrt()
     }
 }
 
@@ -600,6 +605,22 @@ mod tests {
             "expected ~{expect}s for 2π mm at 10 mm/s, got {}",
             stats.time_s
         );
+    }
+
+    #[test]
+    fn extrusion_g3_uses_arc_length_not_chord() {
+        let settings = SliceSettings::default();
+        let gcode = "G90\nG92 X20 Y10\nG3 X10 Y20 I-10.000 J0.000 E1 F3000\n";
+        let stats = process_gcode(gcode, &settings);
+        let arc_mm = 10.0 * std::f64::consts::PI / 2.0;
+        let expect = arc_mm / 50.0;
+        assert_eq!(stats.move_count, 1);
+        assert!(
+            (stats.time_s - expect).abs() < 0.05,
+            "expected ~{expect}s for quarter-circle, got {}",
+            stats.time_s
+        );
+        assert!((stats.filament_mm - 1.0).abs() < 1e-9);
     }
 
     #[test]
