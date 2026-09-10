@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use bambu_config::{PrintAccel, SliceSettings, ZHopType};
 use bambu_geom::{
     douglas_peucker, fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit,
-    PathFitKind, Point, Polygon,
+    PathFitKind, Point, Polygon, Polyline,
 };
-use bambu_slicer::Layer;
+use bambu_slicer::{point_in_polygons, Layer};
 
 use crate::cooling::{apply_layer_cooling_slowdown, apply_part_cooling};
 use crate::processor::process_gcode;
@@ -48,8 +48,14 @@ pub(crate) struct WriterState {
     pub(crate) first_layer: bool,
     /// Upcoming extrusion is an outer/overhang wall (C++ short-travel accel).
     pub(crate) short_travel_role: bool,
+    /// C++ `is_perimeter(role)` for the extrusion this travel is heading toward.
+    pub(crate) dest_is_perimeter: bool,
     /// Last `; LINE_WIDTH:` value (C++ `m_last_width`).
     pub(crate) last_line_width: Option<f64>,
+    /// C++ internal infill islands for `travel_inside_internal_regions`.
+    pub(crate) internal_islands: Vec<Polygon>,
+    /// Current-layer wall polylines for `travel_cross_perimeters`.
+    pub(crate) wall_paths: Vec<Polyline>,
 }
 
 impl<'a> Writer<'a> {
@@ -79,6 +85,8 @@ impl<'a> Writer<'a> {
             .settings
             .print_acceleration_mm_s2(self.state.first_layer, kind);
         self.state.short_travel_role = kind == PrintAccel::OuterWall;
+        self.state.dest_is_perimeter =
+            matches!(kind, PrintAccel::OuterWall | PrintAccel::InnerWall);
     }
 
     pub(crate) fn emit_accel(&mut self, accel: f64) -> Result<(), GcodeError> {
@@ -320,7 +328,9 @@ impl<'a> Writer<'a> {
             if dist < TRAVEL_EPS_MM {
                 return Ok(());
             }
-            if dist + 1e-9 >= self.settings.retraction_minimum_travel_mm {
+            if dist + 1e-9 >= self.settings.retraction_minimum_travel_mm
+                && !self.skip_infill_retract(prev, dest)
+            {
                 self.retract()?;
             }
             self.emit_accel(self.settings.travel_acceleration_for_move(
@@ -345,6 +355,19 @@ impl<'a> Writer<'a> {
         }
         self.state.last = Some(dest);
         Ok(())
+    }
+
+    /// C++ `reduce_infill_retraction` + `travel_inside_internal_regions_no_wall_crossing`.
+    fn skip_infill_retract(&self, from: (f64, f64), dest: (f64, f64)) -> bool {
+        if self.state.dest_is_perimeter
+            || !self.settings.should_reduce_infill_retraction()
+            || self.settings.infill_density <= 0.0
+            || self.state.internal_islands.is_empty()
+        {
+            return false;
+        }
+        travel_inside_islands(from, dest, &self.state.internal_islands)
+            && !travel_crosses_polylines(from, dest, &self.state.wall_paths)
     }
 
     pub(crate) fn emit_one_path(
@@ -614,6 +637,51 @@ fn travel_through_overhang(
     !intersect_polygons(&[stroke], overhangs).is_empty()
 }
 
+fn travel_inside_islands(from: (f64, f64), dest: (f64, f64), islands: &[Polygon]) -> bool {
+    const SAMPLES: i32 = 8;
+    for i in 0..=SAMPLES {
+        let t = f64::from(i) / f64::from(SAMPLES);
+        let p = Point::from_mm(
+            from.0 + (dest.0 - from.0) * t,
+            from.1 + (dest.1 - from.1) * t,
+        );
+        if !point_in_polygons(p, islands) {
+            return false;
+        }
+    }
+    true
+}
+
+fn travel_crosses_polylines(from: (f64, f64), dest: (f64, f64), paths: &[Polyline]) -> bool {
+    for path in paths {
+        for window in path.windows(2) {
+            let a = xy(window[0]);
+            let b = xy(window[1]);
+            if segments_properly_intersect(from, dest, a, b) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+fn segments_properly_intersect(
+    a0: (f64, f64),
+    a1: (f64, f64),
+    b0: (f64, f64),
+    b1: (f64, f64),
+) -> bool {
+    let o1 = orient(a0, a1, b0);
+    let o2 = orient(a0, a1, b1);
+    let o3 = orient(b0, b1, a0);
+    let o4 = orient(b0, b1, a1);
+    o1 * o2 < 0.0 && o3 * o4 < 0.0
+}
+
 pub(crate) fn lift_overhangs_in_window(layers: &[Layer], print_z: f64) -> Vec<Polygon> {
     let z0 = (print_z - LIFT_PROTECT_Z_MM).max(0.0);
     layers
@@ -645,5 +713,21 @@ mod tests {
         let (x, y) = clipped.last().unwrap().to_mm();
         assert!(x.abs() < 1e-6, "{x}");
         assert!((y - 0.06).abs() < 1e-6, "{y}");
+    }
+
+    #[test]
+    fn proper_intersection_ignores_shared_endpoint() {
+        assert!(segments_properly_intersect(
+            (0.0, 0.0),
+            (2.0, 2.0),
+            (0.0, 2.0),
+            (2.0, 0.0)
+        ));
+        assert!(!segments_properly_intersect(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0)
+        ));
     }
 }

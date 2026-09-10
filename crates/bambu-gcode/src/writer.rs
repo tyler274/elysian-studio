@@ -33,6 +33,13 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
     for (layer_i, layer) in sliced.layers.iter().enumerate() {
         let first = layer_i == 0;
         w.state.lift_overhangs = lift_overhangs_in_window(&sliced.layers, layer.print_z_mm);
+        w.state.internal_islands = layer.infill_region.clone();
+        w.state.wall_paths = layer
+            .outer_walls
+            .iter()
+            .chain(layer.inner_walls.iter())
+            .cloned()
+            .collect();
         if layer_i > 0 && settings.retract_when_changing_layer {
             w.retract()?;
         }

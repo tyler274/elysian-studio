@@ -394,6 +394,70 @@ impl IroningType {
     }
 }
 
+/// C++ `reduce_infill_retraction_mode`. BBL default is Auto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReduceInfillRetractionMode {
+    Disabled,
+    #[default]
+    Auto,
+    Enabled,
+}
+
+impl ReduceInfillRetractionMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "0" | "false" => Self::Disabled,
+            "auto" | "1" => Self::Auto,
+            "enabled" | "on" | "2" | "true" => Self::Enabled,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::Auto => "Auto",
+            Self::Enabled => "Enabled",
+        }
+    }
+}
+
+/// C++ `filament_metal_stickiness`. None (untested) behaves like Low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FilamentMetalStickiness {
+    #[default]
+    None,
+    Low,
+    Medium,
+    High,
+}
+
+impl FilamentMetalStickiness {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "none" | "untested" => Self::None,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+        }
+    }
+
+    /// C++ Auto mode: None and Low skip infill retraction.
+    pub fn is_low_for_infill_retract(self) -> bool {
+        matches!(self, Self::None | Self::Low)
+    }
+}
+
 /// C++ ironing fill (`ironing_pattern`: concentric / zig-zag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IroningPattern {
@@ -826,6 +890,10 @@ pub struct SliceSettings {
     pub deretraction_speed_mm_s: f64,
     /// C++ `retraction_minimum_travel` (mm).
     pub retraction_minimum_travel_mm: f64,
+    /// C++ `reduce_infill_retraction_mode`.
+    pub reduce_infill_retraction_mode: ReduceInfillRetractionMode,
+    /// C++ `filament_metal_stickiness`. Auto mode treats None like Low.
+    pub filament_metal_stickiness: FilamentMetalStickiness,
     /// C++ `retract_when_changing_layer`.
     pub retract_when_changing_layer: bool,
     /// C++ `wipe` (wipe along the last path while retracting).
@@ -1108,6 +1176,8 @@ impl Default for SliceSettings {
             retraction_speed_mm_s: 30.0,
             deretraction_speed_mm_s: 0.0,
             retraction_minimum_travel_mm: 2.0,
+            reduce_infill_retraction_mode: ReduceInfillRetractionMode::Auto,
+            filament_metal_stickiness: FilamentMetalStickiness::None,
             retract_when_changing_layer: false,
             wipe: false,
             wipe_distance_mm: 2.0,
@@ -1238,6 +1308,17 @@ impl SliceSettings {
             (self.skirt_height as usize).min(layer_count)
         } else {
             0
+        }
+    }
+
+    /// C++ `GCode::needs_retract` reduce-infill branch (`rirEnabled` / Auto+Low/None).
+    pub fn should_reduce_infill_retraction(&self) -> bool {
+        match self.reduce_infill_retraction_mode {
+            ReduceInfillRetractionMode::Disabled => false,
+            ReduceInfillRetractionMode::Enabled => true,
+            ReduceInfillRetractionMode::Auto => {
+                self.filament_metal_stickiness.is_low_for_infill_retract()
+            }
         }
     }
 

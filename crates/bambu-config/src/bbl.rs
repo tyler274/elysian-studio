@@ -7,9 +7,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
-    EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, IroningPattern, IroningType,
-    OverhangFanThreshold, SeamPosition, SliceSettings, SupportType, SurfacePattern, TopOneWallType,
-    WallGenerator, WallSequence, ZHopType,
+    EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
+    IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
+    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator, WallSequence,
+    ZHopType,
 };
 
 #[derive(Debug, Error)]
@@ -443,6 +444,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     insert(&mut map, "ironing_type", settings.ironing_type.as_str());
     insert(
         &mut map,
+        "reduce_infill_retraction_mode",
+        settings.reduce_infill_retraction_mode.as_str(),
+    );
+    insert(
+        &mut map,
         "ironing_pattern",
         settings.ironing_pattern.as_str(),
     );
@@ -570,6 +576,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "filament_density",
         num_str(settings.filament_density_g_cm3),
+    );
+    insert(
+        &mut map,
+        "filament_metal_stickiness",
+        settings.filament_metal_stickiness.as_str(),
     );
     insert(
         &mut map,
@@ -1610,6 +1621,11 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
             s.ironing_type = t;
         }
     }
+    if let Some(name) = text(map, "reduce_infill_retraction_mode") {
+        if let Some(m) = ReduceInfillRetractionMode::from_name(&name) {
+            s.reduce_infill_retraction_mode = m;
+        }
+    }
     if let Some(name) = text(map, "ironing_pattern") {
         if let Some(p) = IroningPattern::from_name(&name) {
             s.ironing_pattern = p;
@@ -1710,6 +1726,11 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     );
     if let Some(v) = num(map, "filament_density") {
         s.filament_density_g_cm3 = v.max(0.0);
+    }
+    if let Some(name) = text(map, "filament_metal_stickiness") {
+        if let Some(t) = FilamentMetalStickiness::from_name(&name) {
+            s.filament_metal_stickiness = t;
+        }
     }
     if let Some(v) = u32_val(map, "fan_min_speed") {
         s.fan_min_speed = v.min(100);
@@ -2439,6 +2460,23 @@ mod tests {
         assert_eq!(s.skirt_height, 1);
         apply_config_pairs(&mut s, &pairs, false);
         assert_eq!(s.skirt_height, 3);
+        pairs.insert("reduce_infill_retraction_mode".into(), "Enabled".into());
+        apply_config_pairs(&mut s, &pairs, false);
+        assert_eq!(
+            s.reduce_infill_retraction_mode,
+            crate::ReduceInfillRetractionMode::Enabled
+        );
+        pairs.insert("filament_metal_stickiness".into(), "High".into());
+        apply_config_pairs(&mut s, &pairs, false);
+        assert_eq!(
+            s.filament_metal_stickiness,
+            crate::FilamentMetalStickiness::High
+        );
+        assert!(s.should_reduce_infill_retraction());
+        s.reduce_infill_retraction_mode = crate::ReduceInfillRetractionMode::Auto;
+        assert!(!s.should_reduce_infill_retraction());
+        s.filament_metal_stickiness = crate::FilamentMetalStickiness::None;
+        assert!(s.should_reduce_infill_retraction());
     }
 
     #[test]
@@ -2524,6 +2562,10 @@ mod tests {
         assert!(!s.enable_wrapping_detection);
         assert_eq!(s.support_type, crate::SupportType::Tree);
         assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
+        assert_eq!(
+            s.reduce_infill_retraction_mode,
+            crate::ReduceInfillRetractionMode::Auto
+        );
         assert!((s.ironing_flow - 0.10).abs() < 1e-9);
         assert!((s.elephant_foot_mm - 0.15).abs() < 1e-9);
         assert!(!s.precise_z_height);
@@ -2631,6 +2673,10 @@ mod tests {
             Some("1")
         );
         assert_eq!(
+            value_text(obj.get("reduce_infill_retraction_mode").unwrap()).as_deref(),
+            Some("Auto")
+        );
+        assert_eq!(
             value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
             Some("inner wall/outer wall/infill")
         );
@@ -2658,6 +2704,10 @@ mod tests {
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
         assert_eq!(s.skirt_height, 1);
+        assert_eq!(
+            s.reduce_infill_retraction_mode,
+            crate::ReduceInfillRetractionMode::Auto
+        );
         assert!((s.default_acceleration_mm_s2 - 8000.0).abs() < 1.0);
         assert!((s.outer_wall_acceleration_mm_s2 - 5000.0).abs() < 1.0);
         assert!((s.initial_layer_acceleration_mm_s2 - 500.0).abs() < 1.0);
@@ -2680,6 +2730,10 @@ mod tests {
         assert!((s.fan_cooling_layer_time_s - 100.0).abs() < 1e-9);
         assert!((s.slow_down_layer_time_s - 8.0).abs() < 1e-9);
         assert!((s.filament_density_g_cm3 - 1.24).abs() < 1e-9);
+        assert_eq!(
+            s.filament_metal_stickiness,
+            crate::FilamentMetalStickiness::None
+        );
         assert!((s.filament_max_volumetric_speed_mm3_s - 12.0).abs() < 1e-9);
         assert!((s.flow_ratio - 0.99).abs() < 1e-9);
         assert!(s.slow_down_for_layer_cooling);
@@ -2966,6 +3020,8 @@ mod tests {
         src.wall_sequence = crate::WallSequence::OuterInner;
         src.is_infill_first = true;
         src.skirt_height = 4;
+        src.reduce_infill_retraction_mode = crate::ReduceInfillRetractionMode::Enabled;
+        src.filament_metal_stickiness = crate::FilamentMetalStickiness::High;
         let json = crate::project_settings_json(&src).unwrap();
         let loaded = crate::settings_from_json(&json).unwrap();
         assert!(loaded.enable_arc_fitting);
@@ -2973,6 +3029,14 @@ mod tests {
         assert_eq!(loaded.wall_sequence, crate::WallSequence::OuterInner);
         assert!(loaded.is_infill_first);
         assert_eq!(loaded.skirt_height, 4);
+        assert_eq!(
+            loaded.reduce_infill_retraction_mode,
+            crate::ReduceInfillRetractionMode::Enabled
+        );
+        assert_eq!(
+            loaded.filament_metal_stickiness,
+            crate::FilamentMetalStickiness::High
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use super::*;
 use crate::parse::parse_axis;
-use bambu_config::{SliceSettings, WallSequence};
+use bambu_config::{
+    FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SliceSettings, WallSequence,
+};
 use bambu_geom::TriangleMesh;
 use bambu_slicer::slice_mesh;
 
@@ -899,6 +901,54 @@ fn long_travel_emits_retract_and_unretract() {
         "30 mm/s retract"
     );
     assert!(!gcode.contains("; WIPE_START"));
+}
+
+#[test]
+fn reduce_infill_retraction_skips_sparse_hops() {
+    let mesh = TriangleMesh::cube(40.0);
+    let mut settings = SliceSettings::default();
+    settings.infill_pattern = InfillPattern::Rectilinear;
+    settings.infill_density = 0.05;
+    settings.wipe = false;
+    settings.retract_when_changing_layer = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retraction_minimum_travel_mm = 1.0;
+    settings.reduce_infill_retraction_mode = ReduceInfillRetractionMode::Enabled;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let skipped = feature_retract_count(&write_gcode(&settings, &sliced).unwrap(), "Sparse infill");
+    settings.reduce_infill_retraction_mode = ReduceInfillRetractionMode::Disabled;
+    let retracted =
+        feature_retract_count(&write_gcode(&settings, &sliced).unwrap(), "Sparse infill");
+    assert!(
+        retracted > 5,
+        "disabled should retract between sparse lines, got {retracted}"
+    );
+    assert!(
+        skipped < retracted,
+        "enabled should skip infill hops: skipped={skipped} retracted={retracted}"
+    );
+}
+
+#[test]
+fn reduce_infill_retraction_auto_follows_stickiness() {
+    let mesh = TriangleMesh::cube(40.0);
+    let mut settings = SliceSettings::default();
+    settings.infill_pattern = InfillPattern::Rectilinear;
+    settings.infill_density = 0.05;
+    settings.wipe = false;
+    settings.retract_when_changing_layer = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retraction_minimum_travel_mm = 1.0;
+    settings.reduce_infill_retraction_mode = ReduceInfillRetractionMode::Auto;
+    settings.filament_metal_stickiness = FilamentMetalStickiness::None;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let pla = feature_retract_count(&write_gcode(&settings, &sliced).unwrap(), "Sparse infill");
+    settings.filament_metal_stickiness = FilamentMetalStickiness::High;
+    let petg = feature_retract_count(&write_gcode(&settings, &sliced).unwrap(), "Sparse infill");
+    assert!(
+        pla < petg,
+        "Auto+None should skip like PLA, High should retract: pla={pla} petg={petg}"
+    );
 }
 
 #[test]
@@ -1937,6 +1987,20 @@ fn feature_extrusion(gcode: &str, feature: &str) -> f64 {
         last_e = Some(e);
     }
     acc
+}
+
+fn feature_retract_count(gcode: &str, feature: &str) -> usize {
+    let mut in_feat = false;
+    let mut n = 0;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; FEATURE: ") {
+            in_feat = rest == feature;
+        }
+        if in_feat && line.contains(" ; retract") {
+            n += 1;
+        }
+    }
+    n
 }
 
 fn line_e(line: &str) -> Option<f64> {
