@@ -796,8 +796,8 @@ fn signed_contour_area_mm2(poly: &Polygon) -> f64 {
 mod tests {
     use super::*;
     use bambu_config::{
-        EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition, SliceSettings,
-        SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+        DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition,
+        SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -1048,6 +1048,28 @@ mod tests {
         settings.skirt_height = 0;
         let result = slice_mesh(&mesh, &settings).unwrap();
         assert!(result.layers.iter().all(|l| l.skirt.is_empty()));
+    }
+
+    #[test]
+    fn draft_shield_enabled_copies_skirt_onto_every_layer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.draft_shield = DraftShield::Enabled;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = settings.skirt_loops as usize;
+        assert!(result.layers.len() > 10);
+        assert!(result.layers.iter().all(|l| l.skirt.len() == n));
+    }
+
+    #[test]
+    fn draft_shield_limited_height_zero_keeps_first_layer() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_height = 0;
+        settings.draft_shield = DraftShield::Limited;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(result.layers[0].skirt.len(), settings.skirt_loops as usize);
+        assert!(result.layers[1..].iter().all(|l| l.skirt.is_empty()));
     }
 
     #[test]

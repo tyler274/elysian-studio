@@ -208,6 +208,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(&mut map, "skirt_loops", settings.skirt_loops.to_string());
     insert(&mut map, "skirt_height", settings.skirt_height.to_string());
+    insert(&mut map, "draft_shield", settings.draft_shield.as_str());
     insert(
         &mut map,
         "skirt_distance",
@@ -1459,6 +1460,11 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = u32_val(map, "skirt_height") {
         s.skirt_height = v;
     }
+    if let Some(name) = text(map, "draft_shield") {
+        if let Some(d) = crate::DraftShield::from_name(&name) {
+            s.draft_shield = d;
+        }
+    }
     if let Some(v) = num(map, "skirt_distance") {
         s.skirt_distance_mm = v;
     }
@@ -2460,6 +2466,11 @@ mod tests {
         assert_eq!(s.skirt_height, 1);
         apply_config_pairs(&mut s, &pairs, false);
         assert_eq!(s.skirt_height, 3);
+        pairs.insert("draft_shield".into(), "enabled".into());
+        apply_config_pairs(&mut s, &pairs, true);
+        assert_eq!(s.draft_shield, crate::DraftShield::Disabled);
+        apply_config_pairs(&mut s, &pairs, false);
+        assert_eq!(s.draft_shield, crate::DraftShield::Enabled);
         pairs.insert("reduce_infill_retraction_mode".into(), "Enabled".into());
         apply_config_pairs(&mut s, &pairs, false);
         assert_eq!(
@@ -2540,6 +2551,7 @@ mod tests {
         );
         assert_eq!(s.skirt_loops, 0);
         assert_eq!(s.skirt_height, 1);
+        assert_eq!(s.draft_shield, crate::DraftShield::Disabled);
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
         assert!((s.brim_object_gap_mm - 0.1).abs() < 1e-9);
         assert!((s.line_width_mm - 0.42).abs() < 1e-9);
@@ -2673,6 +2685,10 @@ mod tests {
             Some("1")
         );
         assert_eq!(
+            value_text(obj.get("draft_shield").unwrap()).as_deref(),
+            Some("disabled")
+        );
+        assert_eq!(
             value_text(obj.get("reduce_infill_retraction_mode").unwrap()).as_deref(),
             Some("Auto")
         );
@@ -2704,6 +2720,7 @@ mod tests {
         assert_eq!(s.top_shell_layers, 5);
         assert_eq!(s.skirt_loops, 0);
         assert_eq!(s.skirt_height, 1);
+        assert_eq!(s.draft_shield, crate::DraftShield::Disabled);
         assert_eq!(
             s.reduce_infill_retraction_mode,
             crate::ReduceInfillRetractionMode::Auto
@@ -3020,6 +3037,7 @@ mod tests {
         src.wall_sequence = crate::WallSequence::OuterInner;
         src.is_infill_first = true;
         src.skirt_height = 4;
+        src.draft_shield = crate::DraftShield::Enabled;
         src.reduce_infill_retraction_mode = crate::ReduceInfillRetractionMode::Enabled;
         src.filament_metal_stickiness = crate::FilamentMetalStickiness::High;
         let json = crate::project_settings_json(&src).unwrap();
@@ -3029,6 +3047,7 @@ mod tests {
         assert_eq!(loaded.wall_sequence, crate::WallSequence::OuterInner);
         assert!(loaded.is_infill_first);
         assert_eq!(loaded.skirt_height, 4);
+        assert_eq!(loaded.draft_shield, crate::DraftShield::Enabled);
         assert_eq!(
             loaded.reduce_infill_retraction_mode,
             crate::ReduceInfillRetractionMode::Enabled

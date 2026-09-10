@@ -165,6 +165,36 @@ impl WallSequence {
     }
 }
 
+/// C++ `DraftShield` (`draft_shield`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DraftShield {
+    #[default]
+    Disabled,
+    /// Skirt height still follows [`SliceSettings::skirt_height`] (first layer if 0).
+    Limited,
+    /// Skirt is as tall as the object (`Print::has_infinite_skirt`).
+    Enabled,
+}
+
+impl DraftShield {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "0" | "false" | "none" => Self::Disabled,
+            "limited" => Self::Limited,
+            "enabled" | "1" | "true" => Self::Enabled,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Limited => "limited",
+            Self::Enabled => "enabled",
+        }
+    }
+}
+
 /// C++ `OverhangFanThreshold` (`overhang_fan_threshold`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(u8)]
@@ -739,8 +769,11 @@ pub struct SliceSettings {
     pub small_perimeter_threshold_mm: f64,
     /// Skirt loops around layer 0 (0 disables).
     pub skirt_loops: u32,
-    /// C++ `skirt_height` (layers). 0 disables the skirt even when loops > 0.
+    /// C++ `skirt_height` (layers). 0 disables the skirt even when loops > 0
+    /// unless [`Self::draft_shield`] is on.
     pub skirt_height: u32,
+    /// C++ `draft_shield`. BBL `disabled`.
+    pub draft_shield: DraftShield,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
     pub skirt_distance_mm: f64,
     /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
@@ -1097,6 +1130,7 @@ impl Default for SliceSettings {
             small_perimeter_threshold_mm: 0.0,
             skirt_loops: 2,
             skirt_height: 1,
+            draft_shield: DraftShield::Disabled,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
             brim_object_gap_mm: 0.0,
@@ -1299,17 +1333,34 @@ impl SliceSettings {
         self.nozzle_diameter_mm.max(0.0) * self.seam_gap.max(0.0)
     }
 
-    /// C++ `Print::has_skirt` without draft-shield (not parsed).
-    pub fn has_skirt(&self) -> bool {
-        self.skirt_height > 0 && self.skirt_loops > 0
+    /// C++ `Print::has_infinite_skirt` without ooze-prevention.
+    pub fn has_infinite_skirt(&self) -> bool {
+        self.draft_shield == DraftShield::Enabled && self.skirt_loops > 0
     }
 
-    /// C++ `min(skirt_height, layer_count)` when a skirt is enabled.
+    /// C++ `Print::has_skirt`.
+    pub fn has_skirt(&self) -> bool {
+        (self.skirt_height > 0 && self.skirt_loops > 0)
+            || self.draft_shield != DraftShield::Disabled
+    }
+
+    /// C++ other-layer `skirt_done.size() < skirt_height || has_infinite_skirt`,
+    /// plus the first-layer skirt when `has_skirt`.
     pub fn skirt_layer_count(&self, layer_count: usize) -> usize {
-        if self.has_skirt() {
-            (self.skirt_height as usize).min(layer_count)
+        if self.skirt_loops == 0 {
+            return 0;
+        }
+        if self.has_infinite_skirt() {
+            return layer_count;
+        }
+        if !self.has_skirt() {
+            return 0;
+        }
+        let n = self.skirt_height as usize;
+        if n == 0 {
+            1.min(layer_count)
         } else {
-            0
+            n.min(layer_count)
         }
     }
 

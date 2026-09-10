@@ -37,7 +37,9 @@ pub fn skirt(footprint: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
     if !settings.has_skirt() {
         return Vec::new();
     }
-    let brim_outer = if settings.brim_width_mm > 0.0 {
+    let brim_outer = if settings.draft_shield != bambu_config::DraftShield::Disabled {
+        0.0
+    } else if settings.brim_width_mm > 0.0 {
         settings.brim_object_gap_mm.max(0.0) + settings.brim_width_mm
     } else {
         0.0
@@ -117,5 +119,35 @@ mod tests {
         settings.skirt_loops = 2;
         settings.skirt_height = 0;
         assert!(skirt(&[contour], &settings).is_empty());
+    }
+
+    #[test]
+    fn draft_shield_limited_height_zero_still_emits() {
+        let contour = square(20.0);
+        let mut settings = SliceSettings::default();
+        settings.skirt_loops = 2;
+        settings.skirt_height = 0;
+        settings.draft_shield = bambu_config::DraftShield::Limited;
+        assert_eq!(skirt(&[contour], &settings).len(), 2);
+    }
+
+    #[test]
+    fn draft_shield_ignores_brim_when_placing_skirt() {
+        let contour = square(20.0);
+        let mut settings = SliceSettings::default();
+        settings.line_width_mm = 0.42;
+        settings.brim_width_mm = 5.0;
+        settings.brim_object_gap_mm = 0.5;
+        settings.skirt_loops = 1;
+        settings.skirt_distance_mm = 2.0;
+        let with_brim = skirt(&[contour.clone()], &settings);
+        settings.draft_shield = bambu_config::DraftShield::Enabled;
+        let shielded = skirt(&[contour], &settings);
+        let brim_clearance = min_x(with_brim.last().unwrap());
+        let shield_inner = min_x(shielded.last().unwrap());
+        assert!(
+            shield_inner > brim_clearance + 3.0,
+            "draft shield sits skirt_distance from the object, not outside brim: shield={shield_inner} brim_clearance={brim_clearance}"
+        );
     }
 }

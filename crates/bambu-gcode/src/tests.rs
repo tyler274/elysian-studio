@@ -49,6 +49,18 @@ fn skirt_height_emits_on_early_layers() {
 }
 
 #[test]
+fn draft_shield_emits_skirt_on_top_layer() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.draft_shield = bambu_config::DraftShield::Enabled;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let last = sliced.layers.len() - 1;
+    let block = layer_block(&gcode, last).expect("top layer");
+    assert!(block.contains("; FEATURE: Skirt"), "layer {last}");
+}
+
+#[test]
 fn inner_outer_emits_inner_walls_first() {
     let mesh = TriangleMesh::cube(20.0);
     let settings = SliceSettings::default();
