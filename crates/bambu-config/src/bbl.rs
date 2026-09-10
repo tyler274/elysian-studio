@@ -2494,6 +2494,14 @@ mod tests {
         assert!((s.line_width_for(crate::FlowRole::Perimeter, false) - 0.45).abs() < 1e-9);
         assert!((s.line_width_for(crate::FlowRole::ExternalPerimeter, false) - 0.42).abs() < 1e-9);
         assert!((s.line_width_for(crate::FlowRole::SparseInfill, false) - 0.45).abs() < 1e-9);
+        let baked = SliceSettings::bbl_0_20();
+        assert!((baked.arc_fit_tolerance_mm(crate::FlowRole::SparseInfill) - 0.04).abs() < 1e-9);
+        assert!(
+            (baked.arc_fit_tolerance_mm(crate::FlowRole::SupportMaterial) - 0.0375).abs() < 1e-9
+        );
+        assert!(
+            (baked.arc_fit_tolerance_mm(crate::FlowRole::ExternalPerimeter) - 0.012).abs() < 1e-9
+        );
     }
 
     #[test]

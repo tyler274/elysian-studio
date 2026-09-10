@@ -81,6 +81,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 print_f,
                 mm3_per_mm: flow.mm3_per_mm(),
                 width_mm: flow.width_mm,
+                arc_tolerance_mm: settings.arc_fit_tolerance_mm(role),
             }
         };
 
@@ -219,6 +220,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         print_f: feeds.bridge,
                         mm3_per_mm: bridge_flow.mm3_per_mm(),
                         width_mm: bridge_flow.width_mm,
+                        arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::Perimeter),
                     })
                 },
             )?;
@@ -263,6 +265,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         print_f: settings.ironing_speed_mm_s * 60.0,
                         mm3_per_mm: iron_flow.mm3_per_mm(),
                         width_mm: iron_flow.width_mm,
+                        arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::TopSolidInfill),
                     })
                 },
             )?;

@@ -4,8 +4,8 @@ use std::fmt::Write as _;
 
 use bambu_config::{PrintAccel, SliceSettings, ZHopType};
 use bambu_geom::{
-    fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit, PathFitKind, Point,
-    Polygon,
+    douglas_peucker, fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit,
+    PathFitKind, Point, Polygon,
 };
 use bambu_slicer::Layer;
 
@@ -354,6 +354,7 @@ impl<'a> Writer<'a> {
         e_per_mm: f64,
         print_f: f64,
         external_perimeter: bool,
+        arc_tolerance_mm: f64,
     ) -> Result<(), GcodeError> {
         if path.len() < 2 {
             return Ok(());
@@ -372,12 +373,14 @@ impl<'a> Writer<'a> {
         } else {
             ""
         };
+        // C++ `LayerRegion::simplify_path`: arc-fit when enabled, else Douglas-Peucker
+        // with `resolution` (including spiral mode, which cannot emit G2/G3).
         if self.settings.enable_arc_fitting && !self.settings.spiral_mode {
-            let (simplified, fits) =
-                fit_arcs_and_simplify(&pts, self.settings.resolution_mm.max(0.001));
+            let (simplified, fits) = fit_arcs_and_simplify(&pts, arc_tolerance_mm.max(0.001));
             self.emit_fitted_path(&simplified, &fits, e_per_mm, print_f, marker)?;
         } else {
-            self.emit_linear_path(&pts, e_per_mm, print_f, marker)?;
+            let simplified = douglas_peucker(&pts, self.settings.resolution_mm.max(0.001));
+            self.emit_linear_path(&simplified, e_per_mm, print_f, marker)?;
         }
         self.state.last_print_f = print_f;
         Ok(())

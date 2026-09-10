@@ -666,4 +666,19 @@ mod tests {
         assert_eq!(out[0], pts[0]);
         assert_eq!(out[1], pts[2]);
     }
+
+    #[test]
+    fn semicircle_24_fits_sparse_resolution_not_wall() {
+        let pts = semicircle(24);
+        let wall = do_arc_fitting(&pts, 0.012);
+        assert!(
+            wall.iter().all(|f| matches!(f.kind, PathFitKind::Linear)),
+            "24-pt 10 mm semicircle should fail wall resolution 0.012, got {wall:?}"
+        );
+        let sparse = do_arc_fitting(&pts, 0.04);
+        assert!(
+            sparse.iter().any(|f| matches!(f.kind, PathFitKind::Arc(_))),
+            "sparse 0.04 mm should fit the same path, got {sparse:?}"
+        );
+    }
 }

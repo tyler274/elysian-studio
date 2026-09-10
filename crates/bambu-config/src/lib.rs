@@ -13,6 +13,11 @@ pub use bbl::{
 };
 pub use placeholder::{expand_placeholders, PlaceholderContext};
 
+/// C++ `SPARSE_INFILL_RESOLUTION` (mm). Sparse infill arc-fits coarser than walls.
+pub const SPARSE_INFILL_RESOLUTION_MM: f64 = 0.04;
+/// C++ `SUPPORT_RESOLUTION` (mm). Support arc-fits coarser than walls.
+pub const SUPPORT_RESOLUTION_MM: f64 = 0.0375;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InfillPattern {
     Rectilinear,
@@ -1155,6 +1160,16 @@ impl SliceSettings {
             specific
         } else {
             self.line_width_mm
+        }
+    }
+
+    /// C++ `LayerRegion::simplify_path` / `Layer::simplify_support_path` arc-fit epsilon.
+    /// Sparse infill uses 0.04 mm; support uses 0.0375 mm; everything else uses `resolution`.
+    pub fn arc_fit_tolerance_mm(&self, role: FlowRole) -> f64 {
+        match role {
+            FlowRole::SparseInfill => SPARSE_INFILL_RESOLUTION_MM,
+            FlowRole::SupportMaterial => SUPPORT_RESOLUTION_MM,
+            _ => self.resolution_mm.max(0.001),
         }
     }
 

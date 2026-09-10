@@ -335,6 +335,79 @@ fn arc_fitting_emits_g2_or_g3() {
 }
 
 #[test]
+fn douglas_peucker_when_arc_fitting_off() {
+    let path: Vec<_> = (0..=10)
+        .map(|i| bambu_geom::Point::from_mm(f64::from(i), 0.0))
+        .collect();
+    let mut layer = empty_gcode_layer(0, 0.2);
+    layer.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer],
+    };
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = false;
+    settings.resolution_mm = 0.01;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let g1 = gcode
+        .lines()
+        .filter(|line| line.starts_with("G1 ") && line.contains(" E"))
+        .count();
+    assert!(
+        g1 <= 2,
+        "collinear wall should Douglas-Peucker to one extrusion, got {g1}\n{gcode}"
+    );
+}
+
+#[test]
+fn sparse_infill_arc_fit_uses_coarse_tolerance() {
+    let path: Vec<_> = (0..=24)
+        .map(|i| {
+            let t = f64::from(i) / 24.0 * std::f64::consts::PI;
+            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+        })
+        .collect();
+    let mut wall_layer = empty_gcode_layer(0, 0.2);
+    wall_layer.outer_walls = vec![path.clone()];
+    let mut infill_layer = empty_gcode_layer(0, 0.2);
+    infill_layer.infill = vec![path];
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = true;
+    settings.resolution_mm = 0.012;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let wall = write_gcode(
+        &settings,
+        &bambu_slicer::SliceResult {
+            layers: vec![wall_layer],
+        },
+    )
+    .unwrap();
+    assert!(
+        !wall
+            .lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")),
+        "24-pt semicircle wall should stay G1 at 0.012 mm\n{wall}"
+    );
+    let sparse = write_gcode(
+        &settings,
+        &bambu_slicer::SliceResult {
+            layers: vec![infill_layer],
+        },
+    )
+    .unwrap();
+    assert!(
+        sparse
+            .lines()
+            .any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")),
+        "sparse infill should arc-fit the same path at 0.04 mm\n{sparse}"
+    );
+}
+
+#[test]
 fn spiral_mode_skips_arc_fitting() {
     let path: Vec<_> = (0..=48)
         .map(|i| {

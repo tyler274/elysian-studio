@@ -15,6 +15,8 @@ pub(crate) struct Extrude<'a> {
     pub print_f: f64,
     pub mm3_per_mm: f64,
     pub width_mm: f64,
+    /// C++ arc-fit tolerance for this role (`resolution`, 0.04 sparse, 0.0375 support).
+    pub arc_tolerance_mm: f64,
 }
 
 impl Writer<'_> {
@@ -23,7 +25,14 @@ impl Writer<'_> {
             .settings
             .cap_extrude_feed_mm_min(job.print_f, job.mm3_per_mm);
         for path in job.paths {
-            self.emit_one_path(path, job.closed, job.e_per_mm, print_f, false)?;
+            self.emit_one_path(
+                path,
+                job.closed,
+                job.e_per_mm,
+                print_f,
+                false,
+                job.arc_tolerance_mm,
+            )?;
         }
         Ok(())
     }
@@ -60,7 +69,14 @@ impl Writer<'_> {
                 let feed = if over_sparse { bridge_f } else { job.print_f };
                 let feed = self.settings.cap_extrude_feed_mm_min(feed, job.mm3_per_mm);
                 self.emit_marked(over_sparse, "; Slow Down Start", "; Slow Down End", |w| {
-                    w.emit_one_path(&run.path, job.closed, job.e_per_mm, feed, false)
+                    w.emit_one_path(
+                        &run.path,
+                        job.closed,
+                        job.e_per_mm,
+                        feed,
+                        false,
+                        job.arc_tolerance_mm,
+                    )
                 })?;
             }
         }
@@ -122,6 +138,7 @@ impl Writer<'_> {
                         job.e_per_mm,
                         feed,
                         supported_feature == "Outer wall",
+                        job.arc_tolerance_mm,
                     )
                 })?;
             }
