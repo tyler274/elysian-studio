@@ -104,10 +104,11 @@ fn draw(
 ) {
     let n = layers.len();
     let interface_n = settings.support_interface_layers.max(1);
-    let inset = settings.line_width_mm * 0.5;
+    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let inset = support_w * 0.5;
     let radius = diameter * 0.5;
-    let interface_spacing = settings.line_width_mm * 1.1;
-    let pad_spacing = settings.line_width_mm.max(MIN_MM);
+    let interface_spacing = support_w * 1.1;
+    let pad_spacing = support_w.max(MIN_MM);
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         let disks: Vec<Polygon> = nodes[i].iter().map(|p| regular_ngon(*p, radius)).collect();
         let unioned = union_polygons(&disks);

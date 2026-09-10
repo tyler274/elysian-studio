@@ -36,7 +36,7 @@ const DIRECTION_ANGLES: [f64; 3] = [
 
 pub fn line_spacing_mm(settings: &SliceSettings) -> f64 {
     let density = settings.infill_density.max(0.05);
-    settings.line_width_mm / (density / 3.0)
+    settings.line_width_for(bambu_config::FlowRole::SparseInfill, false) / (density / 3.0)
 }
 
 pub fn fill(region: &[Polygon], octree: &Octree, z_mm: f64) -> Vec<Polyline> {

@@ -548,7 +548,7 @@ fn slice_prepared(
             layer_region_perimeters(&prepared, i, hint)
         } else {
             let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
-            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper);
+            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper, i == 0);
             let mut outer_walls = peri.outer;
             let mut inner_walls = peri.inner;
             apply_layer_fuzzy(
@@ -663,7 +663,7 @@ fn layer_region_perimeters(
             .and_then(|layer| layer.regions.get(r))
             .map(Vec::as_slice)
             .filter(|u| !u.is_empty());
-        let peri = perimeters::generate(polys, cfg, seam_hint, upper);
+        let peri = perimeters::generate(polys, cfg, seam_hint, upper, i == 0);
         seam_hint = peri.seam_hint;
         let mut outer = peri.outer;
         let mut inner = peri.inner;
@@ -1014,6 +1014,9 @@ mod tests {
         settings.brim_width_mm = settings.line_width_mm * 3.0;
         let result = slice_mesh(&mesh, &settings).unwrap();
         assert_eq!(result.layers[0].brim.len(), 3);
+        settings.brim_object_gap_mm = 0.4;
+        let gapped = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(gapped.layers[0].brim.len(), 3);
     }
 
     #[test]

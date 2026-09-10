@@ -23,7 +23,7 @@ pub fn generate(
     if region.is_empty() || settings.infill_density <= 0.0 {
         return Vec::new();
     }
-    let spacing = settings.infill_spacing_mm();
+    let spacing = settings.infill_spacing_for(layer_index == 0);
     match settings.infill_pattern {
         InfillPattern::Rectilinear => {
             rectilinear(region, spacing, layer_index, settings.infill_direction_deg)

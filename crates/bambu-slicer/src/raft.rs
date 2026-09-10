@@ -168,12 +168,14 @@ pub fn apply(layers: &mut Vec<Layer>, settings: &SliceSettings) {
     let object_outline = layers[0].contours.clone();
     let body = expand(&object_outline, settings.raft_expansion_mm.max(0.0));
     let flange = expand(&object_outline, first_layer_expansion_mm(settings));
-    let inset = settings.line_width_mm * 0.5;
+    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let inset = support_w * 0.5;
     let first_spacing = {
         let density = settings.raft_first_layer_density.clamp(0.10, 1.0);
-        (settings.line_width_mm / density).max(settings.line_width_mm)
+        let w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, true);
+        (w / density).max(w)
     };
-    let interface_spacing = settings.line_width_mm * 1.1;
+    let interface_spacing = support_w * 1.1;
     let base_spacing = settings.support_spacing_mm();
 
     let mut raft = Vec::with_capacity(slabs.len());

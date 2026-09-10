@@ -78,9 +78,10 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
     }
 
     let interface_n = settings.support_interface_layers.max(1);
-    let inset = settings.line_width_mm * 0.5;
+    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let inset = support_w * 0.5;
     let support_spacing = settings.support_spacing_mm();
-    let interface_spacing = settings.line_width_mm * 1.1;
+    let interface_spacing = support_w * 1.1;
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if regions[i].is_empty() {
             return;

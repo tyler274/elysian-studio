@@ -14,6 +14,7 @@ pub(crate) struct Extrude<'a> {
     pub e_per_mm: f64,
     pub print_f: f64,
     pub mm3_per_mm: f64,
+    pub width_mm: f64,
 }
 
 impl Writer<'_> {
@@ -39,7 +40,7 @@ impl Writer<'_> {
         if job.paths.is_empty() {
             return Ok(());
         }
-        self.emit_feature("Floating vertical shell")?;
+        self.emit_feature("Floating vertical shell", job.width_mm)?;
         self.set_print_role(PrintAccel::Default);
         let detect =
             self.settings.detect_floating_vertical_shell && !first && !floating_areas.is_empty();
@@ -101,7 +102,7 @@ impl Writer<'_> {
                     supported_feature
                 };
                 if current_feature != Some(feature) {
-                    self.emit_feature(feature)?;
+                    self.emit_feature(feature, job.width_mm)?;
                     current_feature = Some(feature);
                 }
                 let mut feed = overhang_feed(self.settings, run.degree, job.print_f);

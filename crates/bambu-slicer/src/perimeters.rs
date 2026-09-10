@@ -15,7 +15,7 @@
 //! wall so top infill can fill the rest. Extra inner walls continue only under
 //! the layer above (C++ `generate_one_wall_by_top_most` / `Alltop`).
 
-use bambu_config::{SliceSettings, TopOneWallType, WallGenerator};
+use bambu_config::{FlowRole, SliceSettings, TopOneWallType, WallGenerator};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon, Polyline,
 };
@@ -23,6 +23,38 @@ use bambu_geom::{
 use crate::seams;
 
 const COVER_MM: f64 = 0.15;
+
+/// Outer vs inner wall extrusion width (C++ `ext_perimeter_flow` / `perimeter_flow`).
+#[derive(Clone, Copy)]
+struct WallSpacing {
+    outer: f64,
+    inner: f64,
+}
+
+impl WallSpacing {
+    fn from_settings(settings: &SliceSettings, first_layer: bool) -> Self {
+        Self {
+            outer: settings.line_width_for(FlowRole::ExternalPerimeter, first_layer),
+            inner: settings.line_width_for(FlowRole::Perimeter, first_layer),
+        }
+    }
+
+    fn loop_offset(self, i: u32) -> f64 {
+        if i == 0 {
+            self.outer * 0.5
+        } else {
+            self.outer + self.inner * (f64::from(i) - 0.5)
+        }
+    }
+
+    fn stack_inset(self, n: u32) -> f64 {
+        if n <= 1 {
+            self.outer * 1.5
+        } else {
+            self.outer + self.inner * (f64::from(n) - 0.5)
+        }
+    }
+}
 
 pub struct PerimeterResult {
     pub outer: Vec<Polyline>,
@@ -37,10 +69,15 @@ pub fn generate(
     settings: &SliceSettings,
     seam_hint: Option<bambu_geom::Point>,
     upper: Option<&[Polygon]>,
+    first_layer: bool,
 ) -> PerimeterResult {
     match settings.wall_generator {
-        WallGenerator::Classic => classic_perimeters(contours, settings, seam_hint, upper),
-        WallGenerator::Arachne => arachne_perimeters(contours, settings, seam_hint, upper),
+        WallGenerator::Classic => {
+            classic_perimeters(contours, settings, seam_hint, upper, first_layer)
+        }
+        WallGenerator::Arachne => {
+            arachne_perimeters(contours, settings, seam_hint, upper, first_layer)
+        }
     }
 }
 
@@ -49,8 +86,9 @@ fn classic_perimeters(
     settings: &SliceSettings,
     seam_hint: Option<bambu_geom::Point>,
     upper: Option<&[Polygon]>,
+    first_layer: bool,
 ) -> PerimeterResult {
-    let w = settings.line_width_mm;
+    let walls = WallSpacing::from_settings(settings, first_layer);
     let loops = settings.wall_loops.max(1);
     let upper = upper.filter(|u| !u.is_empty());
     let one_wall_layer =
@@ -58,15 +96,15 @@ fn classic_perimeters(
 
     let mut hint = seam_hint;
     let (outer, mut inner) = if one_wall_layer {
-        let (outer, hint_out) = onion_rings(contours, 1, w, settings, hint);
+        let (outer, hint_out) = onion_rings(contours, 1, walls.outer, settings, hint);
         hint = hint_out;
         (outer, Vec::new())
     } else {
-        onion_split(contours, loops, w, settings, hint, &mut hint)
+        onion_split(contours, loops, walls, settings, hint, &mut hint)
     };
 
     let wall_n = if one_wall_layer { 1 } else { loops };
-    let mut infill_region = offset_polygons(contours, -w * (wall_n as f64 + 0.5));
+    let mut infill_region = offset_polygons(contours, -walls.stack_inset(wall_n));
     let mut gap_infill = Vec::new();
 
     if !one_wall_layer && loops > 1 && settings.top_one_wall == TopOneWallType::AllTop {
@@ -75,7 +113,7 @@ fn classic_perimeters(
                 contours,
                 upper,
                 loops,
-                w,
+                walls,
                 settings,
                 &mut inner,
                 &mut infill_region,
@@ -86,10 +124,10 @@ fn classic_perimeters(
     }
 
     if settings.gap_infill_speed_mm_s > 0.0 {
-        let areas = collect_gap_areas(contours, wall_n, w);
-        gap_infill = centerline_gaps(&areas, w, settings, &mut hint);
+        let areas = collect_gap_areas(contours, wall_n, walls.inner);
+        gap_infill = centerline_gaps(&areas, walls.inner, settings, &mut hint);
         if !areas.is_empty() && !infill_region.is_empty() {
-            let covered = offset_polygons(&areas, w * 0.5);
+            let covered = offset_polygons(&areas, walls.inner * 0.5);
             infill_region = difference_polygons(&infill_region, &covered);
         }
     }
@@ -97,7 +135,7 @@ fn classic_perimeters(
     PerimeterResult {
         outer,
         inner,
-        infill_region: apply_infill_wall_overlap(infill_region, settings),
+        infill_region: apply_infill_wall_overlap(infill_region, settings, first_layer),
         gap_infill,
         seam_hint: hint,
     }
@@ -108,8 +146,9 @@ fn arachne_perimeters(
     settings: &SliceSettings,
     seam_hint: Option<bambu_geom::Point>,
     upper: Option<&[Polygon]>,
+    first_layer: bool,
 ) -> PerimeterResult {
-    let w = settings.line_width_mm;
+    let walls = WallSpacing::from_settings(settings, first_layer);
     let loops = settings.wall_loops.max(1);
     let upper = upper.filter(|u| !u.is_empty());
     let one_wall_layer =
@@ -117,9 +156,9 @@ fn arachne_perimeters(
 
     let mut hint = seam_hint;
     let target = if one_wall_layer { 1 } else { loops };
-    let (outer, mut inner) = arachne_split(contours, target, w, settings, &mut hint);
+    let (outer, mut inner) = arachne_split(contours, target, walls, settings, &mut hint);
 
-    let mut infill_region = offset_polygons(contours, -w * (target as f64 + 0.5));
+    let mut infill_region = offset_polygons(contours, -walls.stack_inset(target));
 
     if !one_wall_layer && loops > 1 && settings.top_one_wall == TopOneWallType::AllTop {
         if let Some(upper) = upper {
@@ -127,7 +166,7 @@ fn arachne_perimeters(
                 contours,
                 upper,
                 loops,
-                w,
+                walls,
                 settings,
                 &mut inner,
                 &mut infill_region,
@@ -140,16 +179,21 @@ fn arachne_perimeters(
     PerimeterResult {
         outer,
         inner,
-        infill_region: apply_infill_wall_overlap(infill_region, settings),
+        infill_region: apply_infill_wall_overlap(infill_region, settings, first_layer),
         gap_infill: Vec::new(),
         seam_hint: hint,
     }
 }
 
 /// C++ `infill_wall_overlap`: enlarge the fill contour toward the last wall.
-/// Percent is applied to line width (BBL 15% ≈ 0.063 mm at 0.42 mm).
-fn apply_infill_wall_overlap(infill: Vec<Polygon>, settings: &SliceSettings) -> Vec<Polygon> {
-    let grow = settings.infill_wall_overlap * settings.line_width_mm;
+/// Percent is applied to sparse infill line width (BBL 15% ≈ 0.063 mm at 0.42 mm).
+fn apply_infill_wall_overlap(
+    infill: Vec<Polygon>,
+    settings: &SliceSettings,
+    first_layer: bool,
+) -> Vec<Polygon> {
+    let grow =
+        settings.infill_wall_overlap * settings.line_width_for(FlowRole::SparseInfill, first_layer);
     if grow <= 1e-9 || infill.is_empty() {
         infill
     } else {
@@ -162,7 +206,7 @@ fn apply_all_top(
     contours: &[Polygon],
     upper: &[Polygon],
     loops: u32,
-    w: f64,
+    walls: WallSpacing,
     settings: &SliceSettings,
     inner: &mut Vec<Polyline>,
     infill_region: &mut Vec<Polygon>,
@@ -170,9 +214,9 @@ fn apply_all_top(
     arachne: bool,
 ) {
     let cover = cover_upper(upper);
-    let remaining = offset_polygons(contours, -w);
+    let remaining = offset_polygons(contours, -walls.outer);
     let not_top = intersect_polygons(&remaining, &cover);
-    let after_one = offset_polygons(contours, -w * 1.5);
+    let after_one = offset_polygons(contours, -walls.stack_inset(1));
     let top = difference_polygons(&after_one, &cover);
     if not_top.is_empty() {
         inner.clear();
@@ -180,16 +224,20 @@ fn apply_all_top(
         return;
     }
     let extra = loops - 1;
+    let extra_walls = WallSpacing {
+        outer: walls.inner,
+        inner: walls.inner,
+    };
     if arachne {
-        let (more_outer, more_inner) = arachne_split(&not_top, extra, w, settings, hint);
+        let (more_outer, more_inner) = arachne_split(&not_top, extra, extra_walls, settings, hint);
         *inner = more_outer;
         inner.extend(more_inner);
     } else {
-        let (more, hint_out) = onion_rings(&not_top, extra, w, settings, *hint);
+        let (more, hint_out) = onion_rings(&not_top, extra, walls.inner, settings, *hint);
         *hint = hint_out;
         *inner = more;
     }
-    *infill_region = offset_polygons(&not_top, -w * (extra as f64 + 0.5));
+    *infill_region = offset_polygons(&not_top, -extra_walls.stack_inset(extra));
     if !top.is_empty() {
         infill_region.extend(top);
         *infill_region = union_polygons(infill_region);
@@ -208,7 +256,7 @@ fn cover_upper(upper: &[Polygon]) -> Vec<Polygon> {
 fn onion_split(
     contours: &[Polygon],
     loops: u32,
-    w: f64,
+    walls: WallSpacing,
     settings: &SliceSettings,
     mut hint: Option<bambu_geom::Point>,
     hint_out: &mut Option<bambu_geom::Point>,
@@ -216,7 +264,7 @@ fn onion_split(
     let mut outer = Vec::new();
     let mut inner = Vec::new();
     for i in 0..loops {
-        let rings = offset_loops(contours, w * (i as f64 + 0.5), settings, &mut hint);
+        let rings = offset_loops(contours, walls.loop_offset(i), settings, &mut hint);
         if i == 0 {
             outer.extend(rings);
         } else {
@@ -250,7 +298,7 @@ fn onion_rings(
 fn arachne_split(
     contours: &[Polygon],
     loops: u32,
-    w: f64,
+    walls: WallSpacing,
     settings: &SliceSettings,
     hint: &mut Option<bambu_geom::Point>,
 ) -> (Vec<Polyline>, Vec<Polyline>) {
@@ -258,7 +306,7 @@ fn arachne_split(
     let mut inner = Vec::new();
     let mut fitted = 0u32;
     for i in 0..loops {
-        let rings = offset_loops(contours, w * (i as f64 + 0.5), settings, hint);
+        let rings = offset_loops(contours, walls.loop_offset(i), settings, hint);
         if rings.is_empty() {
             break;
         }
@@ -270,7 +318,7 @@ fn arachne_split(
         fitted += 1;
     }
     if fitted < loops {
-        if let Some(thin) = leftover_centerline(contours, fitted, w, settings, hint) {
+        if let Some(thin) = leftover_centerline(contours, fitted, walls, settings, hint) {
             if fitted == 0 {
                 outer.extend(thin);
             } else {
@@ -284,17 +332,18 @@ fn arachne_split(
 fn leftover_centerline(
     contours: &[Polygon],
     fitted: u32,
-    w: f64,
+    walls: WallSpacing,
     settings: &SliceSettings,
     hint: &mut Option<bambu_geom::Point>,
 ) -> Option<Vec<Polyline>> {
     let min_feat = settings.min_feature_size_mm();
     let min_bead = settings.min_bead_width_mm();
     let (lo, hi) = if fitted == 0 {
-        (min_feat * 0.5, w * 0.5)
+        (min_feat * 0.5, walls.outer * 0.5)
     } else {
+        let last = walls.loop_offset(fitted - 1);
         let eps = (min_feat * 0.5).max(min_bead * 0.01).max(1e-4);
-        (w * (fitted as f64 - 0.5) + eps, w * f64::from(fitted))
+        (last + eps, last + 0.5 * walls.inner)
     };
     if hi <= lo + 1e-6 {
         return None;
@@ -454,8 +503,8 @@ mod tests {
         off.infill_wall_overlap = 0.0;
         let mut on = off.clone();
         on.infill_wall_overlap = 0.15;
-        let a = generate(&contours, &off, None, None);
-        let b = generate(&contours, &on, None, None);
+        let a = generate(&contours, &off, None, None, false);
+        let b = generate(&contours, &on, None, None, false);
         let area_off = region_area(&a.infill_region);
         let area_on = region_area(&b.infill_region);
         assert!(
@@ -464,7 +513,7 @@ mod tests {
         );
         let mut arachne = on.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let c = generate(&contours, &arachne, None, None);
+        let c = generate(&contours, &arachne, None, None, false);
         assert!(
             (region_area(&c.infill_region) - area_on).abs() < 1.0,
             "arachne should apply the same overlap grow"
@@ -479,7 +528,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.gap_infill_speed_mm_s = 45.0;
         settings.infill_wall_overlap = 0.15;
-        let peri = generate(&contours, &settings, None, None);
+        let peri = generate(&contours, &settings, None, None, false);
         assert!(!peri.gap_infill.is_empty());
         assert!(
             peri.infill_region.is_empty(),
@@ -495,8 +544,8 @@ mod tests {
         classic.wall_generator = WallGenerator::Classic;
         let mut arachne = classic.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let a = generate(&contours, &classic, None, None);
-        let b = generate(&contours, &arachne, None, None);
+        let a = generate(&contours, &classic, None, None, false);
+        let b = generate(&contours, &arachne, None, None, false);
         assert_eq!(a.outer.len(), 1);
         assert_eq!(b.outer.len(), 1);
         assert!(!a.inner.is_empty());
@@ -515,8 +564,8 @@ mod tests {
         classic.wall_generator = WallGenerator::Classic;
         let mut arachne = classic.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let a = generate(&contours, &classic, None, None);
-        let b = generate(&contours, &arachne, None, None);
+        let a = generate(&contours, &classic, None, None, false);
+        let b = generate(&contours, &arachne, None, None, false);
         assert_eq!(a.outer.len(), 1);
         assert!(a.inner.is_empty(), "classic cannot fit a second wall");
         assert!(
@@ -546,7 +595,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.wall_generator = WallGenerator::Classic;
         settings.gap_infill_speed_mm_s = 45.0;
-        let peri = generate(&contours, &settings, None, None);
+        let peri = generate(&contours, &settings, None, None, false);
         assert!(!peri.gap_infill.is_empty());
         let path = &peri.gap_infill[0];
         let len = wall_len(&peri.gap_infill);
@@ -568,7 +617,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.gap_infill_speed_mm_s = 45.0;
         settings.filter_out_gap_fill_mm = 100.0;
-        let peri = generate(&contours, &settings, None, None);
+        let peri = generate(&contours, &settings, None, None, false);
         assert!(
             peri.gap_infill.is_empty(),
             "100 mm filter should drop the leftover"
@@ -584,8 +633,40 @@ mod tests {
         settings.min_feature_size = 0.25;
         settings.nozzle_diameter_mm = 0.4;
         settings.wall_generator = WallGenerator::Arachne;
-        let peri = generate(&contours, &settings, None, None);
+        let peri = generate(&contours, &settings, None, None, false);
         assert!(peri.outer.is_empty());
         assert!(peri.inner.is_empty());
+    }
+
+    #[test]
+    fn inner_wall_follows_inner_wall_line_width() {
+        let contours = vec![rect(20.0, 20.0)];
+        let mut settings = SliceSettings::default();
+        settings.wall_loops = 2;
+        settings.gap_infill_speed_mm_s = 0.0;
+        settings.outer_wall_line_width_mm = 0.42;
+        settings.inner_wall_line_width_mm = 0.42;
+        let same = generate(&contours, &settings, None, None, false);
+        settings.inner_wall_line_width_mm = 0.60;
+        let wide = generate(&contours, &settings, None, None, false);
+        let min_x = |paths: &[Polyline]| {
+            paths
+                .iter()
+                .flatten()
+                .map(|p| p.to_mm().0)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let same_inner = min_x(&same.inner);
+        let wide_inner = min_x(&wide.inner);
+        assert!(
+            wide_inner > same_inner + 0.05,
+            "wider inner wall should sit further inward: same={same_inner} wide={wide_inner}"
+        );
+        let same_outer = min_x(&same.outer);
+        let wide_outer = min_x(&wide.outer);
+        assert!(
+            (same_outer - wide_outer).abs() < 0.02,
+            "outer wall should keep outer_wall_line_width: same={same_outer} wide={wide_outer}"
+        );
     }
 }

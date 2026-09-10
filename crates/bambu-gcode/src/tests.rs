@@ -117,6 +117,43 @@ fn cube_bbl_gcode_has_brim_not_skirt() {
 }
 
 #[test]
+fn bbl_gcode_emits_role_line_widths() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::bbl_0_20();
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let first_width = gcode
+        .lines()
+        .find(|line| line.starts_with("; LINE_WIDTH:"))
+        .expect("first LINE_WIDTH");
+    assert_eq!(first_width, "; LINE_WIDTH: 0.5");
+    assert!(gcode.contains("; LINE_WIDTH: 0.45\n"));
+    assert!(gcode.contains("; LINE_WIDTH: 0.42\n"));
+}
+
+#[test]
+fn inner_wall_line_width_scales_inner_extrusion() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.outer_wall_line_width_mm = 0.42;
+    settings.inner_wall_line_width_mm = 0.42;
+    let sliced_n = slice_mesh(&mesh, &settings).unwrap();
+    let e_n = feature_extrusion(&write_gcode(&settings, &sliced_n).unwrap(), "Inner wall");
+    settings.inner_wall_line_width_mm = 0.84;
+    let sliced_w = slice_mesh(&mesh, &settings).unwrap();
+    let e_w = feature_extrusion(&write_gcode(&settings, &sliced_w).unwrap(), "Inner wall");
+    assert!(e_n > 0.0);
+    assert!(
+        e_w > e_n * 1.5,
+        "doubling inner width should raise inner E: narrow={e_n} wide={e_w}"
+    );
+}
+
+#[test]
 fn table_gcode_has_support() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
@@ -407,7 +444,7 @@ fn flow_ratio_scales_extrusion() {
 
 #[test]
 fn layer_cooling_slows_short_bbl_layers() {
-    let mesh = TriangleMesh::cube(20.0);
+    let mesh = TriangleMesh::cube(10.0);
     let mut settings = SliceSettings::bbl_0_20();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -880,7 +917,7 @@ fn auto_hop_over_air_uses_spiral() {
 
 #[test]
 fn no_slow_down_keeps_outer_wall_feed() {
-    let mesh = TriangleMesh::cube(20.0);
+    let mesh = TriangleMesh::cube(10.0);
     let mut settings = SliceSettings::bbl_0_20();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.no_slow_down_for_cooling_on_outwalls = true;

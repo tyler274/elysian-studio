@@ -10,7 +10,7 @@
 //! `minimum_sparse_infill_area` become internal solid.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
-use bambu_config::{EnsureVerticalShellThickness, InfillPattern, SliceSettings};
+use bambu_config::{EnsureVerticalShellThickness, FlowRole, InfillPattern, SliceSettings};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, offset_polygons_square,
     union_polygons, Point, Polygon, Polyline, TriangleMesh,
@@ -291,7 +291,7 @@ fn vertical_shell_extra(
     }
     regularize_vertical_shell(
         difference_polygons(&regions[i], &holes),
-        settings.line_width_mm,
+        settings.line_width_for(FlowRole::SolidInfill, i == 0),
     )
 }
 
@@ -338,12 +338,14 @@ fn emit_shells(
     append: bool,
     shared_sparse: Option<&[Vec<Polygon>]>,
 ) {
-    let spacing = settings.line_width_mm;
     let zs: Vec<f64> = layers.iter().map(|l| l.z_mm).collect();
     let sparse_paths = sparse_paths(&shells.sparse, &zs, settings, mesh);
     let lower_src = shared_sparse.unwrap_or(&shells.sparse);
 
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        let first = i == 0;
+        let solid_w = settings.line_width_for(FlowRole::SolidInfill, first);
+        let top_w = settings.line_width_for(FlowRole::TopSolidInfill, first);
         let mut rest = difference_polygons(&shells.solid[i], &shells.top[i]);
         rest = difference_polygons(&rest, &shells.bottom[i]);
         let lower_sparse = if i > 0 {
@@ -356,21 +358,21 @@ fn emit_shells(
         let top_region = shells.top[i].clone();
         let top_surface = infill::solid_surface(
             &shells.top[i],
-            spacing,
+            top_w,
             i,
             settings.top_surface_pattern,
             settings.infill_direction_deg,
         );
         let bottom_paths = infill::solid_surface(
             &shells.bottom[i],
-            spacing,
+            solid_w,
             i.wrapping_add(1),
             settings.bottom_surface_pattern,
             settings.infill_direction_deg,
         );
-        let mut solid_infill = infill::solid(&wide, spacing, i, settings.infill_direction_deg);
-        solid_infill.extend(closed_concentric(&narrow, spacing));
-        let floating_vertical_shell = closed_concentric(&floating, spacing);
+        let mut solid_infill = infill::solid(&wide, solid_w, i, settings.infill_direction_deg);
+        solid_infill.extend(closed_concentric(&narrow, solid_w));
+        let floating_vertical_shell = closed_concentric(&floating, solid_w);
         let infill = sparse_paths[i].clone();
         if append {
             append_union(&mut layer.top_region, top_region);

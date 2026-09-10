@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, PrintAccel, SliceSettings};
+use bambu_config::{Flow, FlowRole, PrintAccel, SliceSettings};
 use bambu_slicer::SliceResult;
 
 use crate::envelope::first_layer_print_box;
@@ -64,48 +64,81 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(w.out, ";_SET_FAN_SPEED_CHANGING_LAYER")?;
         w.emit_wrapping_detection(layer_i, layer.print_z_mm, max_z)?;
 
-        let flow = Flow::from_settings(settings, layer.height_mm);
-        let e_per_mm = flow.e_per_mm();
-        let mm3_per_mm = flow.mm3_per_mm();
+        let object_first = layer_i == settings.raft_layers as usize;
+        let flow_h = layer.height_mm;
         let feeds = LayerFeeds::for_layer(settings, first);
         let support_polys = if layer_i == 0 {
             None
         } else {
             overhang_rings(settings, sliced.layers.get(layer_i - 1))
         };
-        let e = |paths, closed, print_f| Extrude {
-            paths,
-            closed,
-            e_per_mm,
-            print_f,
-            mm3_per_mm,
+        let e = |paths, closed, print_f, role, role_first| {
+            let flow = Flow::for_role(settings, role, flow_h, role_first);
+            Extrude {
+                paths,
+                closed,
+                e_per_mm: flow.e_per_mm(),
+                print_f,
+                mm3_per_mm: flow.mm3_per_mm(),
+                width_mm: flow.width_mm,
+            }
         };
 
         w.emit_role(
             "Skirt",
             PrintAccel::Default,
-            e(&layer.skirt, true, feeds.wall),
+            e(
+                &layer.skirt,
+                true,
+                feeds.wall,
+                FlowRole::ExternalPerimeter,
+                first,
+            ),
         )?;
         w.emit_role(
             "Brim",
             PrintAccel::Default,
-            e(&layer.brim, true, feeds.wall),
+            e(
+                &layer.brim,
+                true,
+                feeds.wall,
+                FlowRole::ExternalPerimeter,
+                first,
+            ),
         )?;
         w.emit_role(
             "Support",
             PrintAccel::Default,
-            e(&layer.support, false, feeds.support),
+            e(
+                &layer.support,
+                false,
+                feeds.support,
+                FlowRole::SupportMaterial,
+                first,
+            ),
         )?;
         w.emit_role(
             "Support interface",
             PrintAccel::Default,
-            e(&layer.support_interface, false, feeds.support_interface),
+            e(
+                &layer.support_interface,
+                false,
+                feeds.support_interface,
+                FlowRole::SupportMaterial,
+                first,
+            ),
         )?;
 
         w.set_print_role(PrintAccel::OuterWall);
         w.emit_wall_paths(
             "Outer wall",
-            e(&layer.outer_walls, true, feeds.wall),
+            e(
+                &layer.outer_walls,
+                true,
+                feeds.wall,
+                FlowRole::ExternalPerimeter,
+                object_first,
+            ),
             support_polys.as_deref(),
             settings.enable_overhang_speed,
             !first,
@@ -113,7 +146,13 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         w.set_print_role(PrintAccel::InnerWall);
         w.emit_wall_paths(
             "Inner wall",
-            e(&layer.inner_walls, true, feeds.inner),
+            e(
+                &layer.inner_walls,
+                true,
+                feeds.inner,
+                FlowRole::Perimeter,
+                object_first,
+            ),
             support_polys.as_deref(),
             settings.enable_overhang_speed,
             !first,
@@ -121,28 +160,53 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         w.emit_role(
             "Gap infill",
             PrintAccel::Default,
-            e(&layer.gap_infill, false, feeds.gap),
+            e(
+                &layer.gap_infill,
+                false,
+                feeds.gap,
+                FlowRole::Perimeter,
+                object_first,
+            ),
         )?;
         w.emit_role(
             "Sparse infill",
             PrintAccel::SparseInfill,
-            e(&layer.infill, false, feeds.sparse),
+            e(
+                &layer.infill,
+                false,
+                feeds.sparse,
+                FlowRole::SparseInfill,
+                object_first,
+            ),
         )?;
         w.emit_role(
             "Internal solid infill",
             PrintAccel::Default,
-            e(&layer.solid_infill, false, feeds.solid),
+            e(
+                &layer.solid_infill,
+                false,
+                feeds.solid,
+                FlowRole::SolidInfill,
+                object_first,
+            ),
         )?;
         w.emit_floating_shell_paths(
-            e(&layer.floating_vertical_shell, false, feeds.vertical_shell),
+            e(
+                &layer.floating_vertical_shell,
+                false,
+                feeds.vertical_shell,
+                FlowRole::SolidInfill,
+                object_first,
+            ),
             &layer.floating_areas,
             feeds.bridge,
             first,
         )?;
         if !layer.bridge.is_empty() {
-            w.emit_feature("Bridge")?;
+            let bridge_flow = Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first)
+                .with_flow_ratio(settings.bridge_flow);
+            w.emit_feature("Bridge", bridge_flow.width_mm)?;
             w.set_print_role(PrintAccel::Default);
-            let bridge_flow = flow.with_flow_ratio(settings.bridge_flow);
             w.emit_marked(
                 settings.overhang_fan_applies(5, true, false),
                 ";_OVERHANG_FAN_START",
@@ -154,6 +218,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         e_per_mm: bridge_flow.e_per_mm(),
                         print_f: feeds.bridge,
                         mm3_per_mm: bridge_flow.mm3_per_mm(),
+                        width_mm: bridge_flow.width_mm,
                     })
                 },
             )?;
@@ -161,18 +226,30 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         w.emit_role(
             "Bottom surface",
             PrintAccel::Default,
-            e(&layer.bottom_surface, false, feeds.wall),
+            e(
+                &layer.bottom_surface,
+                false,
+                feeds.wall,
+                FlowRole::SolidInfill,
+                object_first,
+            ),
         )?;
         w.emit_role(
             "Top surface",
             PrintAccel::TopSurface,
-            e(&layer.top_surface, false, feeds.top),
+            e(
+                &layer.top_surface,
+                false,
+                feeds.top,
+                FlowRole::TopSolidInfill,
+                object_first,
+            ),
         )?;
         if !layer.ironing.is_empty() {
-            w.emit_feature("Ironing")?;
             w.set_print_role(PrintAccel::Default);
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
+            w.emit_feature("Ironing", iron_flow.width_mm)?;
             let iron_closed = layer.ironing.iter().any(|p| p.len() > 2);
             w.emit_marked(
                 settings.ironing_fan_speed >= 0,
@@ -185,6 +262,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         e_per_mm: iron_flow.e_per_mm(),
                         print_f: settings.ironing_speed_mm_s * 60.0,
                         mm3_per_mm: iron_flow.mm3_per_mm(),
+                        width_mm: iron_flow.width_mm,
                     })
                 },
             )?;
@@ -197,9 +275,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 }
 
 impl Writer<'_> {
-    pub(crate) fn emit_feature(&mut self, feature: &str) -> Result<(), GcodeError> {
+    pub(crate) fn emit_feature(&mut self, feature: &str, width: f64) -> Result<(), GcodeError> {
         writeln!(self.out, "; FEATURE: {feature}")?;
-        let width = self.settings.line_width_mm;
         let changed = self
             .state
             .last_line_width
@@ -221,7 +298,7 @@ impl Writer<'_> {
         if job.paths.is_empty() {
             return Ok(());
         }
-        self.emit_feature(feature)?;
+        self.emit_feature(feature, job.width_mm)?;
         self.set_print_role(role);
         self.emit_paths(job)
     }

@@ -273,6 +273,17 @@ pub enum PrintAccel {
     SparseInfill,
 }
 
+/// C++ `FlowRole` used to pick extrusion width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowRole {
+    ExternalPerimeter,
+    Perimeter,
+    SparseInfill,
+    SolidInfill,
+    TopSolidInfill,
+    SupportMaterial,
+}
+
 /// C++ `FuzzySkinType` (`fuzzy_skin`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FuzzySkinType {
@@ -517,6 +528,20 @@ pub struct SliceSettings {
     /// Enlarge/shrink holes (`xy_hole_compensation`). Positive makes holes bigger.
     pub xy_hole_compensation_mm: f64,
     pub line_width_mm: f64,
+    /// C++ `initial_layer_line_width`. 0 keeps the role width (or `line_width`).
+    pub initial_layer_line_width_mm: f64,
+    /// C++ `outer_wall_line_width`. 0 falls back to `line_width`.
+    pub outer_wall_line_width_mm: f64,
+    /// C++ `inner_wall_line_width`. 0 falls back to `line_width`.
+    pub inner_wall_line_width_mm: f64,
+    /// C++ `sparse_infill_line_width`. 0 falls back to `line_width`.
+    pub sparse_infill_line_width_mm: f64,
+    /// C++ `internal_solid_infill_line_width`. 0 falls back to `line_width`.
+    pub internal_solid_infill_line_width_mm: f64,
+    /// C++ `top_surface_line_width`. 0 falls back to `line_width`.
+    pub top_surface_line_width_mm: f64,
+    /// C++ `support_line_width`. 0 falls back to `line_width`.
+    pub support_line_width_mm: f64,
     pub wall_loops: u32,
     /// C++ `top_one_wall_type` (BBL default is `all top`).
     pub top_one_wall: TopOneWallType,
@@ -603,6 +628,8 @@ pub struct SliceSettings {
     pub skirt_distance_mm: f64,
     /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
     pub brim_width_mm: f64,
+    /// C++ `brim_object_gap` (mm). Space between the object and the innermost brim loop.
+    pub brim_object_gap_mm: f64,
     /// Support-style layers under the object (`raft_layers`). 0 disables.
     pub raft_layers: u32,
     /// Air gap between raft contact and the first object layer (`raft_contact_distance`).
@@ -890,6 +917,13 @@ impl Default for SliceSettings {
             xy_contour_compensation_mm: 0.0,
             xy_hole_compensation_mm: 0.0,
             line_width_mm: 0.42,
+            initial_layer_line_width_mm: 0.0,
+            outer_wall_line_width_mm: 0.0,
+            inner_wall_line_width_mm: 0.0,
+            sparse_infill_line_width_mm: 0.0,
+            internal_solid_infill_line_width_mm: 0.0,
+            top_surface_line_width_mm: 0.0,
+            support_line_width_mm: 0.0,
             wall_loops: 2,
             top_one_wall: TopOneWallType::None,
             infill_density: 0.20,
@@ -939,6 +973,7 @@ impl Default for SliceSettings {
             skirt_loops: 2,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
+            brim_object_gap_mm: 0.0,
             raft_layers: 0,
             raft_contact_distance_mm: 0.1,
             raft_expansion_mm: 1.5,
@@ -1089,10 +1124,37 @@ impl Default for SliceSettings {
 
 impl SliceSettings {
     pub fn infill_spacing_mm(&self) -> f64 {
+        self.infill_spacing_for(false)
+    }
+
+    pub fn infill_spacing_for(&self, first_layer: bool) -> f64 {
         if self.infill_density <= 0.0 {
             f64::INFINITY
         } else {
-            (self.line_width_mm / self.infill_density).max(self.line_width_mm)
+            let w = self.line_width_for(FlowRole::SparseInfill, first_layer);
+            (w / self.infill_density).max(w)
+        }
+    }
+
+    /// C++ `PrintRegion::flow` extrusion width. First layer uses
+    /// `initial_layer_line_width` when that value is > 0; role-specific 0
+    /// falls back to [`Self::line_width_mm`].
+    pub fn line_width_for(&self, role: FlowRole, first_layer: bool) -> f64 {
+        if first_layer && self.initial_layer_line_width_mm > 0.0 {
+            return self.initial_layer_line_width_mm;
+        }
+        let specific = match role {
+            FlowRole::ExternalPerimeter => self.outer_wall_line_width_mm,
+            FlowRole::Perimeter => self.inner_wall_line_width_mm,
+            FlowRole::SparseInfill => self.sparse_infill_line_width_mm,
+            FlowRole::SolidInfill => self.internal_solid_infill_line_width_mm,
+            FlowRole::TopSolidInfill => self.top_surface_line_width_mm,
+            FlowRole::SupportMaterial => self.support_line_width_mm,
+        };
+        if specific > 0.0 {
+            specific
+        } else {
+            self.line_width_mm
         }
     }
 
@@ -1118,7 +1180,8 @@ impl SliceSettings {
         if self.support_density <= 0.0 {
             f64::INFINITY
         } else {
-            (self.line_width_mm / self.support_density).max(self.line_width_mm)
+            let w = self.line_width_for(FlowRole::SupportMaterial, false);
+            (w / self.support_density).max(w)
         }
     }
 
@@ -1376,10 +1439,13 @@ impl SliceSettings {
 
     /// C++ `get_outer_wall_volumetric_speed` (stadium flow, no flow ratio).
     pub fn outer_wall_volumetric_speed(&self) -> f64 {
-        let width = if self.line_width_mm > 0.0 {
-            self.line_width_mm
-        } else {
-            self.filament_diameter_mm
+        let width = {
+            let w = self.line_width_for(FlowRole::ExternalPerimeter, false);
+            if w > 0.0 {
+                w
+            } else {
+                self.filament_diameter_mm
+            }
         };
         let h = self.layer_height_mm;
         let mm3_per_mm = h * (width - h * (1.0 - 0.25 * std::f64::consts::PI));
@@ -1456,6 +1522,14 @@ impl SliceSettings {
             infill_pattern: InfillPattern::Grid,
             skirt_loops: 0,
             brim_width_mm: 5.0,
+            brim_object_gap_mm: 0.1,
+            initial_layer_line_width_mm: 0.5,
+            inner_wall_line_width_mm: 0.45,
+            outer_wall_line_width_mm: 0.42,
+            sparse_infill_line_width_mm: 0.45,
+            internal_solid_infill_line_width_mm: 0.42,
+            top_surface_line_width_mm: 0.42,
+            support_line_width_mm: 0.42,
             top_shell_layers: 5,
             top_shell_thickness_mm: 1.0,
             top_surface_pattern: SurfacePattern::MonotonicLine,
@@ -1816,6 +1890,21 @@ impl Flow {
     pub fn from_settings(settings: &SliceSettings, height_mm: f64) -> Self {
         Self {
             width_mm: settings.line_width_mm,
+            height_mm,
+            filament_diameter_mm: settings.filament_diameter_mm,
+            flow_ratio: settings.flow_ratio,
+        }
+    }
+
+    /// C++ `PrintRegion::flow` / `Flow::new_from_config_width` for a role.
+    pub fn for_role(
+        settings: &SliceSettings,
+        role: FlowRole,
+        height_mm: f64,
+        first_layer: bool,
+    ) -> Self {
+        Self {
+            width_mm: settings.line_width_for(role, first_layer),
             height_mm,
             filament_diameter_mm: settings.filament_diameter_mm,
             flow_ratio: settings.flow_ratio,

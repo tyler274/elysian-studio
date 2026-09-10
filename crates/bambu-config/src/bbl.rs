@@ -92,6 +92,41 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.xy_hole_compensation_mm),
     );
     insert(&mut map, "line_width", num_str(settings.line_width_mm));
+    insert(
+        &mut map,
+        "initial_layer_line_width",
+        num_str(settings.initial_layer_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "outer_wall_line_width",
+        num_str(settings.outer_wall_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "inner_wall_line_width",
+        num_str(settings.inner_wall_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_line_width",
+        num_str(settings.sparse_infill_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "internal_solid_infill_line_width",
+        num_str(settings.internal_solid_infill_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "top_surface_line_width",
+        num_str(settings.top_surface_line_width_mm),
+    );
+    insert(
+        &mut map,
+        "support_line_width",
+        num_str(settings.support_line_width_mm),
+    );
     insert(&mut map, "wall_loops", settings.wall_loops.to_string());
     insert(
         &mut map,
@@ -169,6 +204,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.skirt_distance_mm),
     );
     insert(&mut map, "brim_width", num_str(settings.brim_width_mm));
+    insert(
+        &mut map,
+        "brim_object_gap",
+        num_str(settings.brim_object_gap_mm),
+    );
     insert(&mut map, "raft_layers", settings.raft_layers.to_string());
     insert(
         &mut map,
@@ -1143,6 +1183,11 @@ pub fn is_region_key(key: &str) -> bool {
     matches!(
         key,
         "line_width"
+            | "outer_wall_line_width"
+            | "inner_wall_line_width"
+            | "sparse_infill_line_width"
+            | "internal_solid_infill_line_width"
+            | "top_surface_line_width"
             | "wall_loops"
             | "only_one_wall_top"
             | "top_one_wall_type"
@@ -1249,6 +1294,27 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "line_width") {
         s.line_width_mm = v;
     }
+    if let Some(v) = num(map, "initial_layer_line_width") {
+        s.initial_layer_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "outer_wall_line_width") {
+        s.outer_wall_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "inner_wall_line_width") {
+        s.inner_wall_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "sparse_infill_line_width") {
+        s.sparse_infill_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "internal_solid_infill_line_width") {
+        s.internal_solid_infill_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "top_surface_line_width") {
+        s.top_surface_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "support_line_width") {
+        s.support_line_width_mm = v.max(0.0);
+    }
     if let Some(v) = nums(map, "nozzle_diameter") {
         s.nozzle_diameters_mm = v;
         if let Some(&first) = s.nozzle_diameters_mm.first() {
@@ -1347,6 +1413,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     }
     if let Some(v) = num(map, "brim_width") {
         s.brim_width_mm = v;
+    }
+    if let Some(v) = num(map, "brim_object_gap") {
+        s.brim_object_gap_mm = v.max(0.0);
     }
     if let Some(v) = u32_val(map, "raft_layers") {
         s.raft_layers = v;
@@ -2342,6 +2411,15 @@ mod tests {
         );
         assert_eq!(s.skirt_loops, 0);
         assert!((s.brim_width_mm - 5.0).abs() < 1e-9);
+        assert!((s.brim_object_gap_mm - 0.1).abs() < 1e-9);
+        assert!((s.line_width_mm - 0.42).abs() < 1e-9);
+        assert!((s.initial_layer_line_width_mm - 0.5).abs() < 1e-9);
+        assert!((s.inner_wall_line_width_mm - 0.45).abs() < 1e-9);
+        assert!((s.outer_wall_line_width_mm - 0.42).abs() < 1e-9);
+        assert!((s.sparse_infill_line_width_mm - 0.45).abs() < 1e-9);
+        assert!((s.internal_solid_infill_line_width_mm - 0.42).abs() < 1e-9);
+        assert!((s.top_surface_line_width_mm - 0.42).abs() < 1e-9);
+        assert!((s.support_line_width_mm - 0.42).abs() < 1e-9);
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
         assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
@@ -2393,8 +2471,29 @@ mod tests {
         assert!((baked.infill_density - s.infill_density).abs() < 1e-9);
         assert!((baked.brim_width_mm - s.brim_width_mm).abs() < 1e-9);
         assert_eq!(baked.elephant_foot_mm, s.elephant_foot_mm);
+        assert!((baked.brim_object_gap_mm - s.brim_object_gap_mm).abs() < 1e-9);
+        assert!((baked.initial_layer_line_width_mm - s.initial_layer_line_width_mm).abs() < 1e-9);
+        assert!((baked.inner_wall_line_width_mm - s.inner_wall_line_width_mm).abs() < 1e-9);
+        assert!((baked.sparse_infill_line_width_mm - s.sparse_infill_line_width_mm).abs() < 1e-9);
         assert_eq!(baked.top_one_wall, s.top_one_wall);
         assert_eq!(baked.support_type, crate::SupportType::Tree);
+    }
+
+    #[test]
+    fn line_width_for_matches_cpp_print_region_flow() {
+        let mut s = SliceSettings::default();
+        s.line_width_mm = 0.42;
+        assert!((s.line_width_for(crate::FlowRole::Perimeter, false) - 0.42).abs() < 1e-9);
+        assert!((s.line_width_for(crate::FlowRole::Perimeter, true) - 0.42).abs() < 1e-9);
+        s.initial_layer_line_width_mm = 0.5;
+        s.inner_wall_line_width_mm = 0.45;
+        s.outer_wall_line_width_mm = 0.42;
+        s.sparse_infill_line_width_mm = 0.45;
+        assert!((s.line_width_for(crate::FlowRole::Perimeter, true) - 0.5).abs() < 1e-9);
+        assert!((s.line_width_for(crate::FlowRole::ExternalPerimeter, true) - 0.5).abs() < 1e-9);
+        assert!((s.line_width_for(crate::FlowRole::Perimeter, false) - 0.45).abs() < 1e-9);
+        assert!((s.line_width_for(crate::FlowRole::ExternalPerimeter, false) - 0.42).abs() < 1e-9);
+        assert!((s.line_width_for(crate::FlowRole::SparseInfill, false) - 0.45).abs() < 1e-9);
     }
 
     #[test]
@@ -2425,6 +2524,18 @@ mod tests {
         assert_eq!(
             value_text(obj.get("brim_width").unwrap()).as_deref(),
             Some("5")
+        );
+        assert_eq!(
+            value_text(obj.get("brim_object_gap").unwrap()).as_deref(),
+            Some("0.1")
+        );
+        assert_eq!(
+            value_text(obj.get("inner_wall_line_width").unwrap()).as_deref(),
+            Some("0.45")
+        );
+        assert_eq!(
+            value_text(obj.get("initial_layer_line_width").unwrap()).as_deref(),
+            Some("0.5")
         );
         assert!(!obj.contains_key("inherits"));
         let s = load_bbl_process(&paths.process).unwrap();
