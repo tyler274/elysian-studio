@@ -688,6 +688,9 @@ pub struct SliceSettings {
     /// C++ `support_line_width`. 0 falls back to `line_width`.
     pub support_line_width_mm: f64,
     pub wall_loops: u32,
+    /// C++ `alternate_extra_wall` (PrintRegionConfig, default false). Extra
+    /// wall on odd object layers (`layer_id % 2 == 1`), skipped in spiral vase.
+    pub alternate_extra_wall: bool,
     /// C++ `top_one_wall_type` (BBL default is `all top`).
     pub top_one_wall: TopOneWallType,
     /// C++ `only_one_wall_first_layer`. Drop inner walls on object layer 0.
@@ -1101,6 +1104,7 @@ impl Default for SliceSettings {
             top_surface_line_width_mm: 0.0,
             support_line_width_mm: 0.0,
             wall_loops: 2,
+            alternate_extra_wall: false,
             top_one_wall: TopOneWallType::None,
             only_one_wall_first_layer: false,
             infill_density: 0.20,
@@ -1383,6 +1387,17 @@ impl SliceSettings {
     /// C++ `scale_(nozzle_diameter) * (seam_gap / 100)` in millimetres.
     pub fn seam_gap_mm(&self) -> f64 {
         self.nozzle_diameter_mm.max(0.0) * self.seam_gap.max(0.0)
+    }
+
+    /// C++ `PerimeterGenerator` wall count: `wall_loops`, plus one on odd
+    /// layers when [`Self::alternate_extra_wall`] is on and not spiral vase.
+    pub fn wall_loops_for_layer(&self, layer_idx: usize) -> u32 {
+        let n = self.wall_loops.max(1);
+        if self.alternate_extra_wall && layer_idx % 2 == 1 && !self.spiral_mode {
+            n.saturating_add(1)
+        } else {
+            n
+        }
     }
 
     /// C++ `Print::has_infinite_skirt`.

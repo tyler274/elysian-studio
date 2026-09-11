@@ -23,6 +23,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "internal_solid_infill_line_width"
             | "top_surface_line_width"
             | "wall_loops"
+            | "alternate_extra_wall"
             | "only_one_wall_top"
             | "top_one_wall_type"
             | "only_one_wall_first_layer"
@@ -164,6 +165,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = u32_val(map, "wall_loops") {
         s.wall_loops = v.max(1);
+    }
+    if let Some(v) = bool_val(map, "alternate_extra_wall") {
+        s.alternate_extra_wall = v;
     }
     if let Some(v) = i32_val(map, "extruder") {
         if v != 0 {

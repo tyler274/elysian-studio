@@ -548,7 +548,7 @@ fn slice_prepared(
             layer_region_perimeters(&prepared, i, hint)
         } else {
             let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
-            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper, i == 0);
+            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper, i);
             let mut outer_walls = peri.outer;
             let mut inner_walls = peri.inner;
             apply_layer_fuzzy(
@@ -664,7 +664,7 @@ fn layer_region_perimeters(
             .and_then(|layer| layer.regions.get(r))
             .map(Vec::as_slice)
             .filter(|u| !u.is_empty());
-        let peri = perimeters::generate(polys, cfg, seam_hint, upper, i == 0);
+        let peri = perimeters::generate(polys, cfg, seam_hint, upper, i);
         seam_hint = peri.seam_hint;
         let mut outer = peri.outer;
         let mut inner = peri.inner;
@@ -872,6 +872,21 @@ mod tests {
         let mid_b = &b.layers[b.layers.len() / 2];
         assert!(mid_a.inner_walls.is_empty());
         assert!(!mid_b.inner_walls.is_empty());
+    }
+
+    #[test]
+    fn alternate_extra_wall_thickens_odd_layers() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.wall_loops = 2;
+        settings.alternate_extra_wall = true;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let even = &result.layers[2];
+        let odd = &result.layers[3];
+        assert_eq!(even.inner_walls.len(), 1);
+        assert_eq!(odd.inner_walls.len(), 2);
+        assert_eq!(result.layers[0].inner_walls.len(), 1);
     }
 
     #[test]

@@ -82,6 +82,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.support_line_width_mm),
     );
     insert(&mut map, "wall_loops", settings.wall_loops.to_string());
+    insert_bool(
+        &mut map,
+        "alternate_extra_wall",
+        settings.alternate_extra_wall,
+    );
     insert(
         &mut map,
         "wall_filament",

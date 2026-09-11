@@ -195,6 +195,7 @@ fn upstream_fdm_process_0_20() {
     assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
     assert!((s.bridge_flow - 1.0).abs() < 1e-9);
     assert!(!s.thick_bridges);
+    assert!(!s.alternate_extra_wall);
     assert!(s.enable_arc_fitting);
     assert!((s.resolution_mm - 0.012).abs() < 1e-9);
     assert!(!s.enable_support);
@@ -645,6 +646,7 @@ fn project_settings_json_roundtrip() {
     src.top_surface_density = 0.4;
     src.bottom_surface_density = 0.6;
     src.wall_loops = 3;
+    src.alternate_extra_wall = true;
     src.enable_support = true;
     src.support_on_build_plate_only = true;
     src.thick_bridges = true;
@@ -670,6 +672,7 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.top_surface_density - 0.4).abs() < 1e-9);
     assert!((loaded.bottom_surface_density - 0.6).abs() < 1e-9);
     assert_eq!(loaded.wall_loops, 3);
+    assert!(loaded.alternate_extra_wall);
     assert!(loaded.enable_support);
     assert!(loaded.support_on_build_plate_only);
     assert!(loaded.thick_bridges);
@@ -756,6 +759,7 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("sparse_infill_density".into(), "100%".into());
     pairs.insert("fill_multiline".into(), "4".into());
     pairs.insert("wall_loops".into(), "6".into());
+    pairs.insert("alternate_extra_wall".into(), "1".into());
     pairs.insert("extruder".into(), "3".into());
     pairs.insert("layer_height".into(), "0.08".into());
     pairs.insert("enable_support".into(), "1".into());
@@ -766,6 +770,7 @@ fn region_overrides_skip_object_keys() {
     assert!((s.infill_density - 1.0).abs() < 1e-9);
     assert_eq!(s.fill_multiline, 4);
     assert_eq!(s.wall_loops, 6);
+    assert!(s.alternate_extra_wall);
     assert_eq!(s.wall_filament, 3);
     assert_eq!(s.sparse_infill_filament, 3);
     assert_eq!(s.solid_infill_filament, 3);
@@ -818,4 +823,18 @@ fn has_infinite_skirt_matches_cpp() {
     assert!(s.has_infinite_skirt());
     s.ooze_prevention = false;
     assert!(!s.has_infinite_skirt());
+}
+
+#[test]
+fn wall_loops_for_layer_matches_cpp() {
+    let mut s = SliceSettings::default();
+    s.wall_loops = 2;
+    assert_eq!(s.wall_loops_for_layer(0), 2);
+    assert_eq!(s.wall_loops_for_layer(1), 2);
+    s.alternate_extra_wall = true;
+    assert_eq!(s.wall_loops_for_layer(0), 2);
+    assert_eq!(s.wall_loops_for_layer(1), 3);
+    assert_eq!(s.wall_loops_for_layer(2), 2);
+    s.spiral_mode = true;
+    assert_eq!(s.wall_loops_for_layer(1), 2);
 }
