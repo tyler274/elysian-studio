@@ -109,6 +109,7 @@ pub fn farthest_layer_point(layer: &Layer) -> Option<Point> {
     update_farthest(&layer.outer_walls, &mut best);
     if best.is_none() {
         update_farthest(&layer.infill, &mut best);
+        update_farthest(&layer.combined_infill, &mut best);
         update_farthest(&layer.solid_infill, &mut best);
         update_farthest(&layer.floating_vertical_shell, &mut best);
         update_farthest(&layer.top_surface, &mut best);

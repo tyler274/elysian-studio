@@ -76,6 +76,13 @@ impl ToolpathBuffer {
             );
             emit_paths(
                 &mut vertices,
+                &layer.combined_infill,
+                z,
+                ExtrusionRole::Infill,
+                false,
+            );
+            emit_paths(
+                &mut vertices,
                 &layer.solid_infill,
                 z,
                 ExtrusionRole::SolidInfill,

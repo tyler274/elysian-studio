@@ -223,6 +223,23 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         object_first,
                     ),
                 )?;
+                if !layer.combined_infill.is_empty() {
+                    let h = layer.combined_infill_height_mm.max(flow_h);
+                    let flow = Flow::for_role(settings, FlowRole::SparseInfill, h, object_first);
+                    w.emit_role(
+                        "Sparse infill",
+                        PrintAccel::SparseInfill,
+                        Extrude {
+                            paths: &layer.combined_infill,
+                            closed: false,
+                            e_per_mm: flow.e_per_mm(),
+                            print_f: feeds.sparse,
+                            mm3_per_mm: flow.mm3_per_mm(),
+                            width_mm: flow.width_mm,
+                            arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SparseInfill),
+                        },
+                    )?;
+                }
                 w.emit_role(
                     "Internal solid infill",
                     PrintAccel::Default,

@@ -127,6 +127,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "fill_multiline",
         settings.fill_multiline.to_string(),
     );
+    insert_bool(&mut map, "infill_combination", settings.infill_combination);
     insert(
         &mut map,
         "infill_direction",

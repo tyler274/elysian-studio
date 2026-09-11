@@ -190,6 +190,7 @@ fn upstream_fdm_process_0_20() {
     assert!((s.infill_density - 0.15).abs() < 1e-9);
     assert_eq!(s.infill_pattern, InfillPattern::Grid);
     assert_eq!(s.fill_multiline, 1);
+    assert!(!s.infill_combination);
     assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
     assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
@@ -650,6 +651,7 @@ fn project_settings_json_roundtrip() {
     src.layer_height_mm = 0.28;
     src.infill_density = 0.15;
     src.fill_multiline = 3;
+    src.infill_combination = true;
     src.top_surface_density = 0.4;
     src.bottom_surface_density = 0.6;
     src.wall_loops = 3;
@@ -683,6 +685,7 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.layer_height_mm - 0.28).abs() < 1e-9);
     assert!((loaded.infill_density - 0.15).abs() < 1e-9);
     assert_eq!(loaded.fill_multiline, 3);
+    assert!(loaded.infill_combination);
     assert!((loaded.top_surface_density - 0.4).abs() < 1e-9);
     assert!((loaded.bottom_surface_density - 0.6).abs() < 1e-9);
     assert_eq!(loaded.wall_loops, 3);
@@ -782,6 +785,7 @@ fn region_overrides_skip_object_keys() {
     let mut pairs = BTreeMap::new();
     pairs.insert("sparse_infill_density".into(), "100%".into());
     pairs.insert("fill_multiline".into(), "4".into());
+    pairs.insert("infill_combination".into(), "1".into());
     pairs.insert("wall_loops".into(), "6".into());
     pairs.insert("alternate_extra_wall".into(), "1".into());
     pairs.insert("extruder".into(), "3".into());
@@ -800,6 +804,7 @@ fn region_overrides_skip_object_keys() {
     apply_config_pairs(&mut s, &pairs, true);
     assert!((s.infill_density - 1.0).abs() < 1e-9);
     assert_eq!(s.fill_multiline, 4);
+    assert!(s.infill_combination);
     assert_eq!(s.wall_loops, 6);
     assert!(s.alternate_extra_wall);
     assert_eq!(s.wall_filament, 3);

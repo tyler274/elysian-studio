@@ -30,6 +30,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "sparse_infill_density"
             | "sparse_infill_pattern"
             | "fill_multiline"
+            | "infill_combination"
             | "infill_direction"
             | "minimum_sparse_infill_area"
             | "infill_wall_overlap"
@@ -216,6 +217,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = u32_val(map, "fill_multiline") {
         s.fill_multiline = v.clamp(1, 5);
+    }
+    if let Some(v) = bool_val(map, "infill_combination") {
+        s.infill_combination = v;
     }
     if let Some(v) = num(map, "infill_direction") {
         s.infill_direction_deg = v.rem_euclid(360.0);

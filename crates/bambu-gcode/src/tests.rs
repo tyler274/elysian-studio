@@ -158,6 +158,48 @@ fn infill_first_prints_fill_before_walls_after_layer_zero() {
 }
 
 #[test]
+fn infill_combination_thickens_sparse_extrusion() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.infill_pattern = InfillPattern::Rectilinear;
+    settings.infill_density = 0.15;
+    settings.slow_down_for_layer_cooling = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let open_sliced = slice_mesh(&mesh, &settings).unwrap();
+    let open = write_gcode(&settings, &open_sliced).unwrap();
+    settings.infill_combination = true;
+    let comb_sliced = slice_mesh(&mesh, &settings).unwrap();
+    let comb = write_gcode(&settings, &comb_sliced).unwrap();
+    let n = comb_sliced.layers.len();
+    let idx = ((n / 2) & !1).clamp(4, n.saturating_sub(6));
+    let sparse_e = |gcode: &str, layer: usize| {
+        feature_extrusion(layer_block(gcode, layer).expect("layer"), "Sparse infill")
+    };
+    let open_void = sparse_e(&open, idx - 1);
+    let open_top = sparse_e(&open, idx);
+    let comb_void = sparse_e(&comb, idx - 1);
+    let comb_top = sparse_e(&comb, idx);
+    assert!(
+        open_void > 1e-3 && open_top > 1e-3,
+        "uncombined sparse E should exist: void={open_void} top={open_top}"
+    );
+    assert!(
+        comb_void < open_void * 0.25,
+        "void layer should drop sparse E: combined={comb_void} open={open_void}"
+    );
+    assert!(
+        comb_top > open_top * 1.5,
+        "combined top should extrude thicker: combined={comb_top} open={open_top}"
+    );
+    let open_pair = open_void + open_top;
+    let comb_pair = comb_void + comb_top;
+    assert!(
+        (comb_pair / open_pair - 1.0).abs() < 0.35,
+        "pair filament should stay similar: combined={comb_pair} open={open_pair}"
+    );
+}
+
+#[test]
 fn seam_gap_shortens_closed_outer_walls() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
@@ -928,6 +970,8 @@ fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
         gap_infill: Vec::new(),
         infill_region: Vec::new(),
         infill: Vec::new(),
+        combined_infill: Vec::new(),
+        combined_infill_height_mm: 0.0,
         solid_infill: Vec::new(),
         floating_vertical_shell: Vec::new(),
         floating_areas: Vec::new(),

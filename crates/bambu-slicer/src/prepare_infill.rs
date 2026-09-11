@@ -8,7 +8,9 @@
 //! internal solid (`diff(infill, intersect(neighbor infills))`), then C++
 //! `offset2_ex` / `shrink_ex` regularization and tiny in-model drop filtering
 //! against neighbor `lslices`. Sparse islands at or below
-//! `minimum_sparse_infill_area` become internal solid.
+//! `minimum_sparse_infill_area` become internal solid. C++ `combine_infill`
+//! (`infill_combination`) intersects sparse across layers that fit under the
+//! nozzle and prints the overlap on the uppermost layer at the stacked height.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
 use bambu_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
@@ -43,6 +45,8 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
     let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
     for layer in layers.iter_mut() {
         layer.infill.clear();
+        layer.combined_infill.clear();
+        layer.combined_infill_height_mm = 0.0;
         layer.solid_infill.clear();
         layer.floating_vertical_shell.clear();
         layer.floating_areas.clear();
@@ -388,7 +392,15 @@ fn emit_shells(
     shared_sparse: Option<&[Vec<Polygon>]>,
 ) {
     let zs: Vec<f64> = layers.iter().map(|l| l.z_mm).collect();
-    let sparse_paths = sparse_paths(&shells.sparse, &zs, settings, mesh);
+    let heights: Vec<f64> = layers.iter().map(|l| l.height_mm).collect();
+    let mut leftover = shells.sparse.clone();
+    let (thick, thick_h) = combine_sparse_infill(&mut leftover, &heights, settings);
+    let leftover_paths = sparse_paths(&leftover, &zs, settings, mesh);
+    let thick_paths = if thick.iter().all(Vec::is_empty) {
+        vec![Vec::new(); leftover.len()]
+    } else {
+        sparse_paths(&thick, &zs, settings, mesh)
+    };
     let lower_src = shared_sparse.unwrap_or(&shells.sparse);
 
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
@@ -455,7 +467,9 @@ fn emit_shells(
         ));
         let floating_vertical_shell =
             closed_concentric(&floating, solid_w, settings.nozzle_diameter_mm);
-        let infill = sparse_paths[i].clone();
+        let infill = leftover_paths[i].clone();
+        let combined = thick_paths[i].clone();
+        let combined_h = thick_h[i];
         if append {
             append_union(&mut layer.top_region, top_region);
             layer.top_surface.extend(top_surface);
@@ -470,6 +484,10 @@ fn emit_shells(
                 .extend(floating_vertical_shell);
             append_union(&mut layer.floating_areas, lower_sparse.to_vec());
             layer.infill.extend(infill);
+            layer.combined_infill.extend(combined);
+            if combined_h > 0.0 {
+                layer.combined_infill_height_mm = combined_h;
+            }
         } else {
             layer.top_region = top_region;
             layer.top_surface = top_surface;
@@ -482,8 +500,120 @@ fn emit_shells(
             layer.floating_vertical_shell = floating_vertical_shell;
             layer.floating_areas = lower_sparse.to_vec();
             layer.infill = infill;
+            layer.combined_infill = combined;
+            layer.combined_infill_height_mm = combined_h;
         }
     });
+}
+
+/// C++ `PrintObject::combine_infill`. Intersect sparse (`stInternal`) across
+/// consecutive layers whose combined height stays under the nozzle diameter.
+/// Void the overlap on lower layers with a clearance ring so thick infill
+/// cannot collide with walls. The uppermost layer keeps leftover sparse at the
+/// original height and the intersection at the stacked `Surface.thickness`.
+fn combine_sparse_infill(
+    sparse: &mut [Vec<Polygon>],
+    heights: &[f64],
+    settings: &SliceSettings,
+) -> (Vec<Vec<Polygon>>, Vec<f64>) {
+    let n = sparse.len();
+    let mut thick = vec![Vec::new(); n];
+    let mut thick_h = vec![0.0; n];
+    if !settings.infill_combination || settings.infill_density <= 0.0 || n < 2 {
+        return (thick, thick_h);
+    }
+    let nozzle = combine_infill_nozzle_mm(settings);
+    // C++ `m_layers` is object layers only; skip raft and the first object layer
+    // (`layer->id() == 0`).
+    let first_object = settings.raft_layers as usize;
+    let mut combine = vec![0usize; n];
+    let mut current_height = 0.0;
+    let mut num_layers = 0usize;
+    for layer_idx in 0..n {
+        if layer_idx <= first_object {
+            continue;
+        }
+        let height = heights
+            .get(layer_idx)
+            .copied()
+            .unwrap_or(settings.layer_height_mm);
+        if current_height + height >= nozzle + SHELL_THICKNESS_EPSILON {
+            combine[layer_idx - 1] = num_layers;
+            current_height = 0.0;
+            num_layers = 0;
+        }
+        current_height += height;
+        num_layers += 1;
+    }
+    combine[n - 1] = num_layers;
+
+    let peri = Flow::for_role(
+        settings,
+        FlowRole::Perimeter,
+        settings.layer_height_mm,
+        false,
+    )
+    .width_mm;
+    let solid = Flow::for_role(
+        settings,
+        FlowRole::SolidInfill,
+        settings.layer_height_mm,
+        false,
+    );
+    let extra = match settings.infill_pattern {
+        InfillPattern::Rectilinear | InfillPattern::Grid | InfillPattern::Honeycomb => 1.5,
+        _ => 0.5,
+    };
+    let clearance = 0.5 * peri + extra * solid.width_mm;
+    let spacing = solid.spacing_mm();
+    let area_threshold = spacing * spacing;
+
+    for layer_idx in 0..n {
+        let num_layers = combine[layer_idx];
+        if num_layers <= 1 {
+            continue;
+        }
+        let start = layer_idx + 1 - num_layers;
+        let mut intersection = sparse[start].clone();
+        for next in sparse.iter().take(layer_idx + 1).skip(start + 1) {
+            intersection = intersect_polygons(&intersection, next);
+            if intersection.is_empty() {
+                break;
+            }
+        }
+        if area_threshold > 0.0 {
+            intersection.retain(|poly| signed_area_mm2(poly).abs() > area_threshold);
+        }
+        if intersection.is_empty() {
+            continue;
+        }
+        let grown = offset_polygons(&intersection, clearance);
+        for slot in sparse.iter_mut().take(layer_idx + 1).skip(start) {
+            *slot = difference_polygons(slot, &grown);
+        }
+        thick_h[layer_idx] = heights
+            .iter()
+            .take(layer_idx + 1)
+            .skip(start)
+            .sum::<f64>()
+            .max(settings.layer_height_mm);
+        thick[layer_idx] = intersection;
+    }
+    (thick, thick_h)
+}
+
+fn combine_infill_nozzle_mm(settings: &SliceSettings) -> f64 {
+    let dia = |filament: i32| {
+        let idx = filament.max(1) as usize - 1;
+        settings
+            .nozzle_diameters_mm
+            .get(idx)
+            .copied()
+            .unwrap_or(settings.nozzle_diameter_mm)
+    };
+    dia(settings.sparse_infill_filament)
+        .min(dia(settings.solid_infill_filament))
+        .max(1e-6)
 }
 
 /// C++ `NARROW_INFILL_AREA_THRESHOLD` in `Fill.cpp`.

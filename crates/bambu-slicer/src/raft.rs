@@ -133,6 +133,8 @@ fn raft_layer(
         gap_infill: Vec::new(),
         infill_region: Vec::new(),
         infill: Vec::new(),
+        combined_infill: Vec::new(),
+        combined_infill_height_mm: 0.0,
         solid_infill: Vec::new(),
         floating_vertical_shell: Vec::new(),
         floating_areas: Vec::new(),

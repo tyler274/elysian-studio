@@ -69,6 +69,10 @@ pub struct Layer {
     pub gap_infill: Vec<Polyline>,
     pub infill_region: Vec<Polygon>,
     pub infill: Vec<Polyline>,
+    /// C++ combined-infill hatch (`Surface.thickness` is the stacked group height).
+    pub combined_infill: Vec<Polyline>,
+    /// C++ `Surface.thickness` for [`Self::combined_infill`] (0 if none).
+    pub combined_infill_height_mm: f64,
     pub solid_infill: Vec<Polyline>,
     /// C++ `erFloatingVerticalShell` (narrow internal solid over sparse).
     pub floating_vertical_shell: Vec<Polyline>,
@@ -581,6 +585,8 @@ fn slice_prepared(
             gap_infill: paths.gap_infill,
             infill_region: paths.infill_region,
             infill: Vec::new(),
+            combined_infill: Vec::new(),
+            combined_infill_height_mm: 0.0,
             solid_infill: Vec::new(),
             floating_vertical_shell: Vec::new(),
             floating_areas: Vec::new(),
@@ -2134,6 +2140,56 @@ mod tests {
     }
 
     #[test]
+    fn infill_combination_voids_lower_layer_of_pair() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.15;
+        let open = slice_mesh(&mesh, &settings).unwrap();
+        settings.infill_combination = true;
+        let combined = slice_mesh(&mesh, &settings).unwrap();
+        let n = combined.layers.len();
+        assert_eq!(open.layers.len(), n);
+        // 0.2 mm layers + 0.4 mm nozzle: C++ groups of 2 on even indices ≥ 2.
+        let idx = ((n / 2) & !1).clamp(4, n.saturating_sub(6));
+        let open_void = polyline_len_mm(&open.layers[idx - 1].infill);
+        let open_top = polyline_len_mm(&open.layers[idx].infill);
+        let void_len = polyline_len_mm(&combined.layers[idx - 1].infill)
+            + polyline_len_mm(&combined.layers[idx - 1].combined_infill);
+        let leftover_len = polyline_len_mm(&combined.layers[idx].infill);
+        let top_len = polyline_len_mm(&combined.layers[idx].combined_infill);
+        assert!(
+            open_void > 10.0 && open_top > 10.0,
+            "mid-cube sparse should exist: void={open_void} top={open_top}"
+        );
+        assert!(
+            (open_void - open_top).abs() / open_top < 0.25,
+            "uncombined consecutive sparse should match: {open_void} vs {open_top}"
+        );
+        assert!(
+            void_len < open_void * 0.25,
+            "void layer of a pair should drop sparse: combined={void_len} open={open_void}"
+        );
+        assert!(
+            leftover_len < open_top * 0.25,
+            "combined top leftover ring should be small: leftover={leftover_len} open={open_top}"
+        );
+        assert!(
+            top_len > open_top * 0.5,
+            "combined top should keep the intersection hatch: combined={top_len} open={open_top}"
+        );
+        assert!(
+            top_len > void_len * 4.0,
+            "combined top should have far more sparse than its voided partner: top={top_len} void={void_len}"
+        );
+        let thick_h = combined.layers[idx].combined_infill_height_mm;
+        assert!(
+            (thick_h - 2.0 * settings.layer_height_mm).abs() < 1e-6,
+            "C++ Surface.thickness should be two layer heights, got {thick_h}"
+        );
+    }
+
+    #[test]
     fn adaptive_cubic_fills_sparse_region() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
@@ -2497,6 +2553,7 @@ mod tests {
         let mid_mod = &denser.layers[denser.layers.len() / 2];
         let fill = |layer: &Layer| {
             polyline_len_mm(&layer.infill)
+                + polyline_len_mm(&layer.combined_infill)
                 + polyline_len_mm(&layer.solid_infill)
                 + polyline_len_mm(&layer.floating_vertical_shell)
         };

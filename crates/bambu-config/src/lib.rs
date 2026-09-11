@@ -747,6 +747,10 @@ pub struct SliceSettings {
     pub infill_pattern: InfillPattern,
     /// C++ `fill_multiline` (1–5). Extra parallel copies of sparse infill.
     pub fill_multiline: u32,
+    /// C++ `infill_combination`. Intersect sparse fill across layers that fit
+    /// under the nozzle diameter and print the overlap on the uppermost layer.
+    /// BBL `"0"`.
+    pub infill_combination: bool,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
     pub infill_direction_deg: f64,
     /// C++ `minimum_sparse_infill_area` (mm²). Sparse islands at or below this
@@ -1179,6 +1183,7 @@ impl Default for SliceSettings {
             infill_density: 0.20,
             infill_pattern: InfillPattern::Gyroid,
             fill_multiline: 1,
+            infill_combination: false,
             infill_direction_deg: 45.0,
             minimum_sparse_infill_area_mm2: 15.0,
             infill_wall_overlap: 0.15,
