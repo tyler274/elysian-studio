@@ -6,7 +6,8 @@
 //! `top_shell_thickness` / `bottom_shell_thickness`. When
 //! `ensure_vertical_shell_thickness` is enabled, slope rings become extra
 //! internal solid (`diff(infill, intersect(neighbor infills))`), then C++
-//! `offset2_ex` / `shrink_ex` regularization. Sparse islands at or below
+//! `offset2_ex` / `shrink_ex` regularization and tiny in-model drop filtering
+//! against neighbor `lslices`. Sparse islands at or below
 //! `minimum_sparse_infill_area` become internal solid.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
@@ -39,6 +40,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         fill_into(layers, settings, mesh, false, None);
         return;
     }
+    let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
     for layer in layers.iter_mut() {
         layer.infill.clear();
         layer.solid_infill.clear();
@@ -63,7 +65,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
             .iter()
             .find_map(|layer| layer.region_settings.get(r).cloned())
             .unwrap_or_else(|| settings.clone());
-        shells.push(detect_shells(&regions, &zs, &cfg));
+        shells.push(detect_shells(&regions, &zs, &contours, &cfg));
         cfgs.push((cfg, regions));
     }
     let mut shared_sparse = vec![Vec::new(); n];
@@ -92,7 +94,8 @@ fn fill_into(
 ) {
     let regions: Vec<Vec<Polygon>> = layers.iter().map(|l| l.infill_region.clone()).collect();
     let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
-    let shells = detect_shells(&regions, &zs, settings);
+    let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
+    let shells = detect_shells(&regions, &zs, &contours, settings);
     emit_shells(layers, settings, mesh, &shells, append, shared_sparse);
 }
 
@@ -103,7 +106,12 @@ struct ShellMap {
     sparse: Vec<Vec<Polygon>>,
 }
 
-fn detect_shells(regions: &[Vec<Polygon>], zs: &[f64], settings: &SliceSettings) -> ShellMap {
+fn detect_shells(
+    regions: &[Vec<Polygon>],
+    zs: &[f64],
+    contours: &[Vec<Polygon>],
+    settings: &SliceSettings,
+) -> ShellMap {
     let n = regions.len();
     let top_n = settings.top_shell_layers as usize;
     let bottom_n = settings.bottom_shell_layers as usize;
@@ -167,7 +175,7 @@ fn detect_shells(regions: &[Vec<Polygon>], zs: &[f64], settings: &SliceSettings)
 
     if settings.ensure_vertical_shell_thickness == EnsureVerticalShellThickness::Enabled {
         for (i, slot) in solid.iter_mut().enumerate() {
-            let extra = vertical_shell_extra(i, regions, zs, settings);
+            let extra = vertical_shell_extra(i, regions, contours, zs, settings);
             append_union(slot, extra);
         }
     }
@@ -248,6 +256,7 @@ fn signed_area_mm2(poly: &[Point]) -> f64 {
 fn vertical_shell_extra(
     i: usize,
     regions: &[Vec<Polygon>],
+    contours: &[Vec<Polygon>],
     zs: &[f64],
     settings: &SliceSettings,
 ) -> Vec<Polygon> {
@@ -289,9 +298,18 @@ fn vertical_shell_extra(
             }
         }
     }
+    let lower = if i > 0 {
+        contours.get(i - 1).map_or(&[][..], Vec::as_slice)
+    } else {
+        &[]
+    };
+    let upper = contours.get(i + 1).map_or(&[][..], Vec::as_slice);
     regularize_vertical_shell(
         difference_polygons(&regions[i], &holes),
         settings.line_width_for(FlowRole::SolidInfill, i == 0),
+        &regions[i],
+        lower,
+        upper,
     )
 }
 
@@ -308,8 +326,16 @@ fn combine_holes(holes: &mut Vec<Polygon>, neighbor: &[Polygon]) -> bool {
 
 /// C++ `discover_vertical_shells` `offset2_ex` / `shrink_ex` (jtSquare).
 /// Open regions narrower than 0.65× spacing, close gaps under 1.2× spacing,
-/// then expand by 0.2× spacing and drop crumbs smaller than 1.5× spacing mm².
-fn regularize_vertical_shell(shell: Vec<Polygon>, line_width_mm: f64) -> Vec<Polygon> {
+/// then expand by 0.2× spacing. Drop crumbs that are tiny (or small and fully
+/// wrapped in neighbor `lslices`) unless expanding them would cover an internal
+/// island.
+fn regularize_vertical_shell(
+    shell: Vec<Polygon>,
+    line_width_mm: f64,
+    internal: &[Polygon],
+    lower_lslices: &[Polygon],
+    upper_lslices: &[Polygon],
+) -> Vec<Polygon> {
     if shell.is_empty() || line_width_mm <= 0.0 {
         return shell;
     }
@@ -323,10 +349,33 @@ fn regularize_vertical_shell(shell: Vec<Polygon>, line_width_mm: f64) -> Vec<Pol
     }
     let closed = offset_polygons_square(&opened, narrow_ensure + narrow_sparse);
     let grown = offset_polygons_square(&closed, -(narrow_sparse - tiny_overlap));
+    filter_tiny_vertical_drops(grown, spacing, internal, lower_lslices, upper_lslices)
+}
+
+/// C++ `regularized_shell.erase(remove_if)` after `offset2_ex`.
+fn filter_tiny_vertical_drops(
+    shell: Vec<Polygon>,
+    spacing: f64,
+    internal: &[Polygon],
+    lower_lslices: &[Polygon],
+    upper_lslices: &[Polygon],
+) -> Vec<Polygon> {
     let min_area = spacing * 1.5;
-    grown
+    let wrap_area = spacing * 8.0;
+    let object_volume = intersect_polygons(lower_lslices, upper_lslices);
+    shell
         .into_iter()
-        .filter(|p| signed_area_mm2(p).abs() >= min_area)
+        .filter(|p| {
+            let area = signed_area_mm2(p).abs();
+            let tiny = area < min_area;
+            let wrapped = area < wrap_area
+                && difference_polygons(std::slice::from_ref(p), &object_volume).is_empty();
+            if !tiny && !wrapped {
+                return true;
+            }
+            let expanded = offset_polygons(std::slice::from_ref(p), spacing);
+            difference_polygons(internal, &expanded).len() < internal.len()
+        })
         .collect()
 }
 
@@ -356,14 +405,19 @@ fn emit_shells(
         let (wide, narrow, floating) = classify_internal_solid(&rest, lower_sparse, settings);
 
         let top_region = shells.top[i].clone();
-        let top_surface = infill::solid_surface(
-            &shells.top[i],
-            top_w,
-            i,
-            settings.top_surface_pattern,
-            settings.infill_direction_deg,
-            settings.nozzle_diameter_mm,
-        );
+        let top_surface =
+            SliceSettings::surface_fill_spacing_mm(top_w, settings.top_surface_density)
+                .map(|spacing| {
+                    infill::solid_surface(
+                        &shells.top[i],
+                        spacing,
+                        i,
+                        settings.top_surface_pattern,
+                        settings.infill_direction_deg,
+                        settings.nozzle_diameter_mm,
+                    )
+                })
+                .unwrap_or_default();
         let bottom_w = if i > 0 {
             Flow::bridging_flow(
                 settings,
@@ -376,14 +430,23 @@ fn emit_shells(
         } else {
             solid_w
         };
-        let bottom_paths = infill::solid_surface(
-            &shells.bottom[i],
-            bottom_w,
-            i.wrapping_add(1),
-            settings.bottom_surface_pattern,
-            settings.infill_direction_deg,
-            settings.nozzle_diameter_mm,
-        );
+        let bottom_density = if i == 0 {
+            settings.bottom_surface_density
+        } else {
+            1.0
+        };
+        let bottom_paths = SliceSettings::surface_fill_spacing_mm(bottom_w, bottom_density)
+            .map(|spacing| {
+                infill::solid_surface(
+                    &shells.bottom[i],
+                    spacing,
+                    i.wrapping_add(1),
+                    settings.bottom_surface_pattern,
+                    settings.infill_direction_deg,
+                    settings.nozzle_diameter_mm,
+                )
+            })
+            .unwrap_or_default();
         let mut solid_infill = infill::solid(&wide, solid_w, i, settings.infill_direction_deg);
         solid_infill.extend(closed_concentric(
             &narrow,
@@ -543,13 +606,59 @@ mod tests {
     fn regularize_drops_narrow_vertical_shell() {
         let w = 0.42;
         assert!(
-            regularize_vertical_shell(vec![rect(0.15, 10.0)], w).is_empty(),
+            regularize(vec![rect(0.15, 10.0)], w).is_empty(),
             "opening 0.65× spacing should drop a 0.15 mm ring"
         );
-        let kept = regularize_vertical_shell(vec![rect(2.0, 10.0)], w);
+        let kept = regularize(vec![rect(2.0, 10.0)], w);
         assert!(
             !kept.is_empty(),
             "a 2 mm slope band should survive regularization"
+        );
+    }
+
+    fn regularize(shell: Vec<Polygon>, w: f64) -> Vec<Polygon> {
+        regularize_vertical_shell(shell, w, &[], &[], &[])
+    }
+
+    #[test]
+    fn filter_tiny_drops_in_model_crumbs() {
+        let spacing = 0.42 * VERTICAL_SHELL_SPACING_SCALE;
+        let island = rect(1.5, 2.0);
+        let body = rect(10.0, 10.0);
+        let dropped = filter_tiny_vertical_drops(
+            vec![island.clone()],
+            spacing,
+            std::slice::from_ref(&body),
+            std::slice::from_ref(&body),
+            std::slice::from_ref(&body),
+        );
+        assert!(
+            dropped.is_empty(),
+            "a 3 mm² in-model crumb should drop when it does not cover internal infill"
+        );
+        let core = rect(0.4, 0.4);
+        let kept = filter_tiny_vertical_drops(
+            vec![island],
+            spacing,
+            std::slice::from_ref(&core),
+            std::slice::from_ref(&body),
+            std::slice::from_ref(&body),
+        );
+        assert!(
+            !kept.is_empty(),
+            "keep a small shell that covers a thin internal island"
+        );
+        let wide = rect(2.0, 10.0);
+        let survived = filter_tiny_vertical_drops(
+            vec![wide],
+            spacing,
+            std::slice::from_ref(&body),
+            std::slice::from_ref(&body),
+            std::slice::from_ref(&body),
+        );
+        assert!(
+            !survived.is_empty(),
+            "a 20 mm² slope band stays even when fully in-model"
         );
     }
 }

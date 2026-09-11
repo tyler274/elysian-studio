@@ -318,6 +318,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "bottom_surface_pattern",
         settings.bottom_surface_pattern.as_str(),
     );
+    insert(
+        &mut map,
+        "top_surface_density",
+        pct_str(settings.top_surface_density),
+    );
+    insert(
+        &mut map,
+        "bottom_surface_density",
+        pct_str(settings.bottom_surface_density),
+    );
     insert_bool(
         &mut map,
         "detect_narrow_internal_solid_infill",
@@ -1248,6 +1258,8 @@ pub fn is_region_key(key: &str) -> bool {
             | "ensure_vertical_shell_thickness"
             | "top_surface_pattern"
             | "bottom_surface_pattern"
+            | "top_surface_density"
+            | "bottom_surface_density"
             | "outer_wall_speed"
             | "inner_wall_speed"
             | "detect_overhang_wall"
@@ -1559,6 +1571,12 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = SurfacePattern::from_name(&name) {
             s.bottom_surface_pattern = p;
         }
+    }
+    if let Some(v) = percent(map, "top_surface_density") {
+        s.top_surface_density = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = percent(map, "bottom_surface_density") {
+        s.bottom_surface_density = v.clamp(0.0, 1.0);
     }
     if let Some(v) = bool_val(map, "detect_narrow_internal_solid_infill") {
         s.detect_narrow_internal_solid_infill = v;
@@ -2464,6 +2482,8 @@ mod tests {
         pairs.insert("infill_direction".into(), "30".into());
         pairs.insert("infill_wall_overlap".into(), "25%".into());
         pairs.insert("bridge_flow".into(), "0.95".into());
+        pairs.insert("top_surface_density".into(), "40%".into());
+        pairs.insert("bottom_surface_density".into(), "60".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(
             s.ensure_vertical_shell_thickness,
@@ -2475,6 +2495,8 @@ mod tests {
         assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
         assert!((s.bridge_flow - 0.95).abs() < 1e-9);
+        assert!((s.top_surface_density - 0.40).abs() < 1e-9);
+        assert!((s.bottom_surface_density - 0.60).abs() < 1e-9);
         pairs.insert("seam_gap".into(), "20%".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert!((s.seam_gap - 0.20).abs() < 1e-9);
@@ -2609,6 +2631,8 @@ mod tests {
         assert!(!s.precise_z_height);
         assert_eq!(s.top_surface_pattern, crate::SurfacePattern::MonotonicLine);
         assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
+        assert!((s.top_surface_density - 1.0).abs() < 1e-9);
+        assert!((s.bottom_surface_density - 1.0).abs() < 1e-9);
         assert_eq!(s.raft_layers, 0);
         assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
         assert!(!s.only_one_wall_first_layer);
@@ -3043,6 +3067,8 @@ mod tests {
         src.layer_height_mm = 0.28;
         src.infill_density = 0.15;
         src.fill_multiline = 3;
+        src.top_surface_density = 0.4;
+        src.bottom_surface_density = 0.6;
         src.wall_loops = 3;
         src.enable_support = true;
         src.support_on_build_plate_only = true;
@@ -3066,6 +3092,8 @@ mod tests {
         assert!((loaded.layer_height_mm - 0.28).abs() < 1e-9);
         assert!((loaded.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(loaded.fill_multiline, 3);
+        assert!((loaded.top_surface_density - 0.4).abs() < 1e-9);
+        assert!((loaded.bottom_surface_density - 0.6).abs() < 1e-9);
         assert_eq!(loaded.wall_loops, 3);
         assert!(loaded.enable_support);
         assert!(loaded.support_on_build_plate_only);

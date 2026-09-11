@@ -832,6 +832,10 @@ pub struct SliceSettings {
     pub top_surface_pattern: SurfacePattern,
     /// C++ `bottom_surface_pattern` (BBL common is `monotonic`).
     pub bottom_surface_pattern: SurfacePattern,
+    /// C++ `top_surface_density` as a 0–1 fraction (PrintConfig default 100%).
+    pub top_surface_density: f64,
+    /// C++ `bottom_surface_density` as a 0–1 fraction (PrintConfig default 100%).
+    pub bottom_surface_density: f64,
     /// C++ `detect_narrow_internal_solid_infill`.
     pub detect_narrow_internal_solid_infill: bool,
     /// C++ `detect_floating_vertical_shell` (per-segment slowdown).
@@ -1173,6 +1177,8 @@ impl Default for SliceSettings {
             ensure_vertical_shell_thickness: EnsureVerticalShellThickness::Enabled,
             top_surface_pattern: SurfacePattern::Rectilinear,
             bottom_surface_pattern: SurfacePattern::Rectilinear,
+            top_surface_density: 1.0,
+            bottom_surface_density: 1.0,
             detect_narrow_internal_solid_infill: true,
             detect_floating_vertical_shell: true,
             vertical_shell_speed: 80.0,
@@ -1313,6 +1319,16 @@ impl SliceSettings {
         } else {
             let w = self.line_width_for(FlowRole::SparseInfill, first_layer);
             (w / self.infill_density).max(w)
+        }
+    }
+
+    /// C++ Fill.cpp `line_spacing = spacing / density` for external top/bottom
+    /// (not bridges). `None` skips fill when density is 0.
+    pub fn surface_fill_spacing_mm(width_mm: f64, density: f64) -> Option<f64> {
+        if density <= 0.0 || !width_mm.is_finite() || width_mm <= 0.0 {
+            None
+        } else {
+            Some(width_mm / density.min(1.0))
         }
     }
 

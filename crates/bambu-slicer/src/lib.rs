@@ -1848,6 +1848,51 @@ mod tests {
     }
 
     #[test]
+    fn top_surface_density_spaces_scanlines() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut full = SliceSettings::default();
+        full.top_surface_pattern = SurfacePattern::Rectilinear;
+        full.top_surface_density = 1.0;
+        let mut half = full.clone();
+        half.top_surface_density = 0.5;
+        let a = slice_mesh(&mesh, &full).unwrap();
+        let b = slice_mesh(&mesh, &half).unwrap();
+        let la = polyline_len_mm(&a.layers.last().unwrap().top_surface);
+        let lb = polyline_len_mm(&b.layers.last().unwrap().top_surface);
+        assert!(la > 0.0 && lb > 0.0, "full={la} half={lb}");
+        assert!(
+            (lb / la - 0.5).abs() < 0.2,
+            "50% top density should be about half the plastic: full={la} half={lb}"
+        );
+        let mut empty = full;
+        empty.top_surface_density = 0.0;
+        let c = slice_mesh(&mesh, &empty).unwrap();
+        assert!(
+            c.layers.last().unwrap().top_surface.is_empty(),
+            "0% top density skips skin fill"
+        );
+    }
+
+    #[test]
+    fn bottom_surface_density_skips_first_layer_not_bridges() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.bottom_surface_pattern = SurfacePattern::Rectilinear;
+        settings.bottom_surface_density = 0.0;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            sliced.layers[0].bottom_surface.is_empty(),
+            "0% bottom density skips first-layer skin"
+        );
+        assert!(
+            sliced.layers.iter().any(|l| !l.bridge.is_empty()),
+            "bridges stay 100% even when bottom density is 0"
+        );
+    }
+
+    #[test]
     fn xy_contour_compensation_grows_all_layers() {
         let mesh = TriangleMesh::cube(20.0);
         let plain = SliceSettings::default();
