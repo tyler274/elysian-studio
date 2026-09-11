@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::{
     EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
     IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
-    SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator, WallSequence,
-    ZHopType,
+    SliceSettings, SupportBasePattern, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+    WallSequence, ZHopType,
 };
 
 /// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
@@ -355,6 +355,11 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = bool_val(map, "support_interface_loop_pattern") {
         s.support_interface_loop_pattern = v;
+    }
+    if let Some(name) = text(map, "support_base_pattern") {
+        if let Some(p) = SupportBasePattern::from_name(&name) {
+            s.support_base_pattern = p;
+        }
     }
     if let Some(v) = u32_val(map, "bottom_shell_layers") {
         s.bottom_shell_layers = v;

@@ -10,7 +10,7 @@ use crate::clip::clip_polylines;
 
 pub(crate) mod adaptive;
 mod gyroid;
-mod honeycomb;
+pub(crate) mod honeycomb;
 mod honeycomb3d;
 mod lightning;
 

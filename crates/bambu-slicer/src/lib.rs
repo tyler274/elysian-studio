@@ -797,7 +797,8 @@ mod tests {
     use super::*;
     use bambu_config::{
         DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition,
-        SliceSettings, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+        SliceSettings, SupportBasePattern, SupportType, SurfacePattern, TopOneWallType,
+        WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -1440,6 +1441,74 @@ mod tests {
                 "{ty:?}: C++ support_interface_loop_pattern should cover contact with loops"
             );
         }
+    }
+
+    #[test]
+    fn support_base_honeycomb_spans_columns() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut hatch = support_beam_settings();
+        hatch.support_base_pattern = SupportBasePattern::Default;
+        let mut hex = hatch.clone();
+        hex.support_base_pattern = SupportBasePattern::Honeycomb;
+        let a = slice_mesh(&mesh, &hatch).unwrap();
+        let b = slice_mesh(&mesh, &hex).unwrap();
+        let hatch_paths: Vec<_> = a
+            .layers
+            .iter()
+            .flat_map(|l| l.support.iter())
+            .cloned()
+            .collect();
+        let hex_paths: Vec<_> = b
+            .layers
+            .iter()
+            .flat_map(|l| l.support.iter())
+            .cloned()
+            .collect();
+        assert!(
+            !hatch_paths.is_empty() && !hex_paths.is_empty(),
+            "expected classic columns under the slab"
+        );
+        assert!(
+            !interface_has_ring(&hatch_paths),
+            "BBL default support_base_pattern should stay scanlines"
+        );
+        assert!(
+            interface_has_ring(&hex_paths),
+            "C++ honeycomb support should zigzag in X and Y"
+        );
+    }
+
+    #[test]
+    fn support_base_hollow_skips_column_fill() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut filled = support_beam_settings();
+        filled.support_base_pattern = SupportBasePattern::Default;
+        let mut hollow = filled.clone();
+        hollow.support_base_pattern = SupportBasePattern::None;
+        let a = slice_mesh(&mesh, &filled).unwrap();
+        let b = slice_mesh(&mesh, &hollow).unwrap();
+        let base_n = |layers: &[Layer]| layers.iter().filter(|l| !l.support.is_empty()).count();
+        let if_n = |layers: &[Layer]| {
+            layers
+                .iter()
+                .filter(|l| !l.support_interface.is_empty())
+                .count()
+        };
+        assert!(
+            base_n(&a.layers) >= 8,
+            "default classic columns should fill the pillar, got {}",
+            base_n(&a.layers)
+        );
+        assert_eq!(
+            base_n(&b.layers),
+            0,
+            "C++ hollow support_base_pattern should skip base fill"
+        );
+        assert!(
+            if_n(&b.layers) >= 1,
+            "hollow still prints the interface under the slab, got {}",
+            if_n(&b.layers)
+        );
     }
 
     #[test]

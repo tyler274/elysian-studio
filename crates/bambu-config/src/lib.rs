@@ -313,6 +313,54 @@ impl SupportType {
     }
 }
 
+/// C++ `SupportMaterialPattern` (`support_base_pattern`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SupportBasePattern {
+    /// Classic → rectilinear; tree → hollow (`smpDefault`).
+    #[default]
+    Default,
+    Rectilinear,
+    RectilinearGrid,
+    Honeycomb,
+    /// Classic remaps to rectilinear (`SupportParameters`).
+    Lightning,
+    /// No base fill; interface still prints (`smpNone` / `"hollow"`).
+    None,
+}
+
+impl SupportBasePattern {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "default" => Self::Default,
+            "rectilinear" | "line" => Self::Rectilinear,
+            "rectilinear-grid" | "rectilinear_grid" | "grid" => Self::RectilinearGrid,
+            "honeycomb" | "hexagon" => Self::Honeycomb,
+            "lightning" => Self::Lightning,
+            "hollow" | "none" => Self::None,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Rectilinear => "rectilinear",
+            Self::RectilinearGrid => "rectilinear-grid",
+            Self::Honeycomb => "honeycomb",
+            Self::Lightning => "lightning",
+            Self::None => "hollow",
+        }
+    }
+
+    /// C++ classic `base_fill_pattern` after `smpDefault` / lightning remap.
+    pub fn classic_fill(self) -> Self {
+        match self {
+            Self::Default | Self::Lightning => Self::Rectilinear,
+            other => other,
+        }
+    }
+}
+
 /// C++ `TopOneWallType` (`top_one_wall_type`, legacy `only_one_wall_top`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TopOneWallType {
@@ -833,6 +881,8 @@ pub struct SliceSettings {
     /// C++ `support_interface_loop_pattern`. Cover the top contact with loops
     /// instead of hatch. BBL `"0"`.
     pub support_interface_loop_pattern: bool,
+    /// C++ `support_base_pattern`. BBL `"default"` → classic rectilinear.
+    pub support_base_pattern: SupportBasePattern,
     /// Max XY lean per layer (`tree_support_branch_angle`).
     pub tree_branch_angle_deg: f64,
     /// Disk diameter at each tree node (`tree_support_branch_diameter`).
@@ -1193,6 +1243,7 @@ impl Default for SliceSettings {
             support_top_z_distance_mm: 0.2,
             support_interface_layers: 2,
             support_interface_loop_pattern: false,
+            support_base_pattern: SupportBasePattern::Default,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
             bottom_shell_layers: 3,

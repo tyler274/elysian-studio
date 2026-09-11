@@ -260,6 +260,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "support_base_pattern",
+        settings.support_base_pattern.as_str(),
+    );
+    insert(
+        &mut map,
         "bottom_shell_layers",
         settings.bottom_shell_layers.to_string(),
     );

@@ -2,7 +2,8 @@
 //!
 //! Overhangs are `layer[i] minus an expansion of layer[i-1]` using
 //! `tan(threshold)` as the per-layer XY reach. Classic fills the downward
-//! union with grid infill. Tree (`tree(auto)`) drops slim branch disks to the
+//! union with the base pattern (`support_base_pattern`; BBL `default` is
+//! rectilinear). Tree (`tree(auto)`) drops slim branch disks to the
 //! bed, steering around the part — Bambu's default when supports are on.
 //! Short two-sided bridges can be dropped (`max_bridge_length` / `bridge_no_support`).
 //! Dust-sized overhangs can be dropped (`support_remove_small_overhang`).
@@ -10,7 +11,7 @@
 
 mod tree;
 
-use bambu_config::{FlowRole, SliceSettings, SupportType};
+use bambu_config::{FlowRole, SliceSettings, SupportBasePattern, SupportType};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
 };
@@ -179,6 +180,37 @@ fn is_short_bridge(poly: &Polygon, grown_lower: &[Polygon], max_len_mm: f64) -> 
     (x1 - x0) < max_len_mm && (y1 - y0) < max_len_mm
 }
 
+/// C++ `SupportParameters::base_fill_pattern` on classic columns.
+fn fill_support_base(
+    region: &[Polygon],
+    spacing: f64,
+    layer_idx: usize,
+    settings: &SliceSettings,
+) -> Vec<bambu_geom::Polyline> {
+    if !spacing.is_finite() || spacing <= 1e-6 {
+        return Vec::new();
+    }
+    match settings.support_base_pattern.classic_fill() {
+        SupportBasePattern::None => Vec::new(),
+        SupportBasePattern::Honeycomb => infill::honeycomb::fill(
+            region,
+            spacing,
+            settings.support_density.max(1e-6),
+            layer_idx,
+            0.0,
+        ),
+        SupportBasePattern::RectilinearGrid => {
+            let angle = if layer_idx.is_multiple_of(2) {
+                0.0
+            } else {
+                90.0
+            };
+            infill::rectilinear(region, spacing, layer_idx, angle)
+        }
+        _ => infill::rectilinear(region, spacing, layer_idx, 0.0),
+    }
+}
+
 /// C++ `LoopInterfaceProcessor` with `n_contact_loops = 1`: loops on the top
 /// contact instead of hatch. Studio notches circles into a contour; concentric
 /// rings cover the same contact island.
@@ -241,7 +273,7 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
                 is_contact && settings.support_interface_loop_pattern,
             );
         } else {
-            layer.support = infill::rectilinear(&fill_region, support_spacing, i, 0.0);
+            layer.support = fill_support_base(&fill_region, support_spacing, i, settings);
         }
     });
 }
@@ -330,5 +362,44 @@ mod tests {
             hatch.iter().any(|path| path.len() == 2),
             "default hatch should be scanline segments"
         );
+    }
+
+    fn path_spans_both_axes(paths: &[bambu_geom::Polyline]) -> bool {
+        paths.iter().any(|path| {
+            if path.len() < 3 {
+                return false;
+            }
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for p in path {
+                let (x, y) = p.to_mm();
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+            max_x - min_x > 1.0 && max_y - min_y > 1.0
+        })
+    }
+
+    #[test]
+    fn honeycomb_base_spans_both_axes() {
+        let region = vec![rect(0.0, 0.0, 20.0, 20.0)];
+        let mut settings = SliceSettings::default();
+        let hatch = fill_support_base(&region, settings.support_spacing_mm(), 3, &settings);
+        assert!(
+            !path_spans_both_axes(&hatch),
+            "BBL default rectilinear should stay scanlines"
+        );
+        settings.support_base_pattern = SupportBasePattern::Honeycomb;
+        let hex = fill_support_base(&region, settings.support_spacing_mm(), 3, &settings);
+        assert!(
+            path_spans_both_axes(&hex),
+            "C++ honeycomb support should zigzag in X and Y"
+        );
+        settings.support_base_pattern = SupportBasePattern::None;
+        assert!(fill_support_base(&region, settings.support_spacing_mm(), 3, &settings).is_empty());
     }
 }
