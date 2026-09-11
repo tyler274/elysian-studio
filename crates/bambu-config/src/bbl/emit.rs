@@ -217,6 +217,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.max_bridge_length_mm),
     );
     insert_bool(&mut map, "bridge_no_support", settings.bridge_no_support);
+    insert_bool(
+        &mut map,
+        "support_remove_small_overhang",
+        settings.support_remove_small_overhang,
+    );
     insert(&mut map, "support_type", settings.support_type.as_str());
     insert(
         &mut map,
@@ -247,6 +252,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "support_interface_top_layers",
         settings.support_interface_layers.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "support_interface_loop_pattern",
+        settings.support_interface_loop_pattern,
     );
     insert(
         &mut map,

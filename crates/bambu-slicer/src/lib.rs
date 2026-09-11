@@ -1353,6 +1353,96 @@ mod tests {
     }
 
     #[test]
+    fn small_overhang_filter_drops_thin_tab() {
+        let mesh = TriangleMesh::cube_with_tab(20.0, 0.6, 8.0, 8.0, 2.0);
+        let mut keep = support_beam_settings();
+        keep.support_remove_small_overhang = false;
+        keep.support_xy_distance_mm = 0.0;
+        let mut skip = keep.clone();
+        skip.support_remove_small_overhang = true;
+        let kept = support_fill_layers(&slice_mesh(&mesh, &keep).unwrap());
+        let skipped = support_fill_layers(&slice_mesh(&mesh, &skip).unwrap());
+        assert!(
+            kept >= 1,
+            "a 0.6 mm tab should still be supportable with the filter off, got {kept}"
+        );
+        assert!(
+            skipped < kept,
+            "C++ support_remove_small_overhang should drop the thin tab: kept={kept} skipped={skipped}"
+        );
+    }
+
+    #[test]
+    fn small_overhang_filter_keeps_table_cantilever() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_remove_small_overhang = true;
+        let n = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        assert!(
+            n >= 10,
+            "C++ keeps cantilevers farther than 3 mm, got {n} support layers"
+        );
+    }
+
+    fn interface_has_ring(paths: &[Polyline]) -> bool {
+        paths.iter().any(|path| {
+            if path.len() < 4 {
+                return false;
+            }
+            let mut min_x = f64::MAX;
+            let mut max_x = f64::MIN;
+            let mut min_y = f64::MAX;
+            let mut max_y = f64::MIN;
+            for p in path {
+                let (x, y) = p.to_mm();
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+            max_x - min_x > 1.0 && max_y - min_y > 1.0
+        })
+    }
+
+    #[test]
+    fn support_interface_loop_pattern_covers_contact() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        for ty in [SupportType::Classic, SupportType::Tree] {
+            let mut hatch = support_beam_settings();
+            hatch.support_type = ty;
+            hatch.support_interface_loop_pattern = false;
+            let mut loops = hatch.clone();
+            loops.support_interface_loop_pattern = true;
+            let a = slice_mesh(&mesh, &hatch).unwrap();
+            let b = slice_mesh(&mesh, &loops).unwrap();
+            let hatch_if: Vec<_> = a
+                .layers
+                .iter()
+                .flat_map(|l| l.support_interface.iter())
+                .cloned()
+                .collect();
+            let loop_if: Vec<_> = b
+                .layers
+                .iter()
+                .flat_map(|l| l.support_interface.iter())
+                .cloned()
+                .collect();
+            assert!(
+                !hatch_if.is_empty() && !loop_if.is_empty(),
+                "{ty:?}: expected interface under the slab"
+            );
+            assert!(
+                !interface_has_ring(&hatch_if),
+                "{ty:?}: BBL default hatch should stay scanlines"
+            );
+            assert!(
+                interface_has_ring(&loop_if),
+                "{ty:?}: C++ support_interface_loop_pattern should cover contact with loops"
+            );
+        }
+    }
+
+    #[test]
     fn cube_top_and_bottom_shells() {
         let mesh = TriangleMesh::cube(20.0);
         let settings = SliceSettings::default();

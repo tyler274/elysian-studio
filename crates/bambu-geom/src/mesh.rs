@@ -135,6 +135,16 @@ impl TriangleMesh {
         mesh
     }
 
+    /// Cube with a thin side tab (`tab_x` out, `tab_y` wide, from `tab_z0` for `tab_z`).
+    pub fn cube_with_tab(cube: f32, tab_x: f32, tab_y: f32, tab_z0: f32, tab_z: f32) -> Self {
+        let mut mesh = Self::cube(cube);
+        mesh.append(&Self::aabb_box(
+            Vec3::new(cube, 0.0, tab_z0),
+            Vec3::new(cube + tab_x, tab_y, tab_z0 + tab_z),
+        ));
+        mesh
+    }
+
     /// Pillar with a larger slab on top — a reliable classic-support overhang.
     pub fn overhang_table(pillar_xy: f32, pillar_z: f32, slab_xy: f32, slab_z: f32) -> Self {
         let inset = (slab_xy - pillar_xy) * 0.5;

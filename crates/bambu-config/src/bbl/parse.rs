@@ -327,6 +327,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "bridge_no_support") {
         s.bridge_no_support = v;
     }
+    if let Some(v) = bool_val(map, "support_remove_small_overhang") {
+        s.support_remove_small_overhang = v;
+    }
     if let Some(name) = text(map, "support_type") {
         if let Some(t) = SupportType::from_name(&name) {
             s.support_type = t;
@@ -349,6 +352,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = u32_val(map, "support_interface_top_layers") {
         s.support_interface_layers = v;
+    }
+    if let Some(v) = bool_val(map, "support_interface_loop_pattern") {
+        s.support_interface_loop_pattern = v;
     }
     if let Some(v) = u32_val(map, "bottom_shell_layers") {
         s.bottom_shell_layers = v;

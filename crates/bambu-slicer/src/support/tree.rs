@@ -130,7 +130,13 @@ fn draw(
             } else {
                 fill
             };
-            layer.support_interface = infill::rectilinear(&fill, interface_spacing, i, 0.0);
+            layer.support_interface = super::fill_support_interface(
+                &fill,
+                interface_spacing,
+                i,
+                settings,
+                settings.support_interface_loop_pattern,
+            );
         } else if is_roof {
             let fill = offset_polygons(&unioned, -inset);
             if !fill.is_empty() {
