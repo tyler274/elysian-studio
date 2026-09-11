@@ -330,6 +330,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "support_remove_small_overhang") {
         s.support_remove_small_overhang = v;
     }
+    if let Some(v) = bool_val(map, "support_critical_regions_only") {
+        s.support_critical_regions_only = v;
+    }
     if let Some(name) = text(map, "support_type") {
         if let Some(t) = SupportType::from_name(&name) {
             s.support_type = t;
@@ -360,6 +363,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
         if let Some(p) = SupportBasePattern::from_name(&name) {
             s.support_base_pattern = p;
         }
+    }
+    if let Some(v) = num(map, "support_expansion") {
+        s.support_expansion_mm = v;
     }
     if let Some(v) = u32_val(map, "bottom_shell_layers") {
         s.bottom_shell_layers = v;

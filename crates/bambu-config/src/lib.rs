@@ -870,6 +870,9 @@ pub struct SliceSettings {
     /// C++ `support_remove_small_overhang` (PrintObjectConfig, default true).
     /// Drop dust-sized overhangs; cantilevers farther than 3 mm stay.
     pub support_remove_small_overhang: bool,
+    /// C++ `support_critical_regions_only`. Tree auto keeps cantilevers
+    /// (and painted enforcers); other overhangs are dropped. BBL absent / false.
+    pub support_critical_regions_only: bool,
     /// C++ `support_type`. Default is classic columns; BBL profiles use tree.
     pub support_type: SupportType,
     /// Maximum overhang angle from vertical that does not need support (degrees).
@@ -883,6 +886,9 @@ pub struct SliceSettings {
     pub support_interface_loop_pattern: bool,
     /// C++ `support_base_pattern`. BBL `"default"` → classic rectilinear.
     pub support_base_pattern: SupportBasePattern,
+    /// C++ `support_expansion` (mm). Grow (+) or shrink (−) the contact
+    /// footprint. BBL `"0"`.
+    pub support_expansion_mm: f64,
     /// Max XY lean per layer (`tree_support_branch_angle`).
     pub tree_branch_angle_deg: f64,
     /// Disk diameter at each tree node (`tree_support_branch_diameter`).
@@ -1236,6 +1242,7 @@ impl Default for SliceSettings {
             max_bridge_length_mm: 0.0,
             bridge_no_support: false,
             support_remove_small_overhang: true,
+            support_critical_regions_only: false,
             support_type: SupportType::Classic,
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,
@@ -1244,6 +1251,7 @@ impl Default for SliceSettings {
             support_interface_layers: 2,
             support_interface_loop_pattern: false,
             support_base_pattern: SupportBasePattern::Default,
+            support_expansion_mm: 0.0,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
             bottom_shell_layers: 3,

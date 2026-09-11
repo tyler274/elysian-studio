@@ -1511,6 +1511,74 @@ mod tests {
         );
     }
 
+    fn support_region_area_mm2(layers: &[Layer]) -> f64 {
+        layers
+            .iter()
+            .map(|l| l.support_region.iter().map(contour_area_mm2).sum::<f64>())
+            .sum()
+    }
+
+    #[test]
+    fn support_expansion_grows_and_shrinks_columns() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        let nominal = support_region_area_mm2(&slice_mesh(&mesh, &settings).unwrap().layers);
+        settings.support_expansion_mm = 3.0;
+        let grown = support_region_area_mm2(&slice_mesh(&mesh, &settings).unwrap().layers);
+        settings.support_expansion_mm = -1.0;
+        let shrunk = support_region_area_mm2(&slice_mesh(&mesh, &settings).unwrap().layers);
+        assert!(
+            grown > nominal * 1.1,
+            "C++ support_expansion 3 mm should widen columns: nominal={nominal} grown={grown}"
+        );
+        assert!(
+            shrunk < nominal * 0.95,
+            "negative support_expansion should shrink columns: nominal={nominal} shrunk={shrunk}"
+        );
+        assert!(
+            shrunk > 0.0,
+            "a 1 mm shrink should still leave table-wing columns"
+        );
+    }
+
+    #[test]
+    fn support_critical_regions_only_drops_shallow_tree_lip() {
+        let mesh = TriangleMesh::overhang_table(19.0, 8.0, 24.0, 4.0);
+        let mut tree = support_beam_settings();
+        tree.support_type = SupportType::Tree;
+        tree.support_xy_distance_mm = 0.0;
+        let all = support_fill_layers(&slice_mesh(&mesh, &tree).unwrap());
+        tree.support_critical_regions_only = true;
+        let crit = support_fill_layers(&slice_mesh(&mesh, &tree).unwrap());
+        assert!(
+            all >= 8,
+            "a 2.5 mm lip should still be supported without the flag, got {all}"
+        );
+        assert!(
+            crit < all / 2,
+            "C++ support_critical_regions_only should drop the non-cantilever lip: all={all} crit={crit}"
+        );
+        tree.support_type = SupportType::Classic;
+        let classic = support_fill_layers(&slice_mesh(&mesh, &tree).unwrap());
+        assert!(
+            classic >= 8,
+            "classic SupportMaterial ignores the flag, got {classic}"
+        );
+    }
+
+    #[test]
+    fn support_critical_regions_only_keeps_tree_cantilever() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut tree = support_beam_settings();
+        tree.support_type = SupportType::Tree;
+        tree.support_critical_regions_only = true;
+        let n = support_fill_layers(&slice_mesh(&mesh, &tree).unwrap());
+        assert!(
+            n >= 10,
+            "C++ keeps tree cantilevers farther than 3 mm, got {n}"
+        );
+    }
+
     #[test]
     fn cube_top_and_bottom_shells() {
         let mesh = TriangleMesh::cube(20.0);

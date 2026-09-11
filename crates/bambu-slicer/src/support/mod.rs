@@ -7,6 +7,8 @@
 //! bed, steering around the part — Bambu's default when supports are on.
 //! Short two-sided bridges can be dropped (`max_bridge_length` / `bridge_no_support`).
 //! Dust-sized overhangs can be dropped (`support_remove_small_overhang`).
+//! Contacts can grow or shrink in XY (`support_expansion`).
+//! Tree auto can keep only cantilevers (`support_critical_regions_only`).
 //! Top contact can use loops (`support_interface_loop_pattern`).
 
 mod tree;
@@ -29,8 +31,10 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         trim_overhangs_above_model(&mut overhangs, layers);
     }
     trim_small_overhangs(&mut overhangs, layers, settings);
+    trim_non_critical_overhangs(&mut overhangs, layers, settings);
     apply_enforcer_blocker(&mut overhangs, layers);
     trim_bridged_overhangs(&mut overhangs, layers, settings);
+    expand_overhangs(&mut overhangs, layers, settings);
     match settings.support_type {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
         SupportType::Tree => tree::apply(layers, settings, &overhangs),
@@ -135,6 +139,26 @@ fn is_small_overhang(poly: &Polygon, fw: f64) -> bool {
     (x1 - x0) < 2.0 * fw || (y1 - y0) < 2.0 * fw
 }
 
+/// C++ TreeSupport `support_critical_regions_only` on auto types: drop
+/// overhangs that are not cantilevers. Enforcers run after so painted support
+/// can restore a region. Classic columns ignore the flag.
+fn trim_non_critical_overhangs(
+    overhangs: &mut [Vec<Polygon>],
+    layers: &[Layer],
+    settings: &SliceSettings,
+) {
+    if !settings.support_critical_regions_only || settings.support_type != SupportType::Tree {
+        return;
+    }
+    for i in 1..overhangs.len() {
+        if overhangs[i].is_empty() {
+            continue;
+        }
+        let lower = layers[i - 1].contours.as_slice();
+        overhangs[i].retain(|poly| is_cantilever_overhang(poly, lower));
+    }
+}
+
 /// C++ `PrintObject::remove_bridges_from_contacts` with `break_bridge = false`
 /// (tree) plus classic `bridge_no_support`.
 ///
@@ -161,6 +185,29 @@ fn trim_bridged_overhangs(
         }
         let grown = offset_polygons(&layers[i - 1].contours, fw * 0.5);
         overhangs[i].retain(|poly| !is_short_bridge(poly, &grown, max_len));
+    }
+}
+
+/// C++ `support_expansion` on classic contacts: grow against the lower slice
+/// so the extra cannot jump through the model; shrink is a plain offset.
+fn expand_overhangs(overhangs: &mut [Vec<Polygon>], layers: &[Layer], settings: &SliceSettings) {
+    let delta = settings.support_expansion_mm;
+    if delta.abs() < 1e-9 {
+        return;
+    }
+    for i in 1..overhangs.len() {
+        if overhangs[i].is_empty() {
+            continue;
+        }
+        overhangs[i] = expand_overhang_delta(&overhangs[i], &layers[i - 1].contours, delta);
+    }
+}
+
+fn expand_overhang_delta(overhang: &[Polygon], lower: &[Polygon], delta_mm: f64) -> Vec<Polygon> {
+    if delta_mm > 0.0 {
+        difference_polygons(&offset_polygons(overhang, delta_mm), lower)
+    } else {
+        offset_polygons(overhang, delta_mm)
     }
 }
 
@@ -345,6 +392,12 @@ mod tests {
         assert!(is_cantilever_overhang(&wing, &lower));
         let nub = rect(8.0, 7.5, 16.0, 8.0);
         assert!(!is_cantilever_overhang(&nub, &lower));
+        let lip = rect(0.0, 0.0, 24.0, 2.5);
+        let shallow = vec![rect(2.5, 2.5, 21.5, 21.5)];
+        assert!(
+            !is_cantilever_overhang(&lip, &shallow),
+            "a 2.5 mm lip stays inside C++ dist_max 3 mm"
+        );
     }
 
     #[test]
@@ -401,5 +454,28 @@ mod tests {
         );
         settings.support_base_pattern = SupportBasePattern::None;
         assert!(fill_support_base(&region, settings.support_spacing_mm(), 3, &settings).is_empty());
+    }
+
+    #[test]
+    fn expansion_grows_away_from_lower_slice() {
+        let wing = vec![rect(0.0, 0.0, 24.0, 8.0)];
+        let lower = vec![rect(8.0, 8.0, 16.0, 16.0)];
+        let size = |polys: &[Polygon]| {
+            let (min, max) = infill::bbox(polys).expect("overhang");
+            let (x0, y0) = min.to_mm();
+            let (x1, y1) = max.to_mm();
+            (x1 - x0, y1 - y0)
+        };
+        let (w0, h0) = size(&wing);
+        let (wg, hg) = size(&expand_overhang_delta(&wing, &lower, 2.0));
+        assert!(
+            wg > w0 + 1.0 && hg > h0 + 1.0,
+            "positive expansion should enlarge the contact: {w0}x{h0} -> {wg}x{hg}"
+        );
+        let (ws, hs) = size(&expand_overhang_delta(&wing, &lower, -1.0));
+        assert!(
+            ws < w0 - 0.5 && hs < h0 - 0.5,
+            "negative expansion should shrink the contact: {w0}x{h0} -> {ws}x{hs}"
+        );
     }
 }

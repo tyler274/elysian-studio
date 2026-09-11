@@ -222,6 +222,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "support_remove_small_overhang",
         settings.support_remove_small_overhang,
     );
+    insert_bool(
+        &mut map,
+        "support_critical_regions_only",
+        settings.support_critical_regions_only,
+    );
     insert(&mut map, "support_type", settings.support_type.as_str());
     insert(
         &mut map,
@@ -262,6 +267,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "support_base_pattern",
         settings.support_base_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "support_expansion",
+        num_str(settings.support_expansion_mm),
     );
     insert(
         &mut map,

@@ -203,8 +203,10 @@ fn upstream_fdm_process_0_20() {
     assert!(s.max_bridge_length_mm.abs() < 1e-9);
     assert!(!s.bridge_no_support);
     assert!(s.support_remove_small_overhang);
+    assert!(!s.support_critical_regions_only);
     assert!(!s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Default);
+    assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
     assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
@@ -657,8 +659,10 @@ fn project_settings_json_roundtrip() {
     src.max_bridge_length_mm = 10.0;
     src.bridge_no_support = true;
     src.support_remove_small_overhang = false;
+    src.support_critical_regions_only = true;
     src.support_interface_loop_pattern = true;
     src.support_base_pattern = crate::SupportBasePattern::Honeycomb;
+    src.support_expansion_mm = 2.0;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -688,11 +692,13 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.max_bridge_length_mm - 10.0).abs() < 1e-9);
     assert!(loaded.bridge_no_support);
     assert!(!loaded.support_remove_small_overhang);
+    assert!(loaded.support_critical_regions_only);
     assert!(loaded.support_interface_loop_pattern);
     assert_eq!(
         loaded.support_base_pattern,
         crate::SupportBasePattern::Honeycomb
     );
+    assert!((loaded.support_expansion_mm - 2.0).abs() < 1e-9);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -785,8 +791,10 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("max_bridge_length".into(), "10".into());
     pairs.insert("bridge_no_support".into(), "1".into());
     pairs.insert("support_remove_small_overhang".into(), "0".into());
+    pairs.insert("support_critical_regions_only".into(), "1".into());
     pairs.insert("support_interface_loop_pattern".into(), "1".into());
     pairs.insert("support_base_pattern".into(), "honeycomb".into());
+    pairs.insert("support_expansion".into(), "2".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -803,8 +811,10 @@ fn region_overrides_skip_object_keys() {
     assert!(s.max_bridge_length_mm.abs() < 1e-9);
     assert!(!s.bridge_no_support);
     assert!(s.support_remove_small_overhang);
+    assert!(!s.support_critical_regions_only);
     assert!(!s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Default);
+    assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
@@ -814,8 +824,10 @@ fn region_overrides_skip_object_keys() {
     assert!((s.max_bridge_length_mm - 10.0).abs() < 1e-9);
     assert!(s.bridge_no_support);
     assert!(!s.support_remove_small_overhang);
+    assert!(s.support_critical_regions_only);
     assert!(s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Honeycomb);
+    assert!((s.support_expansion_mm - 2.0).abs() < 1e-9);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
 }
