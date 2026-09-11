@@ -247,9 +247,13 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                     first,
                 )?;
                 if !layer.bridge.is_empty() {
-                    let bridge_flow =
-                        Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first)
-                            .with_flow_ratio(settings.bridge_flow);
+                    let bridge_flow = Flow::bridging_flow(
+                        settings,
+                        FlowRole::SolidInfill,
+                        flow_h,
+                        object_first,
+                        settings.thick_bridges,
+                    );
                     w.emit_feature("Bridge", bridge_flow.width_mm)?;
                     w.set_print_role(PrintAccel::Default);
                     w.emit_marked(
@@ -265,7 +269,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                                 mm3_per_mm: bridge_flow.mm3_per_mm(),
                                 width_mm: bridge_flow.width_mm,
                                 arc_tolerance_mm: settings
-                                    .arc_fit_tolerance_mm(FlowRole::Perimeter),
+                                    .arc_fit_tolerance_mm(FlowRole::SolidInfill),
                             })
                         },
                     )?;

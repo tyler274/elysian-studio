@@ -10,7 +10,7 @@
 //! `minimum_sparse_infill_area` become internal solid.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 
-use bambu_config::{EnsureVerticalShellThickness, FlowRole, InfillPattern, SliceSettings};
+use bambu_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, offset_polygons_square,
     union_polygons, Point, Polygon, Polyline, TriangleMesh,
@@ -364,9 +364,21 @@ fn emit_shells(
             settings.infill_direction_deg,
             settings.nozzle_diameter_mm,
         );
+        let bottom_w = if i > 0 {
+            Flow::bridging_flow(
+                settings,
+                FlowRole::SolidInfill,
+                layer.height_mm,
+                first,
+                settings.thick_bridges,
+            )
+            .spacing_mm()
+        } else {
+            solid_w
+        };
         let bottom_paths = infill::solid_surface(
             &shells.bottom[i],
-            solid_w,
+            bottom_w,
             i.wrapping_add(1),
             settings.bottom_surface_pattern,
             settings.infill_direction_deg,

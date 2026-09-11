@@ -19,6 +19,9 @@ pub const SPARSE_INFILL_RESOLUTION_MM: f64 = 0.04;
 pub const SUPPORT_RESOLUTION_MM: f64 = 0.0375;
 /// C++ `LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER` for concentric fill loops.
 pub const LOOP_CLIPPING_OVER_NOZZLE: f64 = 0.15;
+/// C++ `BRIDGE_EXTRA_SPACING` (mm). Thick-bridge line spacing is the circular
+/// diameter plus this gap.
+pub const BRIDGE_EXTRA_SPACING_MM: f64 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InfillPattern {
@@ -766,6 +769,9 @@ pub struct SliceSettings {
     pub bridge_speed_mm_s: f64,
     /// C++ `bridge_flow` (PrintConfig default 1). Scales bridge extrusion volume.
     pub bridge_flow: f64,
+    /// C++ `thick_bridges` (PrintObjectConfig, default false). Circular
+    /// `sqrt(bridge_flow) * nozzle` extrusion instead of a scaled rectangle.
+    pub thick_bridges: bool,
     /// C++ `top_surface_speed`.
     pub top_surface_speed_mm_s: f64,
     /// C++ `small_perimeter_speed` raw value (mm/s, or percent of outer wall).
@@ -1134,6 +1140,7 @@ impl Default for SliceSettings {
             overhang_speed_mm_s: 10.0,
             bridge_speed_mm_s: 25.0,
             bridge_flow: 1.0,
+            thick_bridges: false,
             top_surface_speed_mm_s: 50.0,
             small_perimeter_speed: 50.0,
             small_perimeter_speed_is_percent: true,
@@ -2136,6 +2143,8 @@ pub struct Flow {
     pub height_mm: f64,
     pub filament_diameter_mm: f64,
     pub flow_ratio: f64,
+    /// C++ `Flow::m_bridge`: volume is a circle of diameter [`Self::width_mm`].
+    pub bridge: bool,
 }
 
 impl Flow {
@@ -2145,6 +2154,7 @@ impl Flow {
             height_mm,
             filament_diameter_mm: settings.filament_diameter_mm,
             flow_ratio: settings.flow_ratio,
+            bridge: false,
         }
     }
 
@@ -2160,11 +2170,50 @@ impl Flow {
             height_mm,
             filament_diameter_mm: settings.filament_diameter_mm,
             flow_ratio: settings.flow_ratio,
+            bridge: false,
+        }
+    }
+
+    /// C++ `LayerRegion::bridging_flow`. Thick uses a circular
+    /// `sqrt(bridge_flow) * nozzle` bead; thin keeps the role width and scales
+    /// volume with `bridge_flow`.
+    pub fn bridging_flow(
+        settings: &SliceSettings,
+        role: FlowRole,
+        height_mm: f64,
+        first_layer: bool,
+        thick: bool,
+    ) -> Self {
+        if thick {
+            let dmr = settings.bridge_flow.max(0.0).sqrt() * settings.nozzle_diameter_mm;
+            Self {
+                width_mm: dmr,
+                height_mm: dmr,
+                filament_diameter_mm: settings.filament_diameter_mm,
+                flow_ratio: 1.0,
+                bridge: true,
+            }
+        } else {
+            Self::for_role(settings, role, height_mm, first_layer)
+                .with_flow_ratio(settings.bridge_flow)
         }
     }
 
     pub fn mm3_per_mm(self) -> f64 {
-        self.width_mm * self.height_mm * self.flow_ratio
+        if self.bridge {
+            std::f64::consts::PI * (self.width_mm * 0.5).powi(2)
+        } else {
+            self.width_mm * self.height_mm * self.flow_ratio
+        }
+    }
+
+    /// C++ `Flow::spacing`. Thick bridges add [`BRIDGE_EXTRA_SPACING_MM`].
+    pub fn spacing_mm(self) -> f64 {
+        if self.bridge {
+            self.width_mm + BRIDGE_EXTRA_SPACING_MM
+        } else {
+            self.width_mm
+        }
     }
 
     /// C++ `Flow::with_flow_ratio` for an extra multiplier such as `bridge_flow`.

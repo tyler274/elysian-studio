@@ -503,6 +503,53 @@ fn bridge_flow_scales_bridge_extrusion() {
 }
 
 #[test]
+fn thick_bridges_uses_circular_nozzle_width() {
+    let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_support = false;
+    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.bridge_flow = 1.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    assert!(sliced.layers.iter().any(|l| !l.bridge.is_empty()));
+    let thin_gcode = write_gcode(&settings, &sliced).unwrap();
+    let e_thin = feature_extrusion(&thin_gcode, "Bridge");
+    assert!(e_thin > 0.0, "expected thin bridge extrusion");
+    settings.thick_bridges = true;
+    let thick_gcode = write_gcode(&settings, &sliced).unwrap();
+    let width = feature_line_width(&thick_gcode, "Bridge").expect("thick Bridge LINE_WIDTH");
+    assert!(
+        (width - settings.nozzle_diameter_mm).abs() < 1e-9,
+        "thick LINE_WIDTH should be nozzle diameter, got {width}"
+    );
+    let e_thick = feature_extrusion(&thick_gcode, "Bridge");
+    let height = sliced
+        .layers
+        .iter()
+        .find(|l| !l.bridge.is_empty())
+        .map(|l| l.height_mm)
+        .unwrap_or(settings.layer_height_mm);
+    let thin_flow = bambu_config::Flow::bridging_flow(
+        &settings,
+        bambu_config::FlowRole::SolidInfill,
+        height,
+        false,
+        false,
+    );
+    let thick_flow = bambu_config::Flow::bridging_flow(
+        &settings,
+        bambu_config::FlowRole::SolidInfill,
+        height,
+        false,
+        true,
+    );
+    let expected = thick_flow.e_per_mm() / thin_flow.e_per_mm();
+    assert!(
+        (e_thick / e_thin - expected).abs() < 1e-6,
+        "circular vs thin E ratio: thick={e_thick} thin={e_thin} expected={expected}"
+    );
+}
+
+#[test]
 fn arc_fitting_emits_g2_or_g3() {
     let path: Vec<_> = (0..=48)
         .map(|i| {
@@ -2039,6 +2086,20 @@ fn assert_feature_before(block: &str, first: &str, second: &str) {
         .find(&b)
         .unwrap_or_else(|| panic!("missing {second}\n{block}"));
     assert!(pa < pb, "{first} should precede {second}\n{block}");
+}
+
+fn feature_line_width(gcode: &str, feature: &str) -> Option<f64> {
+    let mut take = false;
+    for line in gcode.lines() {
+        if let Some(rest) = line.strip_prefix("; FEATURE: ") {
+            take = rest == feature;
+            continue;
+        }
+        if take {
+            return line.strip_prefix("; LINE_WIDTH: ")?.parse().ok();
+        }
+    }
+    None
 }
 
 fn feature_extrusion(gcode: &str, feature: &str) -> f64 {

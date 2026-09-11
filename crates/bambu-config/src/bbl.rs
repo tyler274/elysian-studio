@@ -398,6 +398,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.bridge_speed_mm_s),
     );
     insert(&mut map, "bridge_flow", num_str(settings.bridge_flow));
+    insert_bool(&mut map, "thick_bridges", settings.thick_bridges);
     insert(
         &mut map,
         "top_surface_speed",
@@ -1608,6 +1609,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
     if let Some(v) = num(map, "bridge_flow") {
         s.bridge_flow = v.max(0.0);
     }
+    if let Some(v) = bool_val(map, "thick_bridges") {
+        s.thick_bridges = v;
+    }
     if let Some(v) = num(map, "top_surface_speed") {
         s.top_surface_speed_mm_s = v.max(0.0);
     }
@@ -2588,6 +2592,7 @@ mod tests {
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
         assert!((s.bridge_flow - 1.0).abs() < 1e-9);
+        assert!(!s.thick_bridges);
         assert!(s.enable_arc_fitting);
         assert!((s.resolution_mm - 0.012).abs() < 1e-9);
         assert!(!s.enable_support);
@@ -2674,6 +2679,34 @@ mod tests {
         assert!(
             (baked.arc_fit_tolerance_mm(crate::FlowRole::ExternalPerimeter) - 0.012).abs() < 1e-9
         );
+    }
+
+    #[test]
+    fn bridging_flow_matches_cpp_thick_and_thin() {
+        let mut s = SliceSettings::default();
+        s.line_width_mm = 0.42;
+        s.nozzle_diameter_mm = 0.4;
+        s.bridge_flow = 1.0;
+        let thin = crate::Flow::bridging_flow(&s, crate::FlowRole::SolidInfill, 0.2, false, false);
+        assert!(!thin.bridge);
+        assert!((thin.width_mm - 0.42).abs() < 1e-9);
+        assert!((thin.mm3_per_mm() - 0.42 * 0.2).abs() < 1e-9);
+        assert!((thin.spacing_mm() - 0.42).abs() < 1e-9);
+        s.bridge_flow = 0.5;
+        let thin_half =
+            crate::Flow::bridging_flow(&s, crate::FlowRole::SolidInfill, 0.2, false, false);
+        assert!((thin_half.mm3_per_mm() / thin.mm3_per_mm() - 0.5).abs() < 1e-9);
+        s.bridge_flow = 1.0;
+        let thick = crate::Flow::bridging_flow(&s, crate::FlowRole::SolidInfill, 0.2, false, true);
+        assert!(thick.bridge);
+        assert!((thick.width_mm - 0.4).abs() < 1e-9);
+        let expected_mm3 = std::f64::consts::PI * 0.2 * 0.2;
+        assert!((thick.mm3_per_mm() - expected_mm3).abs() < 1e-9);
+        assert!((thick.spacing_mm() - (0.4 + crate::BRIDGE_EXTRA_SPACING_MM)).abs() < 1e-9);
+        s.bridge_flow = 4.0;
+        let thick_wide =
+            crate::Flow::bridging_flow(&s, crate::FlowRole::SolidInfill, 0.2, false, true);
+        assert!((thick_wide.width_mm - 0.8).abs() < 1e-9);
     }
 
     #[test]
@@ -3013,6 +3046,7 @@ mod tests {
         src.wall_loops = 3;
         src.enable_support = true;
         src.support_on_build_plate_only = true;
+        src.thick_bridges = true;
         src.support_type = crate::SupportType::Tree;
         src.ironing_type = crate::IroningType::TopSurfaces;
         src.temperature_c = 215;
@@ -3035,6 +3069,7 @@ mod tests {
         assert_eq!(loaded.wall_loops, 3);
         assert!(loaded.enable_support);
         assert!(loaded.support_on_build_plate_only);
+        assert!(loaded.thick_bridges);
         assert_eq!(loaded.support_type, crate::SupportType::Tree);
         assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
         assert_eq!(loaded.temperature_c, 215);
@@ -3120,6 +3155,7 @@ mod tests {
         pairs.insert("layer_height".into(), "0.08".into());
         pairs.insert("enable_support".into(), "1".into());
         pairs.insert("support_on_build_plate_only".into(), "1".into());
+        pairs.insert("thick_bridges".into(), "1".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert!((s.infill_density - 1.0).abs() < 1e-9);
         assert_eq!(s.fill_multiline, 4);
@@ -3130,10 +3166,12 @@ mod tests {
         assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
         assert!(!s.enable_support);
         assert!(!s.support_on_build_plate_only);
+        assert!(!s.thick_bridges);
         apply_config_pairs(&mut s, &pairs, false);
         assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
         assert!(s.enable_support);
         assert!(s.support_on_build_plate_only);
+        assert!(s.thick_bridges);
     }
 
     #[test]
