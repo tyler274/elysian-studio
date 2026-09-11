@@ -70,6 +70,11 @@ impl InfillPattern {
             Self::SupportCubic => "supportcubic",
         }
     }
+
+    /// C++ `Fill.cpp` patterns that honor `fill_multiline` on sparse infill.
+    pub fn supports_multiline(self) -> bool {
+        !matches!(self, Self::Concentric)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -137,7 +142,7 @@ pub enum WallSequence {
     InnerOuter,
     /// Outer FEATURE bucket, then inner (`outer wall/inner wall`).
     OuterInner,
-    /// C++ weaves first-inner / outer / remaining-inners. Rewrite emits Inner then Outer.
+    /// Remaining inners, outer, then the first inner (`elrSecondPerimeter`).
     InnerOuterInner,
 }
 
@@ -686,6 +691,8 @@ pub struct SliceSettings {
     pub only_one_wall_first_layer: bool,
     pub infill_density: f64,
     pub infill_pattern: InfillPattern,
+    /// C++ `fill_multiline` (1–5). Extra parallel copies of sparse infill.
+    pub fill_multiline: u32,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
     pub infill_direction_deg: f64,
     /// C++ `minimum_sparse_infill_area` (mm²). Sparse islands at or below this
@@ -1085,6 +1092,7 @@ impl Default for SliceSettings {
             only_one_wall_first_layer: false,
             infill_density: 0.20,
             infill_pattern: InfillPattern::Gyroid,
+            fill_multiline: 1,
             infill_direction_deg: 45.0,
             minimum_sparse_infill_area_mm2: 15.0,
             infill_wall_overlap: 0.15,
@@ -1301,6 +1309,15 @@ impl SliceSettings {
         }
     }
 
+    /// C++ `FillParams::multiline` for sparse infill. Concentric stays 1.
+    pub fn sparse_fill_multiline(&self) -> u32 {
+        if self.infill_pattern.supports_multiline() {
+            self.fill_multiline.clamp(1, 5)
+        } else {
+            1
+        }
+    }
+
     /// C++ `PrintRegion::flow` extrusion width. First layer uses
     /// `initial_layer_line_width` when that value is > 0; role-specific 0
     /// falls back to [`Self::line_width_mm`].
@@ -1325,10 +1342,15 @@ impl SliceSettings {
 
     /// C++ Classic `is_outer_wall_first` for the two FEATURE buckets.
     ///
-    /// InnerOuterInner weaves in C++; rewrite still emits Inner then Outer.
+    /// InnerOuterInner weaves remaining inners, outer, then first inner.
     /// The layer-0 `btOuterOnly` brim reverse is skipped: BBL brim is `auto_brim`.
     pub fn outer_walls_first(&self) -> bool {
         matches!(self.wall_sequence, WallSequence::OuterInner)
+    }
+
+    /// C++ classic `WallSequence::InnerOuterInner`.
+    pub fn weaves_inner_outer_inner(&self) -> bool {
+        matches!(self.wall_sequence, WallSequence::InnerOuterInner)
     }
 
     /// C++ `scale_(nozzle_diameter) * (seam_gap / 100)` in millimetres.

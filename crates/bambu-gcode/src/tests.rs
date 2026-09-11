@@ -83,6 +83,38 @@ fn outer_inner_emits_outer_walls_first() {
 }
 
 #[test]
+fn inner_outer_inner_two_walls_prints_outer_then_inner() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.wall_sequence = WallSequence::InnerOuterInner;
+    assert!(settings.weaves_inner_outer_inner());
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert_eq!(
+        wall_feature_order(layer1),
+        ["Outer wall", "Inner wall"],
+        "{layer1}"
+    );
+}
+
+#[test]
+fn inner_outer_inner_weaves_remaining_outer_then_first_inner() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.wall_loops = 3;
+    settings.wall_sequence = WallSequence::InnerOuterInner;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert_eq!(
+        wall_feature_order(layer1),
+        ["Inner wall", "Outer wall", "Inner wall"],
+        "{layer1}"
+    );
+}
+
+#[test]
 fn bbl_inner_outer_keeps_inner_first_with_auto_brim() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
@@ -1985,6 +2017,16 @@ fn wrapping_g39_layers(exec: &str) -> Vec<usize> {
         }
     }
     hits
+}
+
+fn wall_feature_order(block: &str) -> Vec<&str> {
+    block
+        .lines()
+        .filter_map(|line| {
+            let rest = line.strip_prefix("; FEATURE: ")?;
+            matches!(rest, "Inner wall" | "Outer wall").then_some(rest)
+        })
+        .collect()
 }
 
 fn assert_feature_before(block: &str, first: &str, second: &str) {

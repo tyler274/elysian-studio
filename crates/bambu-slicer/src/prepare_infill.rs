@@ -469,7 +469,10 @@ fn sparse_paths(
     mesh: Option<&TriangleMesh>,
 ) -> Vec<Vec<Polyline>> {
     match settings.infill_pattern {
-        InfillPattern::Lightning => infill::generate_lightning(sparse, settings),
+        InfillPattern::Lightning => infill::generate_lightning(sparse, settings)
+            .into_iter()
+            .map(|paths| infill::apply_sparse_multiline(paths, settings))
+            .collect(),
         InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => {
             let support_only = settings.infill_pattern == InfillPattern::SupportCubic;
             let spacing = infill::adaptive::line_spacing_mm(settings);
@@ -478,10 +481,11 @@ fn sparse_paths(
             (0..sparse.len())
                 .into_par_iter()
                 .map(|i| {
-                    octree
+                    let paths = octree
                         .as_ref()
                         .map(|octree| infill::adaptive::fill(&sparse[i], octree, zs[i]))
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    infill::apply_sparse_multiline(paths, settings)
                 })
                 .collect()
         }

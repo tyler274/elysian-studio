@@ -166,6 +166,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "fill_multiline",
+        settings.fill_multiline.to_string(),
+    );
+    insert(
+        &mut map,
         "infill_direction",
         num_str(settings.infill_direction_deg),
     );
@@ -1220,6 +1225,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "only_one_wall_first_layer"
             | "sparse_infill_density"
             | "sparse_infill_pattern"
+            | "fill_multiline"
             | "infill_direction"
             | "minimum_sparse_infill_area"
             | "infill_wall_overlap"
@@ -1398,6 +1404,9 @@ fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String, Value>) {
         if let Some(p) = InfillPattern::from_name(&name) {
             s.infill_pattern = p;
         }
+    }
+    if let Some(v) = u32_val(map, "fill_multiline") {
+        s.fill_multiline = v.clamp(1, 5);
     }
     if let Some(v) = num(map, "infill_direction") {
         s.infill_direction_deg = v.rem_euclid(360.0);
@@ -2528,6 +2537,7 @@ mod tests {
         );
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuterInner);
+        assert!(s.weaves_inner_outer_inner());
 
         let mut s = SliceSettings::default();
         let mut pairs = BTreeMap::new();
@@ -2535,6 +2545,7 @@ mod tests {
         apply_config_pairs(&mut s, &pairs, true);
         assert_eq!(s.wall_sequence, crate::WallSequence::OuterInner);
         assert!(s.outer_walls_first());
+        assert!(!s.weaves_inner_outer_inner());
     }
 
     #[test]
@@ -2572,6 +2583,7 @@ mod tests {
         assert!((s.support_line_width_mm - 0.42).abs() < 1e-9);
         assert!((s.infill_density - 0.15).abs() < 1e-9);
         assert_eq!(s.infill_pattern, InfillPattern::Grid);
+        assert_eq!(s.fill_multiline, 1);
         assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
         assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
         assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
@@ -2997,6 +3009,7 @@ mod tests {
         let mut src = SliceSettings::default();
         src.layer_height_mm = 0.28;
         src.infill_density = 0.15;
+        src.fill_multiline = 3;
         src.wall_loops = 3;
         src.enable_support = true;
         src.support_on_build_plate_only = true;
@@ -3018,6 +3031,7 @@ mod tests {
         let loaded = crate::settings_from_json(&json).unwrap();
         assert!((loaded.layer_height_mm - 0.28).abs() < 1e-9);
         assert!((loaded.infill_density - 0.15).abs() < 1e-9);
+        assert_eq!(loaded.fill_multiline, 3);
         assert_eq!(loaded.wall_loops, 3);
         assert!(loaded.enable_support);
         assert!(loaded.support_on_build_plate_only);
@@ -3100,6 +3114,7 @@ mod tests {
         let mut s = SliceSettings::default();
         let mut pairs = BTreeMap::new();
         pairs.insert("sparse_infill_density".into(), "100%".into());
+        pairs.insert("fill_multiline".into(), "4".into());
         pairs.insert("wall_loops".into(), "6".into());
         pairs.insert("extruder".into(), "3".into());
         pairs.insert("layer_height".into(), "0.08".into());
@@ -3107,6 +3122,7 @@ mod tests {
         pairs.insert("support_on_build_plate_only".into(), "1".into());
         apply_config_pairs(&mut s, &pairs, true);
         assert!((s.infill_density - 1.0).abs() < 1e-9);
+        assert_eq!(s.fill_multiline, 4);
         assert_eq!(s.wall_loops, 6);
         assert_eq!(s.wall_filament, 3);
         assert_eq!(s.sparse_infill_filament, 3);

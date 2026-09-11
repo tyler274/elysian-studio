@@ -2,7 +2,8 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, FlowRole, PrintAccel, SliceSettings};
+use bambu_config::{Flow, FlowRole, PrintAccel, SliceSettings, WallSequence};
+use bambu_geom::Polyline;
 use bambu_slicer::SliceResult;
 
 use crate::envelope::first_layer_print_box;
@@ -142,7 +143,6 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         // C++ `is_infill_first && !first_layer`: infill before perimeters.
         // Ironing stays last (`extrude_infill(..., true)`).
         let infill_first = settings.is_infill_first && !first;
-        let outer_first = settings.outer_walls_first();
         for walls_now in [!infill_first, infill_first] {
             if walls_now {
                 let emit_outer = |w: &mut Writer<'_>| {
@@ -161,28 +161,44 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         !first,
                     )
                 };
-                let emit_inner = |w: &mut Writer<'_>| {
+                let emit_inner = |w: &mut Writer<'_>, paths: &[Polyline]| {
                     w.set_print_role(PrintAccel::InnerWall);
+                    let flow = Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first);
                     w.emit_wall_paths(
                         "Inner wall",
-                        e(
-                            &layer.inner_walls,
-                            true,
-                            feeds.inner,
-                            FlowRole::Perimeter,
-                            object_first,
-                        ),
+                        Extrude {
+                            paths,
+                            closed: true,
+                            e_per_mm: flow.e_per_mm(),
+                            print_f: feeds.inner,
+                            mm3_per_mm: flow.mm3_per_mm(),
+                            width_mm: flow.width_mm,
+                            arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::Perimeter),
+                        },
                         support_polys.as_deref(),
                         settings.enable_overhang_speed,
                         !first,
                     )
                 };
-                if outer_first {
-                    emit_outer(&mut w)?;
-                    emit_inner(&mut w)?;
-                } else {
-                    emit_inner(&mut w)?;
-                    emit_outer(&mut w)?;
+                match settings.wall_sequence {
+                    WallSequence::OuterInner => {
+                        emit_outer(&mut w)?;
+                        emit_inner(&mut w, &layer.inner_walls)?;
+                    }
+                    WallSequence::InnerOuter => {
+                        emit_inner(&mut w, &layer.inner_walls)?;
+                        emit_outer(&mut w)?;
+                    }
+                    WallSequence::InnerOuterInner => {
+                        // C++ classic: children-first remaining inners, outer,
+                        // then depth-1 (`elrSecondPerimeter`).
+                        let n = layer.inner_walls.len().min(layer.outer_walls.len());
+                        let (first_inner, remaining) = layer.inner_walls.split_at(n);
+                        let remaining: Vec<_> = remaining.iter().rev().cloned().collect();
+                        emit_inner(&mut w, &remaining)?;
+                        emit_outer(&mut w)?;
+                        emit_inner(&mut w, first_inner)?;
+                    }
                 }
                 w.emit_role(
                     "Gap infill",

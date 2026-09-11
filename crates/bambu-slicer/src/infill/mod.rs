@@ -1,6 +1,8 @@
 //! Sparse infill patterns (classic Slic3r / Bambu set).
 
-use bambu_config::{InfillPattern, SliceSettings, SurfacePattern, LOOP_CLIPPING_OVER_NOZZLE};
+use bambu_config::{
+    FlowRole, InfillPattern, SliceSettings, SurfacePattern, LOOP_CLIPPING_OVER_NOZZLE,
+};
 use bambu_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline};
 use wide::{i64x4, CmpLt};
 
@@ -23,8 +25,9 @@ pub fn generate(
     if region.is_empty() || settings.infill_density <= 0.0 {
         return Vec::new();
     }
-    let spacing = settings.infill_spacing_for(layer_index == 0);
-    match settings.infill_pattern {
+    let n = settings.sparse_fill_multiline();
+    let spacing = settings.infill_spacing_for(layer_index == 0) * f64::from(n);
+    let paths = match settings.infill_pattern {
         InfillPattern::Rectilinear => {
             rectilinear(region, spacing, layer_index, settings.infill_direction_deg)
         }
@@ -56,7 +59,68 @@ pub fn generate(
         InfillPattern::Lightning => Vec::new(),
         // Octree is built from the mesh in `prepare_infill`.
         InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => Vec::new(),
+    };
+    apply_sparse_multiline(paths, settings)
+}
+
+/// C++ `multiline_fill`: n copies of each polyline offset by line width.
+pub(crate) fn apply_sparse_multiline(
+    polylines: Vec<Polyline>,
+    settings: &SliceSettings,
+) -> Vec<Polyline> {
+    let n = settings.sparse_fill_multiline();
+    if n <= 1 {
+        return polylines;
     }
+    let spacing = settings.line_width_for(FlowRole::SparseInfill, false);
+    multiline_fill(polylines, n, spacing)
+}
+
+fn multiline_fill(polylines: Vec<Polyline>, n: u32, spacing_mm: f64) -> Vec<Polyline> {
+    if n <= 1 || polylines.is_empty() {
+        return polylines;
+    }
+    let center = f64::from(n - 1) / 2.0;
+    let mut all = Vec::with_capacity(polylines.len() * n as usize);
+    for line in 0..n {
+        let offset = (f64::from(line) - center) * spacing_mm;
+        for pl in &polylines {
+            all.push(offset_polyline(pl, offset));
+        }
+    }
+    all
+}
+
+fn offset_polyline(pl: &[Point], offset_mm: f64) -> Polyline {
+    let n = pl.len();
+    if n < 2 || offset_mm.abs() < 1e-12 {
+        return pl.to_vec();
+    }
+    (0..n)
+        .map(|i| {
+            let (tx, ty) = if i == 0 {
+                let a = pl[0].to_mm();
+                let b = pl[1].to_mm();
+                (b.0 - a.0, b.1 - a.1)
+            } else if i + 1 == n {
+                let a = pl[n - 2].to_mm();
+                let b = pl[n - 1].to_mm();
+                (b.0 - a.0, b.1 - a.1)
+            } else {
+                let a = pl[i - 1].to_mm();
+                let b = pl[i + 1].to_mm();
+                (b.0 - a.0, b.1 - a.1)
+            };
+            let len = (tx * tx + ty * ty).sqrt();
+            if len == 0.0 {
+                return pl[i];
+            }
+            let nx = -ty / len;
+            let ny = tx / len;
+            let (x, y) = pl[i].to_mm();
+            Point::from_mm(x + nx * offset_mm, y + ny * offset_mm)
+        })
+        .collect()
 }
 
 pub fn rectilinear(
@@ -504,6 +568,55 @@ mod tests {
             (x0 - y0).abs() < 0.35,
             "0° gyroid should be diagonal after −45° correction, got ({x0}, {y0})"
         );
+    }
+
+    #[test]
+    fn multiline_fill_offsets_both_sides() {
+        let src = vec![vec![Point::from_mm(0.0, 0.0), Point::from_mm(10.0, 0.0)]];
+        let out = multiline_fill(src, 3, 0.4);
+        assert_eq!(out.len(), 3);
+        let ys: Vec<i64> = out.iter().map(|p| p[0].y).collect();
+        assert_eq!(ys[0], Point::from_mm(0.0, -0.4).y);
+        assert_eq!(ys[1], Point::from_mm(0.0, 0.0).y);
+        assert_eq!(ys[2], Point::from_mm(0.0, 0.4).y);
+    }
+
+    #[test]
+    fn fill_multiline_bundles_rectilinear_without_tripling_plastic() {
+        let region = square_mm(40.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.15;
+        settings.fill_multiline = 1;
+        let one = generate(&region, &settings, 1, 1.0);
+        settings.fill_multiline = 3;
+        let three = generate(&region, &settings, 1, 1.0);
+        assert!(!one.is_empty());
+        assert!(
+            three.len() >= one.len(),
+            "bundled copies should not drop coverage: {} vs {}",
+            three.len(),
+            one.len()
+        );
+        let len1: f64 = one.iter().map(|p| path_len_mm(p)).sum();
+        let len3: f64 = three.iter().map(|p| path_len_mm(p)).sum();
+        assert!(
+            len3 > len1 * 0.5 && len3 < len1 * 2.0,
+            "C++ density/multiline then copies should keep similar plastic: {len1} vs {len3}"
+        );
+        settings.infill_pattern = InfillPattern::Concentric;
+        settings.fill_multiline = 3;
+        let concentric_3 = generate(&region, &settings, 1, 1.0);
+        settings.fill_multiline = 1;
+        let concentric_1 = generate(&region, &settings, 1, 1.0);
+        assert_eq!(
+            concentric_3, concentric_1,
+            "C++ fill_multiline does not apply to concentric"
+        );
+    }
+
+    fn path_len_mm(path: &[Point]) -> f64 {
+        path.windows(2).map(|w| w[0].distance_mm(w[1])).sum()
     }
 
     #[test]

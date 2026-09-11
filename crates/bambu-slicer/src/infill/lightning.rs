@@ -56,7 +56,10 @@ struct Params {
 
 impl Params {
     fn from_settings(settings: &SliceSettings) -> Self {
-        let supporting = scale(settings.infill_spacing_mm().max(MIN_CELL_MM));
+        let supporting = scale(
+            (settings.infill_spacing_mm() * f64::from(settings.sparse_fill_multiline()))
+                .max(MIN_CELL_MM),
+        );
         let wall = scale(settings.layer_height_mm.max(MIN_CELL_MM));
         Self {
             supporting,
