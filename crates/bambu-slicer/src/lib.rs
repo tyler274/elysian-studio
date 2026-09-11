@@ -1291,6 +1291,67 @@ mod tests {
             .all(|l| l.support.is_empty() && l.support_interface.is_empty()));
     }
 
+    fn support_beam_settings() -> SliceSettings {
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings
+    }
+
+    #[test]
+    fn max_bridge_length_skips_short_beam() {
+        let mesh = TriangleMesh::bridge_beam(8.0, 8.0, 6.0, 2.0);
+        for ty in [SupportType::Classic, SupportType::Tree] {
+            let mut keep = support_beam_settings();
+            keep.support_type = ty;
+            keep.max_bridge_length_mm = 0.0;
+            let mut skip = keep.clone();
+            skip.max_bridge_length_mm = 10.0;
+            let kept = support_fill_layers(&slice_mesh(&mesh, &keep).unwrap());
+            let skipped = support_fill_layers(&slice_mesh(&mesh, &skip).unwrap());
+            assert!(
+                kept >= 8,
+                "{ty:?}: BBL max_bridge_length 0 should support the 6 mm span, got {kept}"
+            );
+            assert!(
+                skipped < kept / 2,
+                "{ty:?}: C++ max_bridge_length 10 should drop the short bridge: kept={kept} skipped={skipped}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_bridge_length_keeps_table_cantilever() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.max_bridge_length_mm = 10.0;
+        let n = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
+        assert!(
+            n >= 10,
+            "table wings are one-sided cantilevers, got {n} support layers"
+        );
+    }
+
+    #[test]
+    fn bridge_no_support_skips_long_beam() {
+        let mesh = TriangleMesh::bridge_beam(8.0, 8.0, 20.0, 2.0);
+        let mut keep = support_beam_settings();
+        keep.max_bridge_length_mm = 10.0;
+        let mut skip = keep.clone();
+        skip.bridge_no_support = true;
+        let kept = support_fill_layers(&slice_mesh(&mesh, &keep).unwrap());
+        let skipped = support_fill_layers(&slice_mesh(&mesh, &skip).unwrap());
+        assert!(
+            kept >= 8,
+            "20 mm span is longer than max_bridge_length 10, got {kept}"
+        );
+        assert!(
+            skipped < kept / 2,
+            "C++ bridge_no_support drops every two-sided bridge: kept={kept} skipped={skipped}"
+        );
+    }
+
     #[test]
     fn cube_top_and_bottom_shells() {
         let mesh = TriangleMesh::cube(20.0);

@@ -120,6 +120,21 @@ impl TriangleMesh {
         );
     }
 
+    /// Two posts with a connecting beam — a two-sided bridge of `gap` mm.
+    pub fn bridge_beam(post_xy: f32, post_z: f32, gap: f32, beam_z: f32) -> Self {
+        let mut mesh = Self::aabb_box(Vec3::ZERO, Vec3::new(post_xy, post_xy, post_z));
+        let x1 = post_xy + gap;
+        mesh.append(&Self::aabb_box(
+            Vec3::new(x1, 0.0, 0.0),
+            Vec3::new(x1 + post_xy, post_xy, post_z),
+        ));
+        mesh.append(&Self::aabb_box(
+            Vec3::new(0.0, 0.0, post_z),
+            Vec3::new(x1 + post_xy, post_xy, post_z + beam_z),
+        ));
+        mesh
+    }
+
     /// Pillar with a larger slab on top — a reliable classic-support overhang.
     pub fn overhang_table(pillar_xy: f32, pillar_z: f32, slab_xy: f32, slab_z: f32) -> Self {
         let inset = (slab_xy - pillar_xy) * 0.5;

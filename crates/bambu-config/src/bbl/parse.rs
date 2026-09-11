@@ -321,6 +321,12 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "support_on_build_plate_only") {
         s.support_on_build_plate_only = v;
     }
+    if let Some(v) = num(map, "max_bridge_length") {
+        s.max_bridge_length_mm = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "bridge_no_support") {
+        s.bridge_no_support = v;
+    }
     if let Some(name) = text(map, "support_type") {
         if let Some(t) = SupportType::from_name(&name) {
             s.support_type = t;

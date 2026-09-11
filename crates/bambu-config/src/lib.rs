@@ -812,6 +812,13 @@ pub struct SliceSettings {
     pub enable_support: bool,
     /// C++ `support_on_build_plate_only`. Don't rest support on the model.
     pub support_on_build_plate_only: bool,
+    /// C++ `max_bridge_length` (mm). 0 supports every bridge (BBL JSON `"0"`).
+    /// When `> 0`, two-sided overhangs whose bbox is shorter than this in both
+    /// axes are not supported (`PrintObject::remove_bridges_from_contacts`).
+    pub max_bridge_length_mm: f64,
+    /// C++ `bridge_no_support`. Skip support under every two-sided bridge,
+    /// regardless of span. BBL `"0"`.
+    pub bridge_no_support: bool,
     /// C++ `support_type`. Default is classic columns; BBL profiles use tree.
     pub support_type: SupportType,
     /// Maximum overhang angle from vertical that does not need support (degrees).
@@ -1170,6 +1177,8 @@ impl Default for SliceSettings {
             raft_first_layer_density: 0.90,
             enable_support: false,
             support_on_build_plate_only: false,
+            max_bridge_length_mm: 0.0,
+            bridge_no_support: false,
             support_type: SupportType::Classic,
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,

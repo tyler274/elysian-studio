@@ -200,6 +200,8 @@ fn upstream_fdm_process_0_20() {
     assert!((s.resolution_mm - 0.012).abs() < 1e-9);
     assert!(!s.enable_support);
     assert!(!s.support_on_build_plate_only);
+    assert!(s.max_bridge_length_mm.abs() < 1e-9);
+    assert!(!s.bridge_no_support);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
     assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
@@ -649,6 +651,8 @@ fn project_settings_json_roundtrip() {
     src.alternate_extra_wall = true;
     src.enable_support = true;
     src.support_on_build_plate_only = true;
+    src.max_bridge_length_mm = 10.0;
+    src.bridge_no_support = true;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -675,6 +679,8 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.alternate_extra_wall);
     assert!(loaded.enable_support);
     assert!(loaded.support_on_build_plate_only);
+    assert!((loaded.max_bridge_length_mm - 10.0).abs() < 1e-9);
+    assert!(loaded.bridge_no_support);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -764,6 +770,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("layer_height".into(), "0.08".into());
     pairs.insert("enable_support".into(), "1".into());
     pairs.insert("support_on_build_plate_only".into(), "1".into());
+    pairs.insert("max_bridge_length".into(), "10".into());
+    pairs.insert("bridge_no_support".into(), "1".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -777,12 +785,16 @@ fn region_overrides_skip_object_keys() {
     assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
     assert!(!s.enable_support);
     assert!(!s.support_on_build_plate_only);
+    assert!(s.max_bridge_length_mm.abs() < 1e-9);
+    assert!(!s.bridge_no_support);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
     assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
     assert!(s.enable_support);
     assert!(s.support_on_build_plate_only);
+    assert!((s.max_bridge_length_mm - 10.0).abs() < 1e-9);
+    assert!(s.bridge_no_support);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
 }

@@ -4,10 +4,11 @@
 //! `tan(threshold)` as the per-layer XY reach. Classic fills the downward
 //! union with grid infill. Tree (`tree(auto)`) drops slim branch disks to the
 //! bed, steering around the part — Bambu's default when supports are on.
+//! Short two-sided bridges can be dropped (`max_bridge_length` / `bridge_no_support`).
 
 mod tree;
 
-use bambu_config::{SliceSettings, SupportType};
+use bambu_config::{FlowRole, SliceSettings, SupportType};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
 };
@@ -25,6 +26,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         trim_overhangs_above_model(&mut overhangs, layers);
     }
     apply_enforcer_blocker(&mut overhangs, layers);
+    trim_bridged_overhangs(&mut overhangs, layers, settings);
     match settings.support_type {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
         SupportType::Tree => tree::apply(layers, settings, &overhangs),
@@ -83,6 +85,51 @@ fn apply_enforcer_blocker(overhangs: &mut [Vec<Polygon>], layers: &[Layer]) {
     }
 }
 
+/// C++ `PrintObject::remove_bridges_from_contacts` with `break_bridge = false`
+/// (tree) plus classic `bridge_no_support`.
+///
+/// TreeSupport treats `max_bridge_length > 0` as "consider bridges"; BBL `"0"`
+/// keeps every overhang. Classic Studio only drops bridges when
+/// `bridge_no_support` is on (any span). Two-sided overhangs whose bbox is
+/// shorter than the limit in both axes are subtracted from the contact set.
+fn trim_bridged_overhangs(
+    overhangs: &mut [Vec<Polygon>],
+    layers: &[Layer],
+    settings: &SliceSettings,
+) {
+    let max_len = if settings.bridge_no_support {
+        f64::INFINITY
+    } else if settings.max_bridge_length_mm > 0.0 {
+        settings.max_bridge_length_mm
+    } else {
+        return;
+    };
+    let fw = settings.line_width_for(FlowRole::ExternalPerimeter, false);
+    for i in 1..overhangs.len() {
+        if overhangs[i].is_empty() {
+            continue;
+        }
+        let grown = offset_polygons(&layers[i - 1].contours, fw * 0.5);
+        overhangs[i].retain(|poly| !is_short_bridge(poly, &grown, max_len));
+    }
+}
+
+fn is_short_bridge(poly: &Polygon, grown_lower: &[Polygon], max_len_mm: f64) -> bool {
+    let contact = union_polygons(&intersect_polygons(std::slice::from_ref(poly), grown_lower));
+    if contact.len() < 2 {
+        return false;
+    }
+    if !max_len_mm.is_finite() {
+        return true;
+    }
+    let Some((min, max)) = infill::bbox(std::slice::from_ref(poly)) else {
+        return false;
+    };
+    let (x0, y0) = min.to_mm();
+    let (x1, y1) = max.to_mm();
+    (x1 - x0) < max_len_mm && (y1 - y0) < max_len_mm
+}
+
 fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {
     let n = layers.len();
     let xy = settings.support_xy_distance_mm;
@@ -130,4 +177,47 @@ pub fn layers_footprint(layers: &[Layer]) -> Vec<Polygon> {
         acc.extend(layer.support_region.iter().cloned());
     }
     union_polygons(&acc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::Point;
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
+        vec![
+            Point::from_mm(x0, y0),
+            Point::from_mm(x1, y0),
+            Point::from_mm(x1, y1),
+            Point::from_mm(x0, y1),
+        ]
+    }
+
+    #[test]
+    fn two_sided_gap_is_a_short_bridge() {
+        let lower = vec![rect(0.0, 0.0, 8.0, 8.0), rect(14.0, 0.0, 22.0, 8.0)];
+        let grown = offset_polygons(&lower, 0.21);
+        let gap = rect(8.0, 0.0, 14.0, 8.0);
+        assert!(
+            is_short_bridge(&gap, &grown, 10.0),
+            "6×8 mm span under C++ max_bridge_length 10"
+        );
+        assert!(
+            !is_short_bridge(&gap, &grown, 5.0),
+            "bbox 6×8 is not shorter than 5 mm in both axes"
+        );
+        assert!(is_short_bridge(&gap, &grown, f64::INFINITY));
+    }
+
+    #[test]
+    fn cantilever_wing_is_not_a_bridge() {
+        let lower = vec![rect(8.0, 8.0, 16.0, 16.0)];
+        let grown = offset_polygons(&lower, 0.21);
+        let wing = rect(0.0, 0.0, 24.0, 8.0);
+        assert!(
+            !is_short_bridge(&wing, &grown, 10.0),
+            "one-sided table wing must still get support"
+        );
+        assert!(!is_short_bridge(&wing, &grown, f64::INFINITY));
+    }
 }

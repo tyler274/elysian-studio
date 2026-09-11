@@ -211,6 +211,12 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "support_on_build_plate_only",
         settings.support_on_build_plate_only,
     );
+    insert(
+        &mut map,
+        "max_bridge_length",
+        num_str(settings.max_bridge_length_mm),
+    );
+    insert_bool(&mut map, "bridge_no_support", settings.bridge_no_support);
     insert(&mut map, "support_type", settings.support_type.as_str());
     insert(
         &mut map,
