@@ -621,7 +621,7 @@ fn slice_prepared(
         }
         let footprint = support::layers_footprint(&out[..n_skirt]);
         let skirt = skirt_brim::skirt(&footprint, &skirt_settings);
-        out[0].brim = brim;
+        out[0].brim = skirt_brim::trim_brim_for_draft_shield(brim, &skirt, settings);
         for layer in out.iter_mut().take(n_skirt) {
             layer.skirt = skirt.clone();
         }
@@ -1062,6 +1062,34 @@ mod tests {
     }
 
     #[test]
+    fn ooze_prevention_copies_skirt_onto_every_layer_with_two_filaments() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ooze_prevention = true;
+        settings.filament_count = 2;
+        settings.skirt_height = 1;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let n = settings.skirt_loops as usize;
+        assert!(result.layers.len() > 10);
+        assert!(result.layers.iter().all(|l| l.skirt.len() == n));
+        settings.filament_count = 1;
+        let single = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(single.layers[0].skirt.len(), n);
+        assert!(single.layers[1..].iter().all(|l| l.skirt.is_empty()));
+    }
+
+    #[test]
+    fn ooze_prevention_without_skirt_loops_emits_nothing() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ooze_prevention = true;
+        settings.filament_count = 2;
+        settings.skirt_loops = 0;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert!(result.layers.iter().all(|l| l.skirt.is_empty()));
+    }
+
+    #[test]
     fn draft_shield_limited_height_zero_keeps_first_layer() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
@@ -1083,6 +1111,30 @@ mod tests {
         settings.brim_object_gap_mm = 0.4;
         let gapped = slice_mesh(&mesh, &settings).unwrap();
         assert_eq!(gapped.layers[0].brim.len(), 3);
+    }
+
+    #[test]
+    fn draft_shield_trims_brim_that_would_cross_skirt() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.line_width_mm = 0.5;
+        settings.initial_layer_line_width_mm = 0.0;
+        settings.brim_width_mm = 5.0;
+        settings.skirt_loops = 1;
+        settings.skirt_distance_mm = 2.0;
+        settings.draft_shield = DraftShield::Enabled;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        assert!(!result.layers[0].brim.is_empty());
+        assert_eq!(result.layers[0].skirt.len(), 1);
+        settings.draft_shield = DraftShield::Disabled;
+        settings.skirt_loops = 0;
+        let unshielded = slice_mesh(&mesh, &settings).unwrap();
+        let shielded_len: usize = result.layers[0].brim.iter().map(|p| p.len()).sum();
+        let full_len: usize = unshielded.layers[0].brim.iter().map(|p| p.len()).sum();
+        assert!(
+            shielded_len < full_len,
+            "draft-shield brim should lose the rings under the skirt: shielded={shielded_len} full={full_len}"
+        );
     }
 
     #[test]

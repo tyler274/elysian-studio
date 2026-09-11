@@ -61,6 +61,20 @@ fn draft_shield_emits_skirt_on_top_layer() {
 }
 
 #[test]
+fn ooze_prevention_emits_skirt_on_top_layer() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.ooze_prevention = true;
+    settings.filament_count = 2;
+    settings.skirt_height = 1;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let last = sliced.layers.len() - 1;
+    let block = layer_block(&gcode, last).expect("top layer");
+    assert!(block.contains("; FEATURE: Skirt"), "layer {last}");
+}
+
+#[test]
 fn inner_outer_emits_inner_walls_first() {
     let mesh = TriangleMesh::cube(20.0);
     let settings = SliceSettings::default();

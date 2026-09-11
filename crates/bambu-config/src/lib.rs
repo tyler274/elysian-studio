@@ -787,6 +787,9 @@ pub struct SliceSettings {
     pub skirt_height: u32,
     /// C++ `draft_shield`. BBL `disabled`.
     pub draft_shield: DraftShield,
+    /// C++ `ooze_prevention` (PrintConfig, default false). With more than one
+    /// extruder this makes the skirt as tall as the object.
+    pub ooze_prevention: bool,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
     pub skirt_distance_mm: f64,
     /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
@@ -1152,6 +1155,7 @@ impl Default for SliceSettings {
             skirt_loops: 2,
             skirt_height: 1,
             draft_shield: DraftShield::Disabled,
+            ooze_prevention: false,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
             brim_object_gap_mm: 0.0,
@@ -1381,9 +1385,10 @@ impl SliceSettings {
         self.nozzle_diameter_mm.max(0.0) * self.seam_gap.max(0.0)
     }
 
-    /// C++ `Print::has_infinite_skirt` without ooze-prevention.
+    /// C++ `Print::has_infinite_skirt`.
     pub fn has_infinite_skirt(&self) -> bool {
-        self.draft_shield == DraftShield::Enabled && self.skirt_loops > 0
+        (self.draft_shield == DraftShield::Enabled && self.skirt_loops > 0)
+            || (self.ooze_prevention && self.filament_count > 1)
     }
 
     /// C++ `Print::has_skirt`.

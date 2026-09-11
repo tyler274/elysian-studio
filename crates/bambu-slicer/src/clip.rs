@@ -56,12 +56,7 @@ fn lerp(a: Point, b: Point, t: f64) -> Point {
     )
 }
 
-/// Keep the portions of an open polyline that lie inside `polygons`.
-pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
-    if path.len() < 2 || polygons.is_empty() {
-        return Vec::new();
-    }
-
+fn densify_open_path(path: &[Point]) -> Vec<Point> {
     let mut densified = Vec::new();
     for w in path.windows(2) {
         densified.push(w[0]);
@@ -72,16 +67,14 @@ pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
         }
     }
     densified.push(*path.last().unwrap());
+    densified
+}
 
-    let flags: Vec<bool> = densified
-        .iter()
-        .map(|p| point_in_polygons(*p, polygons))
-        .collect();
-
+fn keep_runs(densified: Vec<Point>, keep: impl Fn(Point) -> bool) -> Vec<Polyline> {
     let mut out = Vec::new();
     let mut current = Vec::new();
-    for (p, inside) in densified.into_iter().zip(flags) {
-        if inside {
+    for p in densified {
+        if keep(p) {
             current.push(p);
         } else if current.len() >= 2 {
             out.push(std::mem::take(&mut current));
@@ -93,6 +86,51 @@ pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
         out.push(current);
     }
     out
+}
+
+/// Keep the portions of an open polyline that lie inside `polygons`.
+pub fn clip_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
+    if path.len() < 2 || polygons.is_empty() {
+        return Vec::new();
+    }
+    keep_runs(densify_open_path(path), |p| point_in_polygons(p, polygons))
+}
+
+/// Keep the portions of a polyline that lie outside `polygons`.
+///
+/// Closed rings (first ≠ last, ≥ 3 points) include the closing edge so a
+/// concentric brim loop can be dropped or split as a whole. Loops that lie
+/// entirely inside or outside are returned unchanged (no densify).
+pub fn subtract_polyline(path: &[Point], polygons: &[Polygon]) -> Vec<Polyline> {
+    if path.len() < 2 {
+        return Vec::new();
+    }
+    if polygons.is_empty() {
+        return vec![path.to_vec()];
+    }
+    let mut work = path.to_vec();
+    if work.len() >= 3 && work.first() != work.last() {
+        work.push(work[0]);
+    }
+    let densified = densify_open_path(&work);
+    let keep: Vec<bool> = densified
+        .iter()
+        .map(|p| !point_in_polygons(*p, polygons))
+        .collect();
+    if keep.iter().all(|&k| k) {
+        return vec![path.to_vec()];
+    }
+    if keep.iter().all(|&k| !k) {
+        return Vec::new();
+    }
+    keep_runs(densified, |p| !point_in_polygons(p, polygons))
+}
+
+pub fn subtract_polylines(paths: &[Polyline], polygons: &[Polygon]) -> Vec<Polyline> {
+    paths
+        .iter()
+        .flat_map(|p| subtract_polyline(p, polygons))
+        .collect()
 }
 
 /// Open or closed path split into overhang-degree runs (0 = supported, 5 = 100%).
@@ -310,5 +348,18 @@ mod tests {
         );
         assert!(runs.iter().any(|r| r.degree == 0), "{runs:?}");
         assert!(runs.iter().any(|r| r.degree == 5), "{runs:?}");
+    }
+
+    #[test]
+    fn subtract_drops_the_segment_inside_the_clip() {
+        let hole = square(4.0);
+        let path = vec![Point::new(scale(-20.0), 0), Point::new(scale(20.0), 0)];
+        let kept = subtract_polyline(&path, &[hole]);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        let xs: Vec<f64> = kept
+            .iter()
+            .flat_map(|p| p.iter().map(|pt| pt.to_mm().0))
+            .collect();
+        assert!(xs.iter().all(|x| x.abs() >= 1.9), "{xs:?}");
     }
 }
