@@ -1920,6 +1920,61 @@ mod tests {
     }
 
     #[test]
+    fn internal_solid_infill_pattern_concentric_differs() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.detect_narrow_internal_solid_infill = false;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let rect = slice_mesh(&mesh, &settings).unwrap();
+        settings.internal_solid_infill_pattern = SurfacePattern::Concentric;
+        let conc = slice_mesh(&mesh, &settings).unwrap();
+        let shell = |layers: &[Layer]| {
+            layers
+                .iter()
+                .find(|layer| !layer.solid_infill.is_empty())
+                .expect("internal solid shell")
+                .solid_infill
+                .clone()
+        };
+        let a = shell(&rect.layers);
+        let b = shell(&conc.layers);
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        assert_ne!(
+            a, b,
+            "C++ internal_solid_infill_pattern should change wide solid hatch"
+        );
+    }
+
+    #[test]
+    fn initial_layer_infill_line_width_spaces_first_bottom() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.initial_layer_line_width_mm = 0.5;
+        settings.initial_layer_infill_line_width_mm = 0.0;
+        settings.detect_narrow_internal_solid_infill = false;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let follow = slice_mesh(&mesh, &settings).unwrap();
+        settings.initial_layer_infill_line_width_mm = 0.9;
+        let wide = slice_mesh(&mesh, &settings).unwrap();
+        let n_follow = follow.layers[0].bottom_surface.len();
+        let n_wide = wide.layers[0].bottom_surface.len();
+        assert!(
+            n_follow > 4,
+            "first bottom should have scanlines, got {n_follow}"
+        );
+        assert!(
+            n_wide < n_follow,
+            "C++ initial_layer_infill_line_width should space first-layer fill: follow={n_follow} wide={n_wide}"
+        );
+        assert_eq!(
+            follow.layers[0].outer_walls.len(),
+            wide.layers[0].outer_walls.len(),
+            "walls keep initial_layer_line_width"
+        );
+    }
+
+    #[test]
     fn small_sparse_islands_become_solid() {
         let mesh = TriangleMesh::cube(4.0);
         let mut settings = SliceSettings::default();

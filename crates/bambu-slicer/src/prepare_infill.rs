@@ -473,7 +473,14 @@ fn emit_shells(
             })
             .unwrap_or_default();
         let mut solid_infill = infill::with_symmetric_y(&wide, axis, |region| {
-            infill::solid(region, solid_w, i, settings.infill_direction_deg)
+            infill::solid_surface(
+                region,
+                solid_w,
+                i,
+                settings.internal_solid_infill_pattern,
+                settings.infill_direction_deg,
+                settings.nozzle_diameter_mm,
+            )
         });
         solid_infill.extend(infill::with_symmetric_y(&narrow, axis, |region| {
             closed_concentric(region, solid_w, settings.nozzle_diameter_mm)

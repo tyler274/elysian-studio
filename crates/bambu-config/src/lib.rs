@@ -769,6 +769,9 @@ pub struct SliceSettings {
     pub line_width_mm: f64,
     /// C++ `initial_layer_line_width`. 0 keeps the role width (or `line_width`).
     pub initial_layer_line_width_mm: f64,
+    /// C++ `initial_layer_infill_line_width`. First-layer sparse/solid/top fill
+    /// width. 0 follows [`Self::initial_layer_line_width_mm`]. BBL `"0.5"`.
+    pub initial_layer_infill_line_width_mm: f64,
     /// C++ `outer_wall_line_width`. 0 falls back to `line_width`.
     pub outer_wall_line_width_mm: f64,
     /// C++ `inner_wall_line_width`. 0 falls back to `line_width`.
@@ -993,6 +996,10 @@ pub struct SliceSettings {
     pub top_surface_pattern: SurfacePattern,
     /// C++ `bottom_surface_pattern` (BBL common is `monotonic`).
     pub bottom_surface_pattern: SurfacePattern,
+    /// C++ `internal_solid_infill_pattern`. Wide internal solid; narrow islands
+    /// stay concentric when `detect_narrow_internal_solid_infill` is on.
+    /// C++ / BBL default is rectilinear.
+    pub internal_solid_infill_pattern: SurfacePattern,
     /// C++ `top_surface_density` as a 0–1 fraction (PrintConfig default 100%).
     pub top_surface_density: f64,
     /// C++ `bottom_surface_density` as a 0–1 fraction (PrintConfig default 100%).
@@ -1252,6 +1259,7 @@ impl Default for SliceSettings {
             xy_hole_compensation_mm: 0.0,
             line_width_mm: 0.42,
             initial_layer_line_width_mm: 0.0,
+            initial_layer_infill_line_width_mm: 0.0,
             outer_wall_line_width_mm: 0.0,
             inner_wall_line_width_mm: 0.0,
             sparse_infill_line_width_mm: 0.0,
@@ -1361,6 +1369,7 @@ impl Default for SliceSettings {
             ensure_vertical_shell_thickness: EnsureVerticalShellThickness::Enabled,
             top_surface_pattern: SurfacePattern::Rectilinear,
             bottom_surface_pattern: SurfacePattern::Rectilinear,
+            internal_solid_infill_pattern: SurfacePattern::Rectilinear,
             top_surface_density: 1.0,
             bottom_surface_density: 1.0,
             detect_narrow_internal_solid_infill: true,
@@ -1525,12 +1534,22 @@ impl SliceSettings {
         }
     }
 
-    /// C++ `PrintRegion::flow` extrusion width. First layer uses
+    /// C++ `PrintRegion::flow` extrusion width. First-layer infill roles use
+    /// `initial_layer_infill_line_width` when that value is > 0, then
     /// `initial_layer_line_width` when that value is > 0; role-specific 0
     /// falls back to [`Self::line_width_mm`].
     pub fn line_width_for(&self, role: FlowRole, first_layer: bool) -> f64 {
-        if first_layer && self.initial_layer_line_width_mm > 0.0 {
-            return self.initial_layer_line_width_mm;
+        if first_layer {
+            let infill_role = matches!(
+                role,
+                FlowRole::SparseInfill | FlowRole::SolidInfill | FlowRole::TopSolidInfill
+            );
+            if infill_role && self.initial_layer_infill_line_width_mm > 0.0 {
+                return self.initial_layer_infill_line_width_mm;
+            }
+            if self.initial_layer_line_width_mm > 0.0 {
+                return self.initial_layer_line_width_mm;
+            }
         }
         let specific = match role {
             FlowRole::ExternalPerimeter => self.outer_wall_line_width_mm,
@@ -2012,6 +2031,7 @@ impl SliceSettings {
             brim_width_mm: 5.0,
             brim_object_gap_mm: 0.1,
             initial_layer_line_width_mm: 0.5,
+            initial_layer_infill_line_width_mm: 0.5,
             inner_wall_line_width_mm: 0.45,
             outer_wall_line_width_mm: 0.42,
             sparse_infill_line_width_mm: 0.45,

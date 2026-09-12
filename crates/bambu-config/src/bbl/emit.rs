@@ -53,6 +53,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "initial_layer_infill_line_width",
+        num_str(settings.initial_layer_infill_line_width_mm),
+    );
+    insert(
+        &mut map,
         "outer_wall_line_width",
         num_str(settings.outer_wall_line_width_mm),
     );
@@ -365,6 +370,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "bottom_surface_pattern",
         settings.bottom_surface_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "internal_solid_infill_pattern",
+        settings.internal_solid_infill_pattern.as_str(),
     );
     insert(
         &mut map,

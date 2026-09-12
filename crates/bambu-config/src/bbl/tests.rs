@@ -181,6 +181,7 @@ fn upstream_fdm_process_0_20() {
     assert!((s.brim_object_gap_mm - 0.1).abs() < 1e-9);
     assert!((s.line_width_mm - 0.42).abs() < 1e-9);
     assert!((s.initial_layer_line_width_mm - 0.5).abs() < 1e-9);
+    assert!((s.initial_layer_infill_line_width_mm - 0.5).abs() < 1e-9);
     assert!((s.inner_wall_line_width_mm - 0.45).abs() < 1e-9);
     assert!((s.outer_wall_line_width_mm - 0.42).abs() < 1e-9);
     assert!((s.sparse_infill_line_width_mm - 0.45).abs() < 1e-9);
@@ -231,6 +232,10 @@ fn upstream_fdm_process_0_20() {
     assert!(!s.precise_z_height);
     assert_eq!(s.top_surface_pattern, crate::SurfacePattern::MonotonicLine);
     assert_eq!(s.bottom_surface_pattern, crate::SurfacePattern::Monotonic);
+    assert_eq!(
+        s.internal_solid_infill_pattern,
+        crate::SurfacePattern::Rectilinear
+    );
     assert!((s.top_surface_density - 1.0).abs() < 1e-9);
     assert!((s.bottom_surface_density - 1.0).abs() < 1e-9);
     assert_eq!(s.raft_layers, 0);
@@ -277,6 +282,14 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(baked.elephant_foot_mm, s.elephant_foot_mm);
     assert!((baked.brim_object_gap_mm - s.brim_object_gap_mm).abs() < 1e-9);
     assert!((baked.initial_layer_line_width_mm - s.initial_layer_line_width_mm).abs() < 1e-9);
+    assert!(
+        (baked.initial_layer_infill_line_width_mm - s.initial_layer_infill_line_width_mm).abs()
+            < 1e-9
+    );
+    assert_eq!(
+        baked.internal_solid_infill_pattern,
+        s.internal_solid_infill_pattern
+    );
     assert!((baked.inner_wall_line_width_mm - s.inner_wall_line_width_mm).abs() < 1e-9);
     assert!((baked.sparse_infill_line_width_mm - s.sparse_infill_line_width_mm).abs() < 1e-9);
     assert_eq!(baked.top_one_wall, s.top_one_wall);
@@ -294,7 +307,14 @@ fn line_width_for_matches_cpp_print_region_flow() {
     s.outer_wall_line_width_mm = 0.42;
     s.sparse_infill_line_width_mm = 0.45;
     assert!((s.line_width_for(crate::FlowRole::Perimeter, true) - 0.5).abs() < 1e-9);
+    assert!((s.line_width_for(crate::FlowRole::SparseInfill, true) - 0.5).abs() < 1e-9);
+    s.initial_layer_infill_line_width_mm = 0.8;
+    assert!((s.line_width_for(crate::FlowRole::Perimeter, true) - 0.5).abs() < 1e-9);
     assert!((s.line_width_for(crate::FlowRole::ExternalPerimeter, true) - 0.5).abs() < 1e-9);
+    assert!((s.line_width_for(crate::FlowRole::SparseInfill, true) - 0.8).abs() < 1e-9);
+    assert!((s.line_width_for(crate::FlowRole::SolidInfill, true) - 0.8).abs() < 1e-9);
+    assert!((s.line_width_for(crate::FlowRole::TopSolidInfill, true) - 0.8).abs() < 1e-9);
+    assert!((s.line_width_for(crate::FlowRole::SupportMaterial, true) - 0.5).abs() < 1e-9);
     assert!((s.line_width_for(crate::FlowRole::Perimeter, false) - 0.45).abs() < 1e-9);
     assert!((s.line_width_for(crate::FlowRole::ExternalPerimeter, false) - 0.42).abs() < 1e-9);
     assert!((s.line_width_for(crate::FlowRole::SparseInfill, false) - 0.45).abs() < 1e-9);
@@ -689,6 +709,8 @@ fn project_settings_json_roundtrip() {
     src.precise_outer_wall = true;
     src.symmetric_infill_y_axis = true;
     src.seam_placement_away_from_overhangs = true;
+    src.internal_solid_infill_pattern = crate::SurfacePattern::Concentric;
+    src.initial_layer_infill_line_width_mm = 0.8;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -739,6 +761,11 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.precise_outer_wall);
     assert!(loaded.symmetric_infill_y_axis);
     assert!(loaded.seam_placement_away_from_overhangs);
+    assert_eq!(
+        loaded.internal_solid_infill_pattern,
+        crate::SurfacePattern::Concentric
+    );
+    assert!((loaded.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -846,6 +873,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("precise_outer_wall".into(), "1".into());
     pairs.insert("symmetric_infill_y_axis".into(), "1".into());
     pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
+    pairs.insert("internal_solid_infill_pattern".into(), "concentric".into());
+    pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -880,6 +909,11 @@ fn region_overrides_skip_object_keys() {
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
     assert!(!s.seam_placement_away_from_overhangs);
+    assert_eq!(
+        s.internal_solid_infill_pattern,
+        crate::SurfacePattern::Concentric
+    );
+    assert!(s.initial_layer_infill_line_width_mm.abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
@@ -906,6 +940,11 @@ fn region_overrides_skip_object_keys() {
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
     assert!(s.seam_placement_away_from_overhangs);
+    assert_eq!(
+        s.internal_solid_infill_pattern,
+        crate::SurfacePattern::Concentric
+    );
+    assert!((s.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
 }

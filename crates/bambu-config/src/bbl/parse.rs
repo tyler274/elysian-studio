@@ -54,6 +54,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "ensure_vertical_shell_thickness"
             | "top_surface_pattern"
             | "bottom_surface_pattern"
+            | "internal_solid_infill_pattern"
             | "top_surface_density"
             | "bottom_surface_density"
             | "outer_wall_speed"
@@ -141,6 +142,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "initial_layer_line_width") {
         s.initial_layer_line_width_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "initial_layer_infill_line_width") {
+        s.initial_layer_infill_line_width_mm = v.max(0.0);
     }
     if let Some(v) = num(map, "outer_wall_line_width") {
         s.outer_wall_line_width_mm = v.max(0.0);
@@ -441,6 +445,11 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(name) = text(map, "bottom_surface_pattern") {
         if let Some(p) = SurfacePattern::from_name(&name) {
             s.bottom_surface_pattern = p;
+        }
+    }
+    if let Some(name) = text(map, "internal_solid_infill_pattern") {
+        if let Some(p) = SurfacePattern::from_name(&name) {
+            s.internal_solid_infill_pattern = p;
         }
     }
     if let Some(v) = percent(map, "top_surface_density") {
