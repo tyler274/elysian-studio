@@ -123,6 +123,13 @@ impl ToolpathBuffer {
                 ExtrusionRole::Ironing,
                 layer.ironing.iter().any(|p| p.len() > 2),
             );
+            emit_paths(
+                &mut vertices,
+                &layer.support_ironing,
+                z,
+                ExtrusionRole::Ironing,
+                false,
+            );
         }
         Self { vertices }
     }

@@ -362,7 +362,7 @@ pub fn layers_footprint(layers: &[Layer]) -> Vec<Polygon> {
 }
 
 /// C++ support-interface ironing: solid hatch (`support_interface_spacing` 0)
-/// that is not grid. Paths append after part ironing (`support::apply` runs last).
+/// that is not grid. Paths are `erSupportIroning`, not part ironing.
 fn iron_support_interface(layers: &mut [Layer], settings: &SliceSettings) {
     if !settings.enable_support_ironing {
         return;
@@ -399,7 +399,7 @@ fn iron_support_interface(layers: &mut [Layer], settings: &SliceSettings) {
             IroningPattern::Concentric => infill::concentric(&area, spacing, clip),
             IroningPattern::Rectilinear => infill::solid_monotonic(&area, spacing, i, angle),
         };
-        layer.ironing.extend(paths);
+        layer.support_ironing.extend(paths);
     });
 }
 

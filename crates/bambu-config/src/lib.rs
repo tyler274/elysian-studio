@@ -1032,6 +1032,11 @@ pub struct SliceSettings {
     /// C++ `support_ironing_direction` (degrees). Rotate support-interface
     /// ironing independently of [`Self::support_angle_deg`]. BBL `"0"`.
     pub support_ironing_direction_deg: f64,
+    /// C++ `support_ironing_flow` as a fraction of layer height. Default 10%;
+    /// BBL `"10%"`.
+    pub support_ironing_flow: f64,
+    /// C++ `support_ironing_speed` (mm/s). Default 20; BBL `"30"`.
+    pub support_ironing_speed_mm_s: f64,
     /// C++ `support_expansion` (mm). Grow (+) or shrink (−) the contact
     /// footprint. BBL `"0"`.
     pub support_expansion_mm: f64,
@@ -1039,6 +1044,9 @@ pub struct SliceSettings {
     pub tree_branch_angle_deg: f64,
     /// Disk diameter at each tree node (`tree_support_branch_diameter`).
     pub tree_branch_diameter_mm: f64,
+    /// C++ `tree_support_branch_diameter_angle` (degrees). Trunks thicken
+    /// toward the plate by `tan(angle)`. Default 5; BBL omits the key.
+    pub tree_branch_diameter_angle_deg: f64,
     /// C++ `tree_support_branch_distance` (mm). Spacing of tree contact samples.
     /// C++ default 5; BBL omits the key.
     pub tree_branch_distance_mm: f64,
@@ -1066,6 +1074,9 @@ pub struct SliceSettings {
     /// stay concentric when `detect_narrow_internal_solid_infill` is on.
     /// C++ / BBL default is rectilinear.
     pub internal_solid_infill_pattern: SurfacePattern,
+    /// C++ `sub_top_surface_pattern`. Solid under a visible top (`stSubTop`).
+    /// C++ default is monotonic; BBL omits the key.
+    pub sub_top_surface_pattern: SurfacePattern,
     /// C++ `top_surface_density` as a 0–1 fraction (PrintConfig default 100%).
     pub top_surface_density: f64,
     /// C++ `bottom_surface_density` as a 0–1 fraction (PrintConfig default 100%).
@@ -1433,9 +1444,12 @@ impl Default for SliceSettings {
             support_ironing_spacing_mm: 0.15,
             support_ironing_inset_mm: 0.0,
             support_ironing_direction_deg: 0.0,
+            support_ironing_flow: 0.10,
+            support_ironing_speed_mm_s: 20.0,
             support_expansion_mm: 0.0,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
+            tree_branch_diameter_angle_deg: 5.0,
             tree_branch_distance_mm: 5.0,
             tree_support_wall_count: -1,
             interface_shells: false,
@@ -1447,6 +1461,7 @@ impl Default for SliceSettings {
             top_surface_pattern: SurfacePattern::Rectilinear,
             bottom_surface_pattern: SurfacePattern::Rectilinear,
             internal_solid_infill_pattern: SurfacePattern::Rectilinear,
+            sub_top_surface_pattern: SurfacePattern::Monotonic,
             top_surface_density: 1.0,
             bottom_surface_density: 1.0,
             detect_narrow_internal_solid_infill: true,
@@ -1711,6 +1726,28 @@ impl SliceSettings {
             self.support_object_first_layer_gap_mm
         } else {
             self.support_xy_distance_mm
+        }
+    }
+
+    /// C++ `TreeSupport::calc_branch_radius` (`mm_to_top` form). Interface
+    /// layers keep at least the contact radius.
+    pub fn tree_branch_radius_mm(&self, mm_to_top: f64) -> f64 {
+        let base = (self.tree_branch_diameter_mm.max(self.line_width_mm) * 0.5).max(0.4);
+        let tan_d = self
+            .tree_branch_diameter_angle_deg
+            .max(0.0)
+            .to_radians()
+            .tan();
+        let mut radius = if mm_to_top > base {
+            base + (mm_to_top - base) * tan_d
+        } else {
+            mm_to_top
+        };
+        radius = radius.clamp(0.4, 10.0);
+        if self.support_interface_layers > 0 {
+            radius.max(base)
+        } else {
+            radius
         }
     }
 
@@ -2197,6 +2234,7 @@ impl SliceSettings {
             travel_short_distance_acceleration_mm_s2: 250.0,
             retract_acceleration_mm_s2: 5000.0,
             ironing_flow: 0.15,
+            support_ironing_speed_mm_s: 30.0,
             fan_min_speed: 100,
             fan_max_speed: 100,
             close_fan_the_first_x_layers: 1,

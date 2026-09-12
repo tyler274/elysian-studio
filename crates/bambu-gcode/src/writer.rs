@@ -140,6 +140,25 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 first,
             ),
         )?;
+        if !layer.support_ironing.is_empty() {
+            // C++ `erSupportIroning` after support fills, before part ironing.
+            let h = layer.height_mm * settings.support_ironing_flow.max(0.0);
+            let flow = Flow::for_role(settings, FlowRole::SupportMaterial, h, first);
+            let factor = settings.gcode_path_flow_factor(FlowRole::SupportMaterial, first);
+            w.emit_role(
+                "Support ironing",
+                PrintAccel::Default,
+                Extrude {
+                    paths: &layer.support_ironing,
+                    closed: false,
+                    e_per_mm: flow.e_per_mm() * factor,
+                    print_f: settings.support_ironing_speed_mm_s * 60.0,
+                    mm3_per_mm: flow.mm3_per_mm() * factor,
+                    width_mm: flow.width_mm,
+                    arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SupportMaterial),
+                },
+            )?;
+        }
 
         // C++ `is_infill_first && !first_layer`: infill before perimeters.
         // Ironing stays last (`extrude_infill(..., true)`).

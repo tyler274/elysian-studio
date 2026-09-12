@@ -56,6 +56,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "top_surface_pattern"
             | "bottom_surface_pattern"
             | "internal_solid_infill_pattern"
+            | "sub_top_surface_pattern"
             | "top_surface_density"
             | "bottom_surface_density"
             | "outer_wall_speed"
@@ -376,6 +377,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "tree_support_branch_diameter") {
         s.tree_branch_diameter_mm = v.max(0.0);
     }
+    if let Some(v) = num(map, "tree_support_branch_diameter_angle") {
+        s.tree_branch_diameter_angle_deg = v.clamp(0.0, 15.0);
+    }
     if let Some(v) = num(map, "tree_support_branch_distance") {
         s.tree_branch_distance_mm = v.max(0.0);
     }
@@ -439,6 +443,12 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "support_ironing_direction") {
         s.support_ironing_direction_deg = v.rem_euclid(360.0);
     }
+    if let Some(v) = percent(map, "support_ironing_flow") {
+        s.support_ironing_flow = v.max(0.0);
+    }
+    if let Some(v) = num(map, "support_ironing_speed") {
+        s.support_ironing_speed_mm_s = v.max(0.0);
+    }
     if let Some(v) = num(map, "support_expansion") {
         s.support_expansion_mm = v;
     }
@@ -472,6 +482,11 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(name) = text(map, "internal_solid_infill_pattern") {
         if let Some(p) = SurfacePattern::from_name(&name) {
             s.internal_solid_infill_pattern = p;
+        }
+    }
+    if let Some(name) = text(map, "sub_top_surface_pattern") {
+        if let Some(p) = SurfacePattern::from_name(&name) {
+            s.sub_top_surface_pattern = p;
         }
     }
     if let Some(v) = percent(map, "top_surface_density") {

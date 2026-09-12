@@ -231,11 +231,14 @@ fn upstream_fdm_process_0_20() {
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
+    assert!((s.support_ironing_flow - 0.10).abs() < 1e-9);
+    assert!((s.support_ironing_speed_mm_s - 30.0).abs() < 1e-9);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
     assert!((s.support_object_first_layer_gap_mm - 0.2).abs() < 1e-9);
     assert!((s.tree_branch_diameter_mm - 2.0).abs() < 1e-9);
+    assert!((s.tree_branch_diameter_angle_deg - 5.0).abs() < 1e-9);
     assert!((s.tree_branch_distance_mm - 5.0).abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, -1);
     assert!(!s.interface_shells);
@@ -254,6 +257,7 @@ fn upstream_fdm_process_0_20() {
         s.internal_solid_infill_pattern,
         crate::SurfacePattern::Rectilinear
     );
+    assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Monotonic);
     assert!((s.top_surface_density - 1.0).abs() < 1e-9);
     assert!((s.bottom_surface_density - 1.0).abs() < 1e-9);
     assert_eq!(s.raft_layers, 0);
@@ -308,6 +312,7 @@ fn upstream_fdm_process_0_20() {
         baked.internal_solid_infill_pattern,
         s.internal_solid_infill_pattern
     );
+    assert_eq!(baked.sub_top_surface_pattern, s.sub_top_surface_pattern);
     assert!((baked.inner_wall_line_width_mm - s.inner_wall_line_width_mm).abs() < 1e-9);
     assert!((baked.sparse_infill_line_width_mm - s.sparse_infill_line_width_mm).abs() < 1e-9);
     assert_eq!(baked.top_one_wall, s.top_one_wall);
@@ -391,6 +396,16 @@ fn print_flow_ratio_and_xy_hole_compensation_match_cpp() {
 }
 
 #[test]
+fn support_ironing_flow_and_speed_match_cpp() {
+    let s = SliceSettings::default();
+    assert!((s.support_ironing_flow - 0.10).abs() < 1e-9);
+    assert!((s.support_ironing_speed_mm_s - 20.0).abs() < 1e-9);
+    let baked = SliceSettings::bbl_0_20();
+    assert!((baked.support_ironing_flow - 0.10).abs() < 1e-9);
+    assert!((baked.support_ironing_speed_mm_s - 30.0).abs() < 1e-9);
+}
+
+#[test]
 fn ironing_direction_and_support_ironing_direction_match_cpp() {
     let mut s = SliceSettings::default();
     assert!((s.ironing_direction_deg - 45.0).abs() < 1e-9);
@@ -412,6 +427,34 @@ fn support_first_layer_gap_and_tree_branch_distance_match_cpp() {
     s.support_xy_distance_mm = 0.8;
     assert!((s.support_xy_gap_mm(0) - 1.5).abs() < 1e-9);
     assert!((s.support_xy_gap_mm(3) - 0.8).abs() < 1e-9);
+}
+
+#[test]
+fn tree_branch_diameter_angle_and_branch_angle_match_cpp() {
+    let mut s = SliceSettings::default();
+    assert!((s.tree_branch_diameter_angle_deg - 5.0).abs() < 1e-9);
+    assert!((s.tree_branch_angle_deg - 45.0).abs() < 1e-9);
+    let base = s.tree_branch_radius_mm(0.0);
+    assert!((base - 1.0).abs() < 1e-9, "contact radius is half of 2 mm");
+    s.tree_branch_diameter_angle_deg = 0.0;
+    assert!((s.tree_branch_radius_mm(24.0) - 1.0).abs() < 1e-9);
+    s.tree_branch_diameter_angle_deg = 5.0;
+    let grown = s.tree_branch_radius_mm(24.0);
+    assert!(
+        grown > 2.5,
+        "C++ tan(5°) should thicken trunks toward the plate, got {grown}"
+    );
+}
+
+#[test]
+fn sub_top_surface_pattern_match_cpp() {
+    let s = SliceSettings::default();
+    assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Monotonic);
+    let baked = SliceSettings::bbl_0_20();
+    assert_eq!(
+        baked.sub_top_surface_pattern,
+        crate::SurfacePattern::Monotonic
+    );
 }
 
 #[test]
@@ -794,10 +837,13 @@ fn project_settings_json_roundtrip() {
     src.support_angle_deg = 45.0;
     src.enable_support_ironing = true;
     src.support_ironing_direction_deg = 30.0;
+    src.support_ironing_flow = 0.20;
+    src.support_ironing_speed_mm_s = 40.0;
     src.support_expansion_mm = 2.0;
     src.tree_support_wall_count = 2;
     src.support_object_first_layer_gap_mm = 1.5;
     src.tree_branch_distance_mm = 3.0;
+    src.tree_branch_diameter_angle_deg = 8.0;
     src.interface_shells = true;
     src.precise_outer_wall = true;
     src.symmetric_infill_y_axis = true;
@@ -805,6 +851,7 @@ fn project_settings_json_roundtrip() {
     src.brim_type = crate::BrimType::NoBrim;
     src.seam_placement_away_from_overhangs = true;
     src.internal_solid_infill_pattern = crate::SurfacePattern::Concentric;
+    src.sub_top_surface_pattern = crate::SurfacePattern::Concentric;
     src.initial_layer_infill_line_width_mm = 0.8;
     src.top_solid_infill_flow_ratio = 0.9;
     src.initial_layer_flow_ratio = 1.1;
@@ -855,10 +902,13 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(loaded.enable_support_ironing);
     assert!((loaded.support_ironing_direction_deg - 30.0).abs() < 1e-9);
+    assert!((loaded.support_ironing_flow - 0.20).abs() < 1e-9);
+    assert!((loaded.support_ironing_speed_mm_s - 40.0).abs() < 1e-9);
     assert!((loaded.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(loaded.tree_support_wall_count, 2);
     assert!((loaded.support_object_first_layer_gap_mm - 1.5).abs() < 1e-9);
     assert!((loaded.tree_branch_distance_mm - 3.0).abs() < 1e-9);
+    assert!((loaded.tree_branch_diameter_angle_deg - 8.0).abs() < 1e-9);
     assert!(loaded.interface_shells);
     assert!(loaded.precise_outer_wall);
     assert!(loaded.symmetric_infill_y_axis);
@@ -867,6 +917,10 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.seam_placement_away_from_overhangs);
     assert_eq!(
         loaded.internal_solid_infill_pattern,
+        crate::SurfacePattern::Concentric
+    );
+    assert_eq!(
+        loaded.sub_top_surface_pattern,
         crate::SurfacePattern::Concentric
     );
     assert!((loaded.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
@@ -976,10 +1030,13 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_angle".into(), "45".into());
     pairs.insert("enable_support_ironing".into(), "1".into());
     pairs.insert("support_ironing_direction".into(), "30".into());
+    pairs.insert("support_ironing_flow".into(), "20%".into());
+    pairs.insert("support_ironing_speed".into(), "40".into());
     pairs.insert("support_expansion".into(), "2".into());
     pairs.insert("tree_support_wall_count".into(), "2".into());
     pairs.insert("support_object_first_layer_gap".into(), "1.5".into());
     pairs.insert("tree_support_branch_distance".into(), "3".into());
+    pairs.insert("tree_support_branch_diameter_angle".into(), "8".into());
     pairs.insert("interface_shells".into(), "1".into());
     pairs.insert("precise_outer_wall".into(), "1".into());
     pairs.insert("symmetric_infill_y_axis".into(), "1".into());
@@ -987,6 +1044,7 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("brim_type".into(), "no_brim".into());
     pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
     pairs.insert("internal_solid_infill_pattern".into(), "concentric".into());
+    pairs.insert("sub_top_surface_pattern".into(), "concentric".into());
     pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.9".into());
     pairs.insert("initial_layer_flow_ratio".into(), "1.1".into());
@@ -1021,10 +1079,13 @@ fn region_overrides_skip_object_keys() {
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
+    assert!((s.support_ironing_flow - 0.10).abs() < 1e-9);
+    assert!((s.support_ironing_speed_mm_s - 20.0).abs() < 1e-9);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, -1);
     assert!((s.support_object_first_layer_gap_mm - 0.2).abs() < 1e-9);
     assert!((s.tree_branch_distance_mm - 5.0).abs() < 1e-9);
+    assert!((s.tree_branch_diameter_angle_deg - 5.0).abs() < 1e-9);
     assert!(!s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
@@ -1035,6 +1096,7 @@ fn region_overrides_skip_object_keys() {
         s.internal_solid_infill_pattern,
         crate::SurfacePattern::Concentric
     );
+    assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Concentric);
     assert!(s.initial_layer_infill_line_width_mm.abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
@@ -1061,10 +1123,13 @@ fn region_overrides_skip_object_keys() {
     assert!((s.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(s.enable_support_ironing);
     assert!((s.support_ironing_direction_deg - 30.0).abs() < 1e-9);
+    assert!((s.support_ironing_flow - 0.20).abs() < 1e-9);
+    assert!((s.support_ironing_speed_mm_s - 40.0).abs() < 1e-9);
     assert!((s.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, 2);
     assert!((s.support_object_first_layer_gap_mm - 1.5).abs() < 1e-9);
     assert!((s.tree_branch_distance_mm - 3.0).abs() < 1e-9);
+    assert!((s.tree_branch_diameter_angle_deg - 8.0).abs() < 1e-9);
     assert!(s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
@@ -1075,6 +1140,7 @@ fn region_overrides_skip_object_keys() {
         s.internal_solid_infill_pattern,
         crate::SurfacePattern::Concentric
     );
+    assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Concentric);
     assert!((s.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);

@@ -1,7 +1,8 @@
 use super::*;
 use crate::parse::parse_axis;
 use bambu_config::{
-    FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SliceSettings, WallSequence,
+    FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SliceSettings, SupportType,
+    WallSequence,
 };
 use bambu_geom::TriangleMesh;
 use bambu_slicer::slice_mesh;
@@ -458,6 +459,47 @@ fn cube_ironing_gcode_feature() {
     assert!(gcode.contains("; FEATURE: Ironing"));
     let report = parse_gcode(&gcode);
     assert!(report.features.contains("Ironing"));
+}
+
+#[test]
+fn support_ironing_flow_and_speed_scale_gcode() {
+    let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_support = true;
+    settings.support_type = SupportType::Classic;
+    settings.enable_support_ironing = true;
+    settings.support_interface_spacing_mm = 0.0;
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    settings.ironing_speed_mm_s = 80.0;
+    settings.ironing_flow = 0.50;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let base = write_gcode(&settings, &sliced).unwrap();
+    assert!(base.contains("; FEATURE: Support ironing"));
+    assert!(!parse_gcode(&base).features.contains("Ironing"));
+    let e_base = feature_positive_e(&base, "Support ironing");
+    let f_base = feature_print_f(&base, "Support ironing").expect("support ironing feed");
+    assert!(e_base > 0.0);
+    assert!(
+        (f_base - 20.0 * 60.0).abs() < 1e-6,
+        "C++ default support_ironing_speed is 20 mm/s, got {f_base}"
+    );
+    settings.support_ironing_flow = 0.20;
+    settings.support_ironing_speed_mm_s = 40.0;
+    let scaled = write_gcode(&settings, &sliced).unwrap();
+    let e_scaled = feature_positive_e(&scaled, "Support ironing");
+    let f_scaled = feature_print_f(&scaled, "Support ironing").expect("scaled feed");
+    assert!(
+        (e_scaled / e_base - 2.0).abs() < 1e-5,
+        "support ironing E {e_scaled} / {e_base} = {}",
+        e_scaled / e_base
+    );
+    assert!(
+        (f_scaled / f_base - 2.0).abs() < 1e-5,
+        "support ironing F {f_scaled} / {f_base} = {}",
+        f_scaled / f_base
+    );
 }
 
 #[test]
@@ -1088,6 +1130,7 @@ fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
         skirt: Vec::new(),
         brim: Vec::new(),
         ironing: Vec::new(),
+        support_ironing: Vec::new(),
         top_region: Vec::new(),
         support_enforcer: Vec::new(),
         support_blocker: Vec::new(),
@@ -2307,6 +2350,29 @@ fn feature_retract_count(gcode: &str, feature: &str) -> usize {
 fn line_e(line: &str) -> Option<f64> {
     line.split_whitespace()
         .find_map(|tok| tok.strip_prefix('E').and_then(|rest| rest.parse().ok()))
+}
+
+fn feature_print_f(gcode: &str, feature: &str) -> Option<f64> {
+    let mut current = "";
+    let mut found = None;
+    for line in gcode.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("; FEATURE:") {
+            current = rest.trim();
+            continue;
+        }
+        if current != feature {
+            continue;
+        }
+        let upper = trimmed.to_ascii_uppercase();
+        let xy = parse_axis(&upper, b'X').is_some() || parse_axis(&upper, b'Y').is_some();
+        if xy {
+            if let Some(f) = parse_axis(&upper, b'F') {
+                found = Some(f);
+            }
+        }
+    }
+    found
 }
 
 fn feature_positive_e(gcode: &str, feature: &str) -> f64 {

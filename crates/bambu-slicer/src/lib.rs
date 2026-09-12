@@ -87,6 +87,8 @@ pub struct Layer {
     pub skirt: Vec<Polyline>,
     pub brim: Vec<Polyline>,
     pub ironing: Vec<Polyline>,
+    /// C++ `erSupportIroning` (support-interface recross).
+    pub support_ironing: Vec<Polyline>,
     /// Top-shell polygons (before infill fill), used by ironing.
     pub top_region: Vec<Polygon>,
     /// Sliced `support_enforcer` volumes at this layer (C++ `slice_support_enforcers`).
@@ -600,6 +602,7 @@ fn slice_prepared(
             skirt: Vec::new(),
             brim: Vec::new(),
             ironing: Vec::new(),
+            support_ironing: Vec::new(),
             top_region: Vec::new(),
             support_enforcer: prepared[i].enforcers.clone(),
             support_blocker: prepared[i].blockers.clone(),
@@ -1809,14 +1812,14 @@ mod tests {
         let mut settings = support_beam_settings();
         let off = slice_mesh(&mesh, &settings).unwrap();
         assert!(
-            off.layers.iter().all(|l| l.ironing.is_empty()),
+            off.layers.iter().all(|l| l.support_ironing.is_empty()),
             "BBL enable_support_ironing 0 should skip ironing"
         );
         settings.enable_support_ironing = true;
         settings.support_interface_spacing_mm = 0.0;
         let on = slice_mesh(&mesh, &settings).unwrap();
         assert!(
-            on.layers.iter().any(|l| !l.ironing.is_empty()),
+            on.layers.iter().any(|l| !l.support_ironing.is_empty()),
             "C++ support ironing should recross a solid interface"
         );
     }
@@ -1836,8 +1839,8 @@ mod tests {
             sliced
                 .layers
                 .iter()
-                .find(|l| !l.ironing.is_empty())
-                .map(|l| l.ironing.clone())
+                .find(|l| !l.support_ironing.is_empty())
+                .map(|l| l.support_ironing.clone())
         };
         let a = hatch(&along_zero).expect("support ironing at 0");
         let b = hatch(&along_45).expect("support ironing at 45");
@@ -1938,6 +1941,58 @@ mod tests {
     }
 
     #[test]
+    fn tree_branch_diameter_angle_thickens_toward_plate() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_type = SupportType::Tree;
+        settings.tree_branch_diameter_angle_deg = 0.0;
+        let uniform = slice_mesh(&mesh, &settings).unwrap();
+        settings.tree_branch_diameter_angle_deg = 15.0;
+        let tapered = slice_mesh(&mesh, &settings).unwrap();
+        let pad_area = |sliced: &SliceResult| {
+            sliced.layers[0]
+                .support_region
+                .iter()
+                .map(contour_area_mm2)
+                .sum::<f64>()
+        };
+        let a = pad_area(&uniform);
+        let b = pad_area(&tapered);
+        assert!(
+            b > a * 1.5,
+            "C++ tree_support_branch_diameter_angle should thicken plate pads: uniform={a} tapered={b}"
+        );
+    }
+
+    #[test]
+    fn tree_branch_angle_leans_inward() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_type = SupportType::Tree;
+        settings.tree_branch_angle_deg = 10.0;
+        let steep = slice_mesh(&mesh, &settings).unwrap();
+        settings.tree_branch_angle_deg = 50.0;
+        let lean = slice_mesh(&mesh, &settings).unwrap();
+        let width = |sliced: &SliceResult| {
+            let xs: Vec<f64> = sliced.layers[0]
+                .support_region
+                .iter()
+                .flatten()
+                .map(|p| p.to_mm().0)
+                .collect();
+            let min_x = xs.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_x = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            max_x - min_x
+        };
+        let a = width(&steep);
+        let b = width(&lean);
+        assert!(
+            a > b + 1.0,
+            "C++ tree_support_branch_angle should let trunks lean toward the centroid: steep={a} lean={b}"
+        );
+    }
+
+    #[test]
     fn support_critical_regions_only_drops_shallow_tree_lip() {
         let mesh = TriangleMesh::overhang_table(19.0, 8.0, 24.0, 4.0);
         let mut tree = support_beam_settings();
@@ -2031,6 +2086,48 @@ mod tests {
         assert_ne!(
             a, b,
             "C++ internal_solid_infill_pattern should change wide solid hatch"
+        );
+    }
+
+    #[test]
+    fn sub_top_surface_pattern_changes_shell_under_top() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.detect_narrow_internal_solid_infill = false;
+        settings.internal_solid_infill_pattern = SurfacePattern::Rectilinear;
+        let monotonic = slice_mesh(&mesh, &settings).unwrap();
+        settings.sub_top_surface_pattern = SurfacePattern::Concentric;
+        let concentric = slice_mesh(&mesh, &settings).unwrap();
+        let under_top = |sliced: &SliceResult| {
+            let top_i = sliced
+                .layers
+                .iter()
+                .rposition(|l| !l.top_surface.is_empty())
+                .expect("top surface");
+            assert!(top_i > 0, "sub-top needs a layer under the visible top");
+            sliced.layers[top_i - 1].solid_infill.clone()
+        };
+        let a = under_top(&monotonic);
+        let b = under_top(&concentric);
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        assert_ne!(
+            a, b,
+            "C++ sub_top_surface_pattern should hatch the solid under a visible top"
+        );
+        let first = |sliced: &SliceResult| {
+            sliced
+                .layers
+                .iter()
+                .find(|l| !l.solid_infill.is_empty())
+                .expect("internal solid")
+                .solid_infill
+                .clone()
+        };
+        assert_eq!(
+            first(&monotonic),
+            first(&concentric),
+            "bottom-side internal solid should keep internal_solid_infill_pattern"
         );
     }
 
@@ -2906,6 +3003,7 @@ mod tests {
             assert_eq!(a.floating_areas, b.floating_areas);
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
+            assert_eq!(a.support_ironing, b.support_ironing);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);
         }
     }

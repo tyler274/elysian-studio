@@ -259,6 +259,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "tree_support_branch_diameter_angle",
+        num_str(settings.tree_branch_diameter_angle_deg),
+    );
+    insert(
+        &mut map,
         "tree_support_branch_distance",
         num_str(settings.tree_branch_distance_mm),
     );
@@ -350,6 +355,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "support_ironing_flow",
+        pct_str(settings.support_ironing_flow),
+    );
+    insert(
+        &mut map,
+        "support_ironing_speed",
+        num_str(settings.support_ironing_speed_mm_s),
+    );
+    insert(
+        &mut map,
         "support_expansion",
         num_str(settings.support_expansion_mm),
     );
@@ -392,6 +407,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "internal_solid_infill_pattern",
         settings.internal_solid_infill_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "sub_top_surface_pattern",
+        settings.sub_top_surface_pattern.as_str(),
     );
     insert(
         &mut map,

@@ -2,8 +2,9 @@
 //!
 //! Contact samples on overhangs drop toward a shared centroid, stay outside
 //! an XY gap around the part, and merge into fewer trunks. Each node is a
-//! disk of `tree_support_branch_diameter`; roofs under overhangs get dense
-//! interface fill. This is not the full organic 3D solver.
+//! disk whose radius follows `tree_support_branch_diameter_angle` toward the
+//! plate. Roofs under overhangs get dense interface fill. This is not the
+//! full organic 3D solver.
 
 use bambu_config::{SliceSettings, SupportBasePattern, LOOP_CLIPPING_OVER_NOZZLE};
 use bambu_geom::{offset_polygons, scale, union_polygons, Point, Polygon, Polyline};
@@ -27,8 +28,11 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Po
         .par_iter()
         .map(|overhang| sample_contacts(overhang, spacing))
         .collect();
-    let nodes = drop_nodes(layers, settings, &contacts, diameter);
-    draw(layers, settings, overhangs, &nodes, diameter);
+    let radii: Vec<f64> = (0..n)
+        .map(|i| settings.tree_branch_radius_mm(mm_to_top(i, layers, overhangs)))
+        .collect();
+    let nodes = drop_nodes(layers, settings, &contacts, diameter, &radii);
+    draw(layers, settings, overhangs, &nodes, &radii);
 }
 
 fn sample_contacts(overhang: &[Polygon], spacing: i64) -> Vec<Point> {
@@ -61,6 +65,7 @@ fn drop_nodes(
     settings: &SliceSettings,
     contacts: &[Vec<Point>],
     diameter: f64,
+    radii: &[f64],
 ) -> Vec<Vec<Point>> {
     let n = layers.len();
     let tan_a = settings.tree_branch_angle_deg.to_radians().tan();
@@ -74,7 +79,7 @@ fn drop_nodes(
     for i in (0..n - 1).rev() {
         let dz = (layers[i + 1].print_z_mm - layers[i].print_z_mm).max(1e-6);
         let max_move = scale((dz * tan_a).max(MIN_MM));
-        let xy = settings.support_xy_gap_mm(i) + diameter * 0.5;
+        let xy = settings.support_xy_gap_mm(i) + radii[i];
         let forbidden = offset_polygons(&layers[i].contours, xy);
         let target = centroid(&current);
         let mut next: Vec<Point> = current
@@ -100,16 +105,16 @@ fn draw(
     settings: &SliceSettings,
     overhangs: &[Vec<Polygon>],
     nodes: &[Vec<Point>],
-    diameter: f64,
+    radii: &[f64],
 ) {
     let n = layers.len();
     let interface_n = settings.support_interface_layers.max(1);
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
-    let radius = diameter * 0.5;
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let pad_spacing = support_w.max(MIN_MM);
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        let radius = radii[i];
         let disks: Vec<Polygon> = nodes[i].iter().map(|p| regular_ngon(*p, radius)).collect();
         let unioned = union_polygons(&disks);
         let mut region = unioned.clone();
@@ -204,6 +209,16 @@ fn tree_trunk_paths(
         ));
     }
     out
+}
+
+fn mm_to_top(i: usize, layers: &[Layer], overhangs: &[Vec<Polygon>]) -> f64 {
+    overhangs
+        .iter()
+        .enumerate()
+        .skip(i)
+        .find(|(_, overhang)| !overhang.is_empty())
+        .map(|(j, _)| (layers[j].print_z_mm - layers[i].print_z_mm).max(0.0))
+        .unwrap_or(0.0)
 }
 
 fn regular_ngon(center: Point, radius_mm: f64) -> Polygon {

@@ -14,6 +14,8 @@
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
 //! `interface_shells` treats same-region neighbors as the cover so stacked
 //! materials get top/bottom skins at the joint (BBL `"0"` keeps all-region cover).
+//! Internal solid that overlaps a wide `stTop` on the next layer is `stSubTop`
+//! (`sub_top_surface_pattern`; C++ default monotonic).
 
 use bambu_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
 use bambu_geom::{
@@ -424,6 +426,8 @@ fn emit_shells(
             &[]
         };
         let (wide, narrow, floating) = classify_internal_solid(&rest, lower_sparse, settings);
+        let next_top = shells.top.get(i + 1).map_or(&[][..], Vec::as_slice);
+        let (sub_top, wide) = split_sub_top(&wide, next_top, solid_w);
 
         let top_region = shells.top[i].clone();
         let top_surface =
@@ -482,6 +486,16 @@ fn emit_shells(
                 settings.nozzle_diameter_mm,
             )
         });
+        solid_infill.extend(infill::with_symmetric_y(&sub_top, axis, |region| {
+            infill::solid_surface(
+                region,
+                solid_w,
+                i,
+                settings.sub_top_surface_pattern,
+                settings.infill_direction_deg,
+                settings.nozzle_diameter_mm,
+            )
+        }));
         solid_infill.extend(infill::with_symmetric_y(&narrow, axis, |region| {
             closed_concentric(region, solid_w, settings.nozzle_diameter_mm)
         }));
@@ -666,6 +680,77 @@ fn classify_internal_solid(
         }
     }
     (wide, narrow, floating)
+}
+
+/// C++ `PrintObject::discover_sub_top_surfaces`. An island narrower than this
+/// erosion cannot justify a sub-top band.
+const SUB_TOP_MIN_TOP_EROSION_MM: f64 = 1.5;
+
+/// C++ `stSubTop`: retype a wide internal-solid island that overlaps a large
+/// enough top on the next layer. The whole island uses `sub_top_surface_pattern`.
+fn split_sub_top(
+    wide: &[Polygon],
+    next_top: &[Polygon],
+    solid_spacing_mm: f64,
+) -> (Vec<Polygon>, Vec<Polygon>) {
+    if wide.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mask = large_sub_top_mask(next_top);
+    if mask.is_empty() {
+        return (Vec::new(), wide.to_vec());
+    }
+    let open_r = 0.5 * solid_spacing_mm.max(0.0);
+    let mut sub_top = Vec::new();
+    let mut rest = Vec::new();
+    for island in wide {
+        let hit = intersect_polygons(std::slice::from_ref(island), &mask);
+        let claimed = if open_r > 1e-9 {
+            !offset_polygons(&offset_polygons(&hit, -open_r), open_r).is_empty()
+        } else {
+            !hit.is_empty()
+        };
+        if claimed {
+            sub_top.push(island.clone());
+        } else {
+            rest.push(island.clone());
+        }
+    }
+    (sub_top, rest)
+}
+
+fn large_sub_top_mask(tops: &[Polygon]) -> Vec<Polygon> {
+    let min_extent = 2.0 * SUB_TOP_MIN_TOP_EROSION_MM;
+    union_polygons(tops)
+        .into_iter()
+        .filter(|top| {
+            let Some((w, h)) = polygon_size_mm(top) else {
+                return false;
+            };
+            w >= min_extent
+                && h >= min_extent
+                && !offset_polygons(std::slice::from_ref(top), -SUB_TOP_MIN_TOP_EROSION_MM)
+                    .is_empty()
+        })
+        .collect()
+}
+
+fn polygon_size_mm(poly: &Polygon) -> Option<(f64, f64)> {
+    if poly.is_empty() {
+        return None;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for p in poly {
+        let (x, y) = p.to_mm();
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Some((max_x - min_x, max_y - min_y))
 }
 
 fn is_narrow_infill_area(poly: &Polygon) -> bool {
