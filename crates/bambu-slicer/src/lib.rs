@@ -55,6 +55,34 @@ pub enum SlicerError {
     EmptyBounds,
 }
 
+/// Per-region fill snapshots (`LayerRegion` infill roles).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RegionFills {
+    pub sparse: Vec<Polyline>,
+    pub combined: Vec<Polyline>,
+    pub combined_height_mm: f64,
+    pub solid: Vec<Polyline>,
+    pub floating: Vec<Polyline>,
+    pub floating_areas: Vec<Polygon>,
+    pub top: Vec<Polyline>,
+    pub bottom: Vec<Polyline>,
+    pub bridge: Vec<Polyline>,
+}
+
+impl RegionFills {
+    pub fn has_sparse(&self) -> bool {
+        !self.sparse.is_empty() || !self.combined.is_empty()
+    }
+
+    pub fn has_solid(&self) -> bool {
+        !self.solid.is_empty()
+            || !self.floating.is_empty()
+            || !self.top.is_empty()
+            || !self.bottom.is_empty()
+            || !self.bridge.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Layer {
     pub z_mm: f64,
@@ -108,6 +136,8 @@ pub struct Layer {
     pub region_inner_walls: Vec<Vec<Polyline>>,
     /// Per-region gap infill (same length as [`Self::region_settings`]).
     pub region_gap_infill: Vec<Vec<Polyline>>,
+    /// Per-region fill paths (same length as [`Self::region_settings`] when set).
+    pub region_fills: Vec<RegionFills>,
     /// C++ `Layer::loverhangs` for Auto Z-hop.
     pub lift_overhangs: Vec<Polygon>,
 }
@@ -143,6 +173,29 @@ impl Layer {
             || !self.gap_infill.is_empty()
         {
             ids.insert(settings.wall_filament.max(1));
+        }
+        if self.region_fills.len() > 1 && self.region_fills.len() == self.region_settings.len() {
+            for (i, cfg) in self.region_settings.iter().enumerate() {
+                let fills = &self.region_fills[i];
+                if fills.has_sparse() {
+                    ids.insert(cfg.sparse_infill_filament.max(1));
+                }
+                if fills.has_solid() {
+                    ids.insert(cfg.solid_infill_filament.max(1));
+                }
+            }
+        } else {
+            if !self.infill.is_empty() || !self.combined_infill.is_empty() {
+                ids.insert(settings.sparse_infill_filament.max(1));
+            }
+            if !self.solid_infill.is_empty()
+                || !self.floating_vertical_shell.is_empty()
+                || !self.top_surface.is_empty()
+                || !self.bottom_surface.is_empty()
+                || !self.bridge.is_empty()
+            {
+                ids.insert(settings.solid_infill_filament.max(1));
+            }
         }
         if !self.support.is_empty() && settings.support_filament > 0 {
             ids.insert(settings.support_filament);
@@ -662,6 +715,7 @@ fn slice_prepared(
             region_outer_walls: paths.region_outer_walls,
             region_inner_walls: paths.region_inner_walls,
             region_gap_infill: paths.region_gap_infill,
+            region_fills: Vec::new(),
             lift_overhangs: Vec::new(),
         });
     }
@@ -3269,6 +3323,7 @@ mod tests {
             assert_eq!(a.prime_tower, b.prime_tower);
             assert_eq!(a.region_outer_walls, b.region_outer_walls);
             assert_eq!(a.region_inner_walls, b.region_inner_walls);
+            assert_eq!(a.region_fills, b.region_fills);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);
         }
     }
@@ -3599,6 +3654,15 @@ mod tests {
         assert!(
             !mid.region_outer_walls[0].is_empty() && !mid.region_outer_walls[1].is_empty(),
             "both filaments should keep their own outer walls"
+        );
+        assert_eq!(mid.region_fills.len(), 2);
+        assert!(
+            mid.region_fills[0].has_sparse() || mid.region_fills[0].has_solid(),
+            "region 0 should keep its own fill paths"
+        );
+        assert!(
+            mid.region_fills[1].has_sparse() || mid.region_fills[1].has_solid(),
+            "region 1 should keep its own fill paths"
         );
     }
 

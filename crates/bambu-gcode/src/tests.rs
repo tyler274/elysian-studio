@@ -469,6 +469,27 @@ fn two_extruders_emit_wall_toolchange() {
 }
 
 #[test]
+fn sparse_infill_filament_emits_toolchange() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.infill_pattern = InfillPattern::Rectilinear;
+    settings.infill_density = 0.15;
+    settings.sparse_infill_filament = 2;
+    settings.filament_count = 2;
+    settings.filament_map = vec![1, 2];
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let infill_at = gcode
+        .find("; FEATURE: Sparse infill")
+        .expect("sparse infill");
+    let t2_at = gcode.find("\nT2").expect("T2");
+    assert!(
+        t2_at < infill_at,
+        "C++ sparse_infill_filament 2 emits T2 before Sparse infill"
+    );
+}
+
+#[test]
 fn cube_gcode_skips_wall_toolchange() {
     let mesh = TriangleMesh::cube(20.0);
     let settings = SliceSettings::default();
@@ -1221,6 +1242,7 @@ fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
         region_outer_walls: Vec::new(),
         region_inner_walls: Vec::new(),
         region_gap_infill: Vec::new(),
+        region_fills: Vec::new(),
         lift_overhangs: Vec::new(),
     }
 }

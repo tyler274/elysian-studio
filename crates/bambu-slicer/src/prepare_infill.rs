@@ -43,7 +43,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         .max()
         .unwrap_or(0);
     if nreg <= 1 {
-        fill_into(layers, settings, mesh, false, None);
+        fill_into(layers, settings, mesh, None, None);
         return;
     }
     let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
@@ -58,6 +58,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         layer.bottom_surface.clear();
         layer.bridge.clear();
         layer.top_region.clear();
+        layer.region_fills = vec![crate::RegionFills::default(); nreg];
     }
     let n = layers.len();
     let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
@@ -91,7 +92,14 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
         for (layer, region) in layers.iter_mut().zip(&regions) {
             layer.infill_region = region.clone();
         }
-        emit_shells(layers, &cfg, mesh, &shells[r], true, Some(&shared_sparse));
+        emit_shells(
+            layers,
+            &cfg,
+            mesh,
+            &shells[r],
+            Some(r),
+            Some(&shared_sparse),
+        );
     }
     for (layer, region) in layers.iter_mut().zip(union_infill) {
         layer.infill_region = region;
@@ -102,14 +110,14 @@ fn fill_into(
     layers: &mut [Layer],
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
-    append: bool,
+    region: Option<usize>,
     shared_sparse: Option<&[Vec<Polygon>]>,
 ) {
     let regions: Vec<Vec<Polygon>> = layers.iter().map(|l| l.infill_region.clone()).collect();
     let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
     let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
     let shells = detect_shells(&regions, &regions, &zs, &contours, settings);
-    emit_shells(layers, settings, mesh, &shells, append, shared_sparse);
+    emit_shells(layers, settings, mesh, &shells, region, shared_sparse);
 }
 
 struct ShellMap {
@@ -398,7 +406,7 @@ fn emit_shells(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
     shells: &ShellMap,
-    append: bool,
+    region: Option<usize>,
     shared_sparse: Option<&[Vec<Polygon>]>,
 ) {
     let zs: Vec<f64> = layers.iter().map(|l| l.z_mm).collect();
@@ -525,7 +533,29 @@ fn emit_shells(
         let infill = leftover_paths[i].clone();
         let combined = thick_paths[i].clone();
         let combined_h = thick_h[i];
-        if append {
+        if let Some(r) = region {
+            let fills = crate::RegionFills {
+                sparse: infill.clone(),
+                combined: combined.clone(),
+                combined_height_mm: combined_h,
+                solid: solid_infill.clone(),
+                floating: floating_vertical_shell.clone(),
+                floating_areas: lower_sparse.to_vec(),
+                top: top_surface.clone(),
+                bottom: if i == 0 {
+                    bottom_paths.clone()
+                } else {
+                    Vec::new()
+                },
+                bridge: if i == 0 {
+                    Vec::new()
+                } else {
+                    bottom_paths.clone()
+                },
+            };
+            if let Some(slot) = layer.region_fills.get_mut(r) {
+                *slot = fills;
+            }
             append_union(&mut layer.top_region, top_region);
             layer.top_surface.extend(top_surface);
             if i == 0 {

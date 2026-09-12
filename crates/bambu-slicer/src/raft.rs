@@ -157,6 +157,7 @@ fn raft_layer(
         region_outer_walls: Vec::new(),
         region_inner_walls: Vec::new(),
         region_gap_infill: Vec::new(),
+        region_fills: Vec::new(),
         lift_overhangs: Vec::new(),
     }
 }

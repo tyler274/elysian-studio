@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use bambu_config::{Flow, FlowRole, PrintAccel, SliceSettings, WallSequence};
-use bambu_geom::Polyline;
+use bambu_geom::{Polygon, Polyline};
 use bambu_slicer::SliceResult;
 
 use crate::envelope::first_layer_print_box;
@@ -295,112 +295,59 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                     )?;
                 }
             } else {
-                w.emit_role(
-                    "Sparse infill",
-                    PrintAccel::SparseInfill,
-                    e(
-                        &layer.infill,
-                        false,
-                        feeds.sparse,
-                        FlowRole::SparseInfill,
-                        object_first,
-                    ),
-                )?;
-                if !layer.combined_infill.is_empty() {
-                    let h = layer.combined_infill_height_mm.max(flow_h);
-                    let flow = Flow::for_role(settings, FlowRole::SparseInfill, h, object_first);
-                    let factor = settings.gcode_path_flow_factor(FlowRole::SparseInfill, first);
-                    w.emit_role(
-                        "Sparse infill",
-                        PrintAccel::SparseInfill,
-                        Extrude {
-                            paths: &layer.combined_infill,
-                            closed: false,
-                            e_per_mm: flow.e_per_mm() * factor,
-                            print_f: feeds.sparse,
-                            mm3_per_mm: flow.mm3_per_mm() * factor,
-                            width_mm: flow.width_mm,
-                            arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SparseInfill),
-                        },
-                    )?;
-                }
-                w.emit_role(
-                    "Internal solid infill",
-                    PrintAccel::Default,
-                    e(
-                        &layer.solid_infill,
-                        false,
-                        feeds.solid,
-                        FlowRole::SolidInfill,
-                        object_first,
-                    ),
-                )?;
-                w.emit_floating_shell_paths(
-                    e(
-                        &layer.floating_vertical_shell,
-                        false,
-                        feeds.vertical_shell,
-                        FlowRole::SolidInfill,
-                        object_first,
-                    ),
-                    &layer.floating_areas,
-                    feeds.bridge,
+                let ctx = InfillCtx {
+                    settings,
+                    feeds: &feeds,
                     first,
-                )?;
-                if !layer.bridge.is_empty() {
-                    let bridge_flow = Flow::bridging_flow(
-                        settings,
-                        FlowRole::SolidInfill,
-                        flow_h,
-                        object_first,
-                        settings.thick_bridges,
-                    );
-                    let factor = settings.gcode_path_flow_factor(FlowRole::SolidInfill, first);
-                    w.emit_feature("Bridge", bridge_flow.width_mm)?;
-                    w.set_print_role(PrintAccel::Default);
-                    w.emit_marked(
-                        settings.overhang_fan_applies(5, true, false),
-                        ";_OVERHANG_FAN_START",
-                        ";_OVERHANG_FAN_END",
-                        |w| {
-                            w.emit_paths(Extrude {
-                                paths: &layer.bridge,
-                                closed: false,
-                                e_per_mm: bridge_flow.e_per_mm() * factor,
-                                print_f: feeds.bridge,
-                                mm3_per_mm: bridge_flow.mm3_per_mm() * factor,
-                                width_mm: bridge_flow.width_mm,
-                                arc_tolerance_mm: settings
-                                    .arc_fit_tolerance_mm(FlowRole::SolidInfill),
-                            })
+                    object_first,
+                    flow_h,
+                };
+                let per_region = layer.region_fills.len() > 1
+                    && layer.region_fills.len() == layer.region_settings.len();
+                if per_region {
+                    for (r, cfg) in layer.region_settings.iter().enumerate() {
+                        let fills = &layer.region_fills[r];
+                        emit_infill(
+                            &mut w,
+                            &ctx,
+                            InfillBundle {
+                                sparse: &fills.sparse,
+                                combined: &fills.combined,
+                                combined_h: fills.combined_height_mm,
+                                solid: &fills.solid,
+                                floating: &fills.floating,
+                                floating_areas: &fills.floating_areas,
+                                bridge: &fills.bridge,
+                                bottom: &fills.bottom,
+                                top: &fills.top,
+                                sparse_filament: cfg.sparse_infill_filament,
+                                solid_filament: cfg.solid_infill_filament,
+                            },
+                        )?;
+                    }
+                } else {
+                    emit_infill(
+                        &mut w,
+                        &ctx,
+                        InfillBundle {
+                            sparse: &layer.infill,
+                            combined: &layer.combined_infill,
+                            combined_h: layer.combined_infill_height_mm,
+                            solid: &layer.solid_infill,
+                            floating: &layer.floating_vertical_shell,
+                            floating_areas: &layer.floating_areas,
+                            bridge: &layer.bridge,
+                            bottom: &layer.bottom_surface,
+                            top: &layer.top_surface,
+                            sparse_filament: settings.sparse_infill_filament,
+                            solid_filament: settings.solid_infill_filament,
                         },
                     )?;
                 }
-                w.emit_role(
-                    "Bottom surface",
-                    PrintAccel::Default,
-                    e(
-                        &layer.bottom_surface,
-                        false,
-                        feeds.wall,
-                        FlowRole::SolidInfill,
-                        object_first,
-                    ),
-                )?;
-                w.emit_role(
-                    "Top surface",
-                    PrintAccel::TopSurface,
-                    e(
-                        &layer.top_surface,
-                        false,
-                        feeds.top,
-                        FlowRole::TopSolidInfill,
-                        object_first,
-                    ),
-                )?;
             }
         }
         if !layer.ironing.is_empty() {
+            w.emit_region_toolchange(settings.solid_infill_filament)?;
             w.set_print_role(PrintAccel::Default);
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
@@ -431,6 +378,180 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 
     w.emit_end(custom_ctx.as_ref())?;
     Ok(w.finish(sliced.layers.len()))
+}
+
+struct InfillCtx<'a> {
+    settings: &'a SliceSettings,
+    feeds: &'a LayerFeeds,
+    first: bool,
+    object_first: bool,
+    flow_h: f64,
+}
+
+struct InfillBundle<'a> {
+    sparse: &'a [Polyline],
+    combined: &'a [Polyline],
+    combined_h: f64,
+    solid: &'a [Polyline],
+    floating: &'a [Polyline],
+    floating_areas: &'a [Polygon],
+    bridge: &'a [Polyline],
+    bottom: &'a [Polyline],
+    top: &'a [Polyline],
+    sparse_filament: i32,
+    solid_filament: i32,
+}
+
+fn emit_infill(
+    w: &mut Writer<'_>,
+    ctx: &InfillCtx<'_>,
+    bundle: InfillBundle<'_>,
+) -> Result<(), GcodeError> {
+    let settings = ctx.settings;
+    let feeds = ctx.feeds;
+    let first = ctx.first;
+    let object_first = ctx.object_first;
+    let flow_h = ctx.flow_h;
+    if !bundle.sparse.is_empty() || !bundle.combined.is_empty() {
+        w.emit_region_toolchange(bundle.sparse_filament)?;
+    }
+    w.emit_role(
+        "Sparse infill",
+        PrintAccel::SparseInfill,
+        infill_extrude(
+            ctx,
+            bundle.sparse,
+            false,
+            feeds.sparse,
+            FlowRole::SparseInfill,
+            object_first,
+        ),
+    )?;
+    if !bundle.combined.is_empty() {
+        let h = bundle.combined_h.max(flow_h);
+        let flow = Flow::for_role(settings, FlowRole::SparseInfill, h, object_first);
+        let factor = settings.gcode_path_flow_factor(FlowRole::SparseInfill, first);
+        w.emit_role(
+            "Sparse infill",
+            PrintAccel::SparseInfill,
+            Extrude {
+                paths: bundle.combined,
+                closed: false,
+                e_per_mm: flow.e_per_mm() * factor,
+                print_f: feeds.sparse,
+                mm3_per_mm: flow.mm3_per_mm() * factor,
+                width_mm: flow.width_mm,
+                arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SparseInfill),
+            },
+        )?;
+    }
+    if !bundle.solid.is_empty()
+        || !bundle.floating.is_empty()
+        || !bundle.bridge.is_empty()
+        || !bundle.bottom.is_empty()
+        || !bundle.top.is_empty()
+    {
+        w.emit_region_toolchange(bundle.solid_filament)?;
+    }
+    w.emit_role(
+        "Internal solid infill",
+        PrintAccel::Default,
+        infill_extrude(
+            ctx,
+            bundle.solid,
+            false,
+            feeds.solid,
+            FlowRole::SolidInfill,
+            object_first,
+        ),
+    )?;
+    w.emit_floating_shell_paths(
+        infill_extrude(
+            ctx,
+            bundle.floating,
+            false,
+            feeds.vertical_shell,
+            FlowRole::SolidInfill,
+            object_first,
+        ),
+        bundle.floating_areas,
+        feeds.bridge,
+        first,
+    )?;
+    if !bundle.bridge.is_empty() {
+        let bridge_flow = Flow::bridging_flow(
+            settings,
+            FlowRole::SolidInfill,
+            flow_h,
+            object_first,
+            settings.thick_bridges,
+        );
+        let factor = settings.gcode_path_flow_factor(FlowRole::SolidInfill, first);
+        w.emit_feature("Bridge", bridge_flow.width_mm)?;
+        w.set_print_role(PrintAccel::Default);
+        w.emit_marked(
+            settings.overhang_fan_applies(5, true, false),
+            ";_OVERHANG_FAN_START",
+            ";_OVERHANG_FAN_END",
+            |w| {
+                w.emit_paths(Extrude {
+                    paths: bundle.bridge,
+                    closed: false,
+                    e_per_mm: bridge_flow.e_per_mm() * factor,
+                    print_f: feeds.bridge,
+                    mm3_per_mm: bridge_flow.mm3_per_mm() * factor,
+                    width_mm: bridge_flow.width_mm,
+                    arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SolidInfill),
+                })
+            },
+        )?;
+    }
+    w.emit_role(
+        "Bottom surface",
+        PrintAccel::Default,
+        infill_extrude(
+            ctx,
+            bundle.bottom,
+            false,
+            feeds.wall,
+            FlowRole::SolidInfill,
+            object_first,
+        ),
+    )?;
+    w.emit_role(
+        "Top surface",
+        PrintAccel::TopSurface,
+        infill_extrude(
+            ctx,
+            bundle.top,
+            false,
+            feeds.top,
+            FlowRole::TopSolidInfill,
+            object_first,
+        ),
+    )?;
+    Ok(())
+}
+
+fn infill_extrude<'a>(
+    ctx: &InfillCtx<'_>,
+    paths: &'a [Polyline],
+    closed: bool,
+    print_f: f64,
+    role: FlowRole,
+    role_first: bool,
+) -> Extrude<'a> {
+    let flow = Flow::for_role(ctx.settings, role, ctx.flow_h, role_first);
+    let factor = ctx.settings.gcode_path_flow_factor(role, ctx.first);
+    Extrude {
+        paths,
+        closed,
+        e_per_mm: flow.e_per_mm() * factor,
+        print_f,
+        mm3_per_mm: flow.mm3_per_mm() * factor,
+        width_mm: flow.width_mm,
+        arc_tolerance_mm: ctx.settings.arc_fit_tolerance_mm(role),
+    }
 }
 
 impl Writer<'_> {
