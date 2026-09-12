@@ -119,6 +119,20 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             ),
         )?;
         w.emit_role(
+            "Prime tower",
+            PrintAccel::Default,
+            e(
+                &layer.prime_tower,
+                false,
+                feeds.support,
+                FlowRole::SupportMaterial,
+                first,
+            ),
+        )?;
+        if settings.support_filament > 0 && !layer.support.is_empty() {
+            w.emit_toolchange(settings.support_filament)?;
+        }
+        w.emit_role(
             "Support",
             PrintAccel::Default,
             e(
@@ -129,6 +143,9 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 first,
             ),
         )?;
+        if settings.support_interface_filament > 0 && !layer.support_interface.is_empty() {
+            w.emit_toolchange(settings.support_interface_filament)?;
+        }
         w.emit_role(
             "Support interface",
             PrintAccel::Default,
@@ -162,6 +179,9 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 
         // C++ `is_infill_first && !first_layer`: infill before perimeters.
         // Ironing stays last (`extrude_infill(..., true)`).
+        if w.state.current_tool.is_some() {
+            w.emit_toolchange(settings.wall_filament.max(1))?;
+        }
         let infill_first = settings.is_infill_first && !first;
         for walls_now in [!infill_first, infill_first] {
             if walls_now {
@@ -399,6 +419,18 @@ impl Writer<'_> {
         self.set_print_role(role);
         self.state.dest_is_support = feature == "Support";
         self.emit_paths(job)
+    }
+
+    /// C++ `set_extruder` stand-in: retract, then `T{filament_map[id]}`.
+    fn emit_toolchange(&mut self, filament_1based: i32) -> Result<(), GcodeError> {
+        let t = self.settings.tool_command_for_filament(filament_1based);
+        if self.state.current_tool == Some(t) {
+            return Ok(());
+        }
+        self.retract()?;
+        writeln!(self.out, "T{t}")?;
+        self.state.current_tool = Some(t);
+        Ok(())
     }
 }
 

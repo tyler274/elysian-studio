@@ -217,6 +217,8 @@ fn upstream_fdm_process_0_20() {
     assert!(s.enable_arc_fitting);
     assert!((s.resolution_mm - 0.012).abs() < 1e-9);
     assert!(!s.enable_support);
+    assert_eq!(s.support_filament, 0);
+    assert_eq!(s.support_interface_filament, 0);
     assert!(!s.support_on_build_plate_only);
     assert!(s.max_bridge_length_mm.abs() < 1e-9);
     assert!(!s.bridge_no_support);
@@ -888,6 +890,8 @@ fn project_settings_json_roundtrip() {
     src.wall_loops = 3;
     src.alternate_extra_wall = true;
     src.enable_support = true;
+    src.support_filament = 2;
+    src.support_interface_filament = 3;
     src.support_on_build_plate_only = true;
     src.max_bridge_length_mm = 10.0;
     src.bridge_no_support = true;
@@ -952,6 +956,8 @@ fn project_settings_json_roundtrip() {
     assert_eq!(loaded.wall_loops, 3);
     assert!(loaded.alternate_extra_wall);
     assert!(loaded.enable_support);
+    assert_eq!(loaded.support_filament, 2);
+    assert_eq!(loaded.support_interface_filament, 3);
     assert!(loaded.support_on_build_plate_only);
     assert!((loaded.max_bridge_length_mm - 10.0).abs() < 1e-9);
     assert!(loaded.bridge_no_support);
@@ -1091,6 +1097,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("extruder".into(), "3".into());
     pairs.insert("layer_height".into(), "0.08".into());
     pairs.insert("enable_support".into(), "1".into());
+    pairs.insert("support_filament".into(), "2".into());
+    pairs.insert("support_interface_filament".into(), "3".into());
     pairs.insert("support_on_build_plate_only".into(), "1".into());
     pairs.insert("max_bridge_length".into(), "10".into());
     pairs.insert("bridge_no_support".into(), "1".into());
@@ -1142,6 +1150,8 @@ fn region_overrides_skip_object_keys() {
     assert_eq!(s.solid_infill_filament, 3);
     assert!((s.layer_height_mm - 0.2).abs() < 1e-9);
     assert!(!s.enable_support);
+    assert_eq!(s.support_filament, 0);
+    assert_eq!(s.support_interface_filament, 0);
     assert!(!s.support_on_build_plate_only);
     assert!(s.max_bridge_length_mm.abs() < 1e-9);
     assert!(!s.bridge_no_support);
@@ -1191,6 +1201,8 @@ fn region_overrides_skip_object_keys() {
     apply_config_pairs(&mut s, &pairs, false);
     assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
     assert!(s.enable_support);
+    assert_eq!(s.support_filament, 2);
+    assert_eq!(s.support_interface_filament, 3);
     assert!(s.support_on_build_plate_only);
     assert!((s.max_bridge_length_mm - 10.0).abs() < 1e-9);
     assert!(s.bridge_no_support);

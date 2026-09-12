@@ -148,6 +148,7 @@ fn raft_layer(
         brim: Vec::new(),
         ironing: Vec::new(),
         support_ironing: Vec::new(),
+        prime_tower: Vec::new(),
         top_region: Vec::new(),
         support_enforcer: Vec::new(),
         support_blocker: Vec::new(),

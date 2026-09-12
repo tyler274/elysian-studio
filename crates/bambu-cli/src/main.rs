@@ -520,6 +520,7 @@ pub fn slice_file(
     }
     let plate_idx = (plate - 1) as usize;
     let volumes = model.world_volumes_for_plate(plate_idx);
+    let object_settings = bambu_model::agreed_object_settings(&volumes, settings);
     if volumes
         .iter()
         .any(bambu_model::ModelVolume::needs_volume_slice)
@@ -544,14 +545,14 @@ pub fn slice_file(
         ))
     })?;
     let (sliced, backend) = if force_cpu {
-        (slice_mesh(&mesh, settings)?, SliceBackend::Cpu)
+        (slice_mesh(&mesh, &object_settings)?, SliceBackend::Cpu)
     } else if force_gpu {
         (
-            slice_on_vulkan(&mesh, settings)?,
+            slice_on_vulkan(&mesh, &object_settings)?,
             SliceBackend::VulkanCompute,
         )
     } else {
-        slice_with_gpu_or_cpu(&mesh, settings)?
+        slice_with_gpu_or_cpu(&mesh, &object_settings)?
     };
     tracing::info!("sliced {} layers ({backend})", sliced.layers.len());
     Ok(write_gcode(settings, &sliced)?)

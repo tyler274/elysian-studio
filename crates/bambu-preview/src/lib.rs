@@ -16,6 +16,7 @@ pub enum ExtrusionRole {
     Bridge,
     Skirt,
     Brim,
+    PrimeTower,
     Support,
     SupportInterface,
     Ironing,
@@ -39,6 +40,13 @@ impl ToolpathBuffer {
             let z = layer.print_z_mm as f32;
             emit_paths(&mut vertices, &layer.skirt, z, ExtrusionRole::Skirt, true);
             emit_paths(&mut vertices, &layer.brim, z, ExtrusionRole::Brim, true);
+            emit_paths(
+                &mut vertices,
+                &layer.prime_tower,
+                z,
+                ExtrusionRole::PrimeTower,
+                true,
+            );
             emit_paths(
                 &mut vertices,
                 &layer.support,

@@ -1,8 +1,8 @@
 //! Print step identifiers.
 //!
 //! Bambu `Print.hpp` plus PrusaSlicer 3.0 `FDMPrintStep` / `FDMPrintObjectStep`
-//! (`PrintSteps.hpp`). Wipe tower is still a print-level step (synonym of tool
-//! ordering in PS 3.0). Object steps stay CPU clipper work.
+//! (`PrintSteps.hpp`). Wipe tower fills the prime-tower square when
+//! `Print::has_wipe_tower` (see [`crate::wipe_tower`]). Object steps stay CPU clipper work.
 //!
 //! PS 3.0 adds print-level `AlertWhenSupportsNeeded` and object-level
 //! `SupportSpotsSearch`, `EstimateCurledExtrusions`, and

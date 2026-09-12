@@ -235,6 +235,13 @@ impl ModelVolume {
         out
     }
 
+    /// Parent settings with this volume's object-level keys applied too.
+    pub fn object_settings(&self, parent: &SliceSettings) -> SliceSettings {
+        let mut out = parent.clone();
+        bambu_config::apply_config_pairs(&mut out, &self.config, false);
+        out
+    }
+
     /// CPU Clipper path: negatives, support modifiers, paint, region overrides,
     /// or a model part with its own extruder / PrintRegion keys.
     pub fn needs_volume_slice(&self) -> bool {
@@ -408,6 +415,32 @@ impl Model {
     }
 }
 
+/// C++ PrintObjectConfig overlay: object-level keys that every model part
+/// shares replace the project settings. Region keys stay per-volume.
+pub fn agreed_object_settings(volumes: &[ModelVolume], parent: &SliceSettings) -> SliceSettings {
+    let mut agreed: Option<BTreeMap<String, String>> = None;
+    for vol in volumes.iter().filter(|v| v.volume_type.is_model_part()) {
+        let keys: BTreeMap<String, String> = vol
+            .config
+            .iter()
+            .filter(|(k, _)| !bambu_config::is_region_key(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        agreed = Some(match agreed {
+            None => keys,
+            Some(prev) => prev
+                .into_iter()
+                .filter(|(k, v)| keys.get(k) == Some(v))
+                .collect(),
+        });
+    }
+    let mut out = parent.clone();
+    if let Some(pairs) = agreed {
+        bambu_config::apply_config_pairs(&mut out, &pairs, false);
+    }
+    out
+}
+
 pub fn default_settings() -> SliceSettings {
     SliceSettings::default()
 }
@@ -450,5 +483,27 @@ mod tests {
         assert_eq!(over.wall_filament, 3);
         assert_eq!(over.sparse_infill_filament, 3);
         assert_eq!(over.solid_infill_filament, 3);
+    }
+
+    #[test]
+    fn agreed_object_settings_honor_shared_enable_support() {
+        let mut a = ModelVolume::model_part("a", TriangleMesh::default(), 1);
+        a.config.insert("enable_support".into(), "0".into());
+        a.config.insert("wall_loops".into(), "2".into());
+        let parent = SliceSettings {
+            enable_support: true,
+            wall_loops: 3,
+            ..SliceSettings::default()
+        };
+        let over = agreed_object_settings(&[a.clone()], &parent);
+        assert!(!over.enable_support, "C++ object enable_support 0");
+        assert_eq!(over.wall_loops, 3, "region keys stay on the volume");
+        let mut b = a.clone();
+        b.config.insert("enable_support".into(), "1".into());
+        let mixed = agreed_object_settings(&[a, b], &parent);
+        assert!(
+            mixed.enable_support,
+            "disagreeing objects keep the project enable_support"
+        );
     }
 }

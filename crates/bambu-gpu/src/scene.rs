@@ -23,6 +23,7 @@ const BOTTOM_SURFACE: [f32; 3] = [0.88, 0.72, 0.28];
 const BRIDGE: [f32; 3] = [0.35, 0.55, 0.98];
 const SKIRT: [f32; 3] = [0.62, 0.48, 0.88];
 const BRIM: [f32; 3] = [0.72, 0.74, 0.78];
+const PRIME_TOWER: [f32; 3] = [0.92, 0.28, 0.72];
 const SUPPORT: [f32; 3] = [0.18, 0.82, 0.42];
 const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
 const IRONING: [f32; 3] = [0.92, 0.88, 0.98];
@@ -608,6 +609,7 @@ fn toolpath_vertices(buf: &ToolpathBuffer) -> Vec<Vertex> {
                 ExtrusionRole::Bridge => BRIDGE,
                 ExtrusionRole::Skirt => SKIRT,
                 ExtrusionRole::Brim => BRIM,
+                ExtrusionRole::PrimeTower => PRIME_TOWER,
                 ExtrusionRole::Support => SUPPORT,
                 ExtrusionRole::SupportInterface => SUPPORT_INTERFACE,
                 ExtrusionRole::Ironing => IRONING,

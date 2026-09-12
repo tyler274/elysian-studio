@@ -20,7 +20,6 @@ use common::{bambu_studio_or_skip, run_cpp_slice_3mf, rust_slice_plate, tests_di
 const TOWER_3MF: &str = "Multifilament+advanced+full+test+tower.3mf";
 
 /// Object roles the rewrite should match when the C++ oracle emits them.
-/// Prime tower / Flush stay C++-only until multi-material G-code exists.
 const TOWER_OBJECT_ROLES: &[&str] = &[
     "Outer wall",
     "Inner wall",
@@ -32,6 +31,7 @@ const TOWER_OBJECT_ROLES: &[&str] = &[
     "Brim",
     "Support",
     "Support interface",
+    "Prime tower",
 ];
 
 fn tower_3mf_path() -> PathBuf {

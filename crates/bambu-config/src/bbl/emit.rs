@@ -225,6 +225,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         pct_str(settings.raft_first_layer_density),
     );
     insert_bool(&mut map, "enable_support", settings.enable_support);
+    insert(
+        &mut map,
+        "support_filament",
+        settings.support_filament.to_string(),
+    );
+    insert(
+        &mut map,
+        "support_interface_filament",
+        settings.support_interface_filament.to_string(),
+    );
     insert_bool(
         &mut map,
         "support_on_build_plate_only",

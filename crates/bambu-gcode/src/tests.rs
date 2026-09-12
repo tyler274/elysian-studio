@@ -401,6 +401,52 @@ fn table_gcode_has_support() {
 }
 
 #[test]
+fn cube_gcode_skips_prime_tower_with_one_filament() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_prime_tower = true;
+    settings.filament_count = 1;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(!gcode.contains("; FEATURE: Prime tower"));
+}
+
+#[test]
+fn cube_gcode_emits_prime_tower_with_two_filaments() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_prime_tower = true;
+    settings.filament_count = 2;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Prime tower"));
+}
+
+#[test]
+fn table_gcode_switches_to_support_filament() {
+    let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+    let mut settings = SliceSettings::default();
+    settings.enable_support = true;
+    settings.support_filament = 2;
+    settings.filament_count = 2;
+    settings.filament_map = vec![1, 2];
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Support") || gcode.contains("; FEATURE: Support interface"));
+    assert!(
+        gcode.contains("\nT2\n") || gcode.contains("\nT2 "),
+        "C++ support_filament 2 emits T2"
+    );
+    let support_at = gcode.find("; FEATURE: Support").expect("support feature");
+    let t2_at = gcode.find("\nT2").expect("T2");
+    assert!(t2_at < support_at, "T2 should precede Support");
+    assert!(
+        gcode[support_at..].contains("\nT1\n") || gcode[support_at..].contains("\nT1 "),
+        "walls should return to filament 1 after support"
+    );
+}
+
+#[test]
 fn support_island_travel_skips_some_retracts() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
@@ -1131,6 +1177,7 @@ fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
         brim: Vec::new(),
         ironing: Vec::new(),
         support_ironing: Vec::new(),
+        prime_tower: Vec::new(),
         top_region: Vec::new(),
         support_enforcer: Vec::new(),
         support_blocker: Vec::new(),

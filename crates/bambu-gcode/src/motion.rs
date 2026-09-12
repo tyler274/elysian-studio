@@ -52,6 +52,8 @@ pub(crate) struct WriterState {
     pub(crate) dest_is_perimeter: bool,
     /// C++ destination `erSupportMaterial` / `erSupportTransition`.
     pub(crate) dest_is_support: bool,
+    /// Last `T` command (C++ current extruder), if we emitted one.
+    pub(crate) current_tool: Option<i32>,
     /// C++ `is_perimeter(last) && last != erPerimeter` after the previous extrusion.
     pub(crate) last_leave_forces_retract: bool,
     /// Last `; LINE_WIDTH:` value (C++ `m_last_width`).

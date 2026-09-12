@@ -115,6 +115,7 @@ pub fn rust_slice_plate(
         return Err(format!("plate {plate_n} has no volumes"));
     }
     ensure_on_bed_volumes(&mut volumes);
+    let object_settings = bambu_model::agreed_object_settings(&volumes, settings);
     let sliced = if volumes.iter().any(ModelVolume::needs_volume_slice) {
         slice_volumes(&volumes, settings).map_err(|e| e.to_string())?
     } else {
@@ -122,7 +123,7 @@ pub fn rust_slice_plate(
             .mesh_for_plate(plate)
             .ok_or_else(|| format!("plate {plate_n} mesh missing"))?;
         ensure_on_bed_mesh(&mut mesh);
-        slice_mesh(&mesh, settings).map_err(|e| e.to_string())?
+        slice_mesh(&mesh, &object_settings).map_err(|e| e.to_string())?
     };
     write_gcode(settings, &sliced).map_err(|e| e.to_string())
 }

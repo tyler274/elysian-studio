@@ -29,6 +29,7 @@ mod slice_plane;
 mod slicing;
 mod steps;
 mod support;
+mod wipe_tower;
 
 use bambu_config::{FuzzySkinType, SliceSettings};
 use bambu_geom::{
@@ -89,6 +90,8 @@ pub struct Layer {
     pub ironing: Vec<Polyline>,
     /// C++ `erSupportIroning` (support-interface recross).
     pub support_ironing: Vec<Polyline>,
+    /// C++ `erWipeTower` (`FEATURE: Prime tower`).
+    pub prime_tower: Vec<Polyline>,
     /// Top-shell polygons (before infill fill), used by ironing.
     pub top_region: Vec<Polygon>,
     /// Sliced `support_enforcer` volumes at this layer (C++ `slice_support_enforcers`).
@@ -153,6 +156,8 @@ pub fn slice_volumes(
     volumes: &[ModelVolume],
     settings: &SliceSettings,
 ) -> Result<SliceResult, SlicerError> {
+    let object_settings = bambu_model::agreed_object_settings(volumes, settings);
+    let settings = &object_settings;
     let part_vols: Vec<&ModelVolume> = volumes
         .iter()
         .filter(|v| v.volume_type.is_model_part())
@@ -603,6 +608,7 @@ fn slice_prepared(
             brim: Vec::new(),
             ironing: Vec::new(),
             support_ironing: Vec::new(),
+            prime_tower: Vec::new(),
             top_region: Vec::new(),
             support_enforcer: prepared[i].enforcers.clone(),
             support_blocker: prepared[i].blockers.clone(),
@@ -636,6 +642,7 @@ fn slice_prepared(
             layer.skirt = skirt.clone();
         }
     }
+    wipe_tower::apply(&mut out, settings);
 
     SliceResult { layers: out }
 }
@@ -3165,6 +3172,7 @@ mod tests {
             assert_eq!(a.top_surface, b.top_surface);
             assert_eq!(a.ironing, b.ironing);
             assert_eq!(a.support_ironing, b.support_ironing);
+            assert_eq!(a.prime_tower, b.prime_tower);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);
         }
     }
@@ -3213,6 +3221,54 @@ mod tests {
             .iter()
             .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
             .count()
+    }
+
+    #[test]
+    fn object_enable_support_off_skips_table() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = SupportType::Classic;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let mut part = bambu_model::ModelVolume::model_part("table", mesh, 1);
+        part.config.insert("enable_support".into(), "0".into());
+        let sliced = slice_volumes(&[part], &settings).unwrap();
+        assert_eq!(
+            support_fill_layers(&sliced),
+            0,
+            "C++ object enable_support 0 should skip support"
+        );
+    }
+
+    #[test]
+    fn single_filament_skips_prime_tower() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_prime_tower = true;
+        settings.filament_count = 1;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            sliced.layers.iter().all(|l| l.prime_tower.is_empty()),
+            "C++ Print::has_wipe_tower is false with one filament"
+        );
+    }
+
+    #[test]
+    fn multi_filament_fills_prime_tower() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_prime_tower = true;
+        settings.filament_count = 2;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            sliced.layers.iter().any(|l| !l.prime_tower.is_empty()),
+            "C++ wipe tower fills the prime-tower square when has_wipe_tower"
+        );
+        let layer0 = &sliced.layers[0];
+        assert!(
+            layer0.prime_tower.len() > sliced.layers[1].prime_tower.len(),
+            "first layer should add brim rings around the tower"
+        );
     }
 
     #[test]

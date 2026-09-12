@@ -978,6 +978,10 @@ pub struct SliceSettings {
     /// First raft layer fill fraction (`raft_first_layer_density`, C++ percent).
     pub raft_first_layer_density: f64,
     pub enable_support: bool,
+    /// C++ `support_filament` (1-based). 0 keeps the current nozzle.
+    pub support_filament: i32,
+    /// C++ `support_interface_filament` (1-based). 0 keeps the current nozzle.
+    pub support_interface_filament: i32,
     /// C++ `support_on_build_plate_only`. Don't rest support on the model.
     pub support_on_build_plate_only: bool,
     /// C++ `max_bridge_length` (mm). 0 supports every bridge (BBL JSON `"0"`).
@@ -1434,6 +1438,8 @@ impl Default for SliceSettings {
             raft_first_layer_expansion_mm: -1.0,
             raft_first_layer_density: 0.90,
             enable_support: false,
+            support_filament: 0,
+            support_interface_filament: 0,
             support_on_build_plate_only: false,
             max_bridge_length_mm: 0.0,
             bridge_no_support: false,
@@ -2208,6 +2214,18 @@ impl SliceSettings {
             map => map[filament_id.min(map.len() - 1)],
         };
         (raw.max(1) as usize).saturating_sub(1)
+    }
+
+    /// C++ `T` number for a 1-based filament id (`filament_map`, else the id).
+    pub fn tool_command_for_filament(&self, filament_1based: i32) -> i32 {
+        if filament_1based < 1 {
+            return self.filament_map.first().copied().unwrap_or(1);
+        }
+        let idx = (filament_1based as usize) - 1;
+        self.filament_map
+            .get(idx)
+            .copied()
+            .unwrap_or(filament_1based)
     }
 
     /// C++ `nozzle_diameter.size()`.

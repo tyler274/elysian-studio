@@ -352,6 +352,12 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "enable_support") {
         s.enable_support = v;
     }
+    if let Some(v) = i32_val(map, "support_filament") {
+        s.support_filament = v.max(0);
+    }
+    if let Some(v) = i32_val(map, "support_interface_filament") {
+        s.support_interface_filament = v.max(0);
+    }
     if let Some(v) = bool_val(map, "support_on_build_plate_only") {
         s.support_on_build_plate_only = v;
     }
