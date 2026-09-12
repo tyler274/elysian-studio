@@ -212,6 +212,9 @@ fn upstream_fdm_process_0_20() {
         s.support_interface_pattern,
         crate::SupportInterfacePattern::Auto
     );
+    assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert!(s.support_angle_deg.abs() < 1e-9);
+    assert!(!s.enable_support_ironing);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
@@ -674,6 +677,9 @@ fn project_settings_json_roundtrip() {
     src.support_base_pattern = crate::SupportBasePattern::Honeycomb;
     src.support_base_pattern_spacing_mm = 1.0;
     src.support_interface_pattern = crate::SupportInterfacePattern::Concentric;
+    src.support_interface_spacing_mm = 0.0;
+    src.support_angle_deg = 45.0;
+    src.enable_support_ironing = true;
     src.support_expansion_mm = 2.0;
     src.tree_support_wall_count = 2;
     src.interface_shells = true;
@@ -719,6 +725,9 @@ fn project_settings_json_roundtrip() {
         loaded.support_interface_pattern,
         crate::SupportInterfacePattern::Concentric
     );
+    assert!(loaded.support_interface_spacing_mm.abs() < 1e-9);
+    assert!((loaded.support_angle_deg - 45.0).abs() < 1e-9);
+    assert!(loaded.enable_support_ironing);
     assert!((loaded.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(loaded.tree_support_wall_count, 2);
     assert!(loaded.interface_shells);
@@ -821,6 +830,9 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_base_pattern".into(), "honeycomb".into());
     pairs.insert("support_base_pattern_spacing".into(), "1".into());
     pairs.insert("support_interface_pattern".into(), "concentric".into());
+    pairs.insert("support_interface_spacing".into(), "0".into());
+    pairs.insert("support_angle".into(), "45".into());
+    pairs.insert("enable_support_ironing".into(), "1".into());
     pairs.insert("support_expansion".into(), "2".into());
     pairs.insert("tree_support_wall_count".into(), "2".into());
     pairs.insert("interface_shells".into(), "1".into());
@@ -850,6 +862,9 @@ fn region_overrides_skip_object_keys() {
         s.support_interface_pattern,
         crate::SupportInterfacePattern::Auto
     );
+    assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert!(s.support_angle_deg.abs() < 1e-9);
+    assert!(!s.enable_support_ironing);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, -1);
     assert!(!s.interface_shells);
@@ -871,6 +886,9 @@ fn region_overrides_skip_object_keys() {
         s.support_interface_pattern,
         crate::SupportInterfacePattern::Concentric
     );
+    assert!(s.support_interface_spacing_mm.abs() < 1e-9);
+    assert!((s.support_angle_deg - 45.0).abs() < 1e-9);
+    assert!(s.enable_support_ironing);
     assert!((s.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, 2);
     assert!(s.interface_shells);

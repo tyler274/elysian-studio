@@ -177,7 +177,7 @@ pub fn apply(layers: &mut Vec<Layer>, settings: &SliceSettings) {
         let w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, true);
         (w / density).max(w)
     };
-    let interface_spacing = support_w * 1.1;
+    let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let base_spacing = settings.support_spacing_mm();
 
     let mut raft = Vec::with_capacity(slabs.len());

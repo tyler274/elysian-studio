@@ -13,11 +13,14 @@
 //! hatch (`support_interface_pattern`; BBL `auto` stays 0° rectilinear).
 //! Tree trunks honor `support_base_pattern` (honeycomb / grid fill the disks;
 //! BBL `default` stays hollow) and `tree_support_wall_count` (`-1` auto outlines).
+//! `support_angle` rotates hatch. Solid interfaces can be ironed
+//! (`enable_support_ironing` with `support_interface_spacing` 0).
 
 mod tree;
 
 use bambu_config::{
-    FlowRole, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
+    FlowRole, IroningPattern, SliceSettings, SupportBasePattern, SupportInterfacePattern,
+    SupportType, LOOP_CLIPPING_OVER_NOZZLE,
 };
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
@@ -44,6 +47,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
         SupportType::Tree => tree::apply(layers, settings, &overhangs),
     }
+    iron_support_interface(layers, settings);
 }
 
 fn detect_overhangs(layers: &[Layer], settings: &SliceSettings) -> Vec<Vec<Polygon>> {
@@ -249,17 +253,17 @@ pub(super) fn fill_support_base(
             spacing,
             settings.support_density.max(1e-6),
             layer_idx,
-            0.0,
+            settings.support_angle_deg,
         ),
         SupportBasePattern::RectilinearGrid => {
             let angle = if layer_idx.is_multiple_of(2) {
-                0.0
+                settings.support_angle_deg
             } else {
-                90.0
+                settings.support_angle_deg + 90.0
             };
             infill::rectilinear(region, spacing, layer_idx, angle)
         }
-        _ => infill::rectilinear(region, spacing, layer_idx, 0.0),
+        _ => infill::rectilinear(region, spacing, layer_idx, settings.support_angle_deg),
     }
 }
 
@@ -281,19 +285,24 @@ pub(super) fn fill_support_interface(
             settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
         )
     } else if settings.support_interface_pattern == SupportInterfacePattern::Grid {
-        let mut lines = infill::rectilinear(region, spacing, layer_idx, 0.0);
-        lines.extend(infill::rectilinear(region, spacing, layer_idx, 90.0));
+        let mut lines = infill::rectilinear(region, spacing, layer_idx, settings.support_angle_deg);
+        lines.extend(infill::rectilinear(
+            region,
+            spacing,
+            layer_idx,
+            settings.support_angle_deg + 90.0,
+        ));
         lines
     } else if settings.support_interface_pattern == SupportInterfacePattern::RectilinearInterlaced {
         // C++ `support_interface_angle`: 90° ± 45° when `support_angle` is 0.
         let angle = if layer_idx.is_multiple_of(2) {
-            135.0
+            settings.support_angle_deg + 135.0
         } else {
-            45.0
+            settings.support_angle_deg + 45.0
         };
         infill::rectilinear(region, spacing, layer_idx, angle)
     } else {
-        infill::rectilinear(region, spacing, layer_idx, 0.0)
+        infill::rectilinear(region, spacing, layer_idx, settings.support_angle_deg)
     }
 }
 
@@ -314,7 +323,7 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let support_spacing = settings.support_spacing_mm();
-    let interface_spacing = support_w * 1.1;
+    let interface_spacing = settings.support_interface_hatch_spacing_mm();
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if regions[i].is_empty() {
             return;
@@ -351,6 +360,47 @@ pub fn layers_footprint(layers: &[Layer]) -> Vec<Polygon> {
         acc.extend(layer.support_region.iter().cloned());
     }
     union_polygons(&acc)
+}
+
+/// C++ support-interface ironing: solid hatch (`support_interface_spacing` 0)
+/// that is not grid. Paths append after part ironing (`support::apply` runs last).
+fn iron_support_interface(layers: &mut [Layer], settings: &SliceSettings) {
+    if !settings.enable_support_ironing {
+        return;
+    }
+    if settings.support_interface_spacing_mm.abs() > 1e-9 {
+        return;
+    }
+    if settings.support_interface_pattern == SupportInterfacePattern::Grid {
+        return;
+    }
+    let inset = settings.support_ironing_inset_mm.max(0.0);
+    let spacing = settings.support_ironing_spacing_mm.max(0.02);
+    let clip = settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE;
+    let angle = settings.support_angle_deg;
+    layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        if layer.support_interface.is_empty() {
+            return;
+        }
+        let area = if inset > 1e-9 {
+            let inner = offset_polygons(&layer.support_region, -inset);
+            if inner.is_empty() {
+                layer.support_region.clone()
+            } else {
+                inner
+            }
+        } else {
+            layer.support_region.clone()
+        };
+        if area.is_empty() {
+            return;
+        }
+        let paths = match settings.support_ironing_pattern {
+            IroningPattern::Concentric => infill::concentric(&area, spacing, clip),
+            IroningPattern::Rectilinear => infill::solid_monotonic(&area, spacing, i, angle),
+        };
+        layer.ironing.extend(paths);
+    });
 }
 
 #[cfg(test)]

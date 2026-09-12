@@ -107,7 +107,7 @@ fn draw(
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let radius = diameter * 0.5;
-    let interface_spacing = support_w * 1.1;
+    let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let pad_spacing = support_w.max(MIN_MM);
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         let disks: Vec<Polygon> = nodes[i].iter().map(|p| regular_ngon(*p, radius)).collect();
@@ -146,7 +146,7 @@ fn draw(
         } else if i == 0 {
             let pads = offset_polygons(&unioned, radius.max(0.4));
             let pads = if pads.is_empty() { unioned } else { pads };
-            layer.support = infill::rectilinear(&pads, pad_spacing, i, 0.0);
+            layer.support = infill::rectilinear(&pads, pad_spacing, i, settings.support_angle_deg);
             layer.support_region = pads;
         } else {
             layer.support = tree_trunk_paths(&unioned, i, settings, support_w);

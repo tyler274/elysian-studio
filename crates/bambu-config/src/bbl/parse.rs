@@ -386,6 +386,26 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
             s.support_interface_pattern = p;
         }
     }
+    if let Some(v) = num(map, "support_interface_spacing") {
+        s.support_interface_spacing_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "support_angle") {
+        s.support_angle_deg = v.rem_euclid(360.0);
+    }
+    if let Some(v) = bool_val(map, "enable_support_ironing") {
+        s.enable_support_ironing = v;
+    }
+    if let Some(name) = text(map, "support_ironing_pattern") {
+        if let Some(p) = IroningPattern::from_name(&name) {
+            s.support_ironing_pattern = p;
+        }
+    }
+    if let Some(v) = num(map, "support_ironing_spacing") {
+        s.support_ironing_spacing_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "support_ironing_inset") {
+        s.support_ironing_inset_mm = v.max(0.0);
+    }
     if let Some(v) = num(map, "support_expansion") {
         s.support_expansion_mm = v;
     }

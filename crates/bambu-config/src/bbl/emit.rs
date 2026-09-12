@@ -288,6 +288,36 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "support_interface_spacing",
+        num_str(settings.support_interface_spacing_mm),
+    );
+    insert(
+        &mut map,
+        "support_angle",
+        num_str(settings.support_angle_deg),
+    );
+    insert_bool(
+        &mut map,
+        "enable_support_ironing",
+        settings.enable_support_ironing,
+    );
+    insert(
+        &mut map,
+        "support_ironing_pattern",
+        settings.support_ironing_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "support_ironing_spacing",
+        num_str(settings.support_ironing_spacing_mm),
+    );
+    insert(
+        &mut map,
+        "support_ironing_inset",
+        num_str(settings.support_ironing_inset_mm),
+    );
+    insert(
+        &mut map,
         "support_expansion",
         num_str(settings.support_expansion_mm),
     );

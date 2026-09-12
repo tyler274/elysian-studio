@@ -946,6 +946,20 @@ pub struct SliceSettings {
     pub support_base_pattern_spacing_mm: f64,
     /// C++ `support_interface_pattern`. BBL `"auto"` stays 0° rectilinear hatch.
     pub support_interface_pattern: SupportInterfacePattern,
+    /// C++ `support_interface_spacing` (mm). BBL `"0.5"`. Default hatch stays
+    /// `width × 1.1`; a non-default value uses the C++ `spacing + flow.spacing()`
+    /// formula. Zero is a solid interface (required for support ironing).
+    pub support_interface_spacing_mm: f64,
+    /// C++ `support_angle` (degrees). Rotate base/interface hatch. Default 0.
+    pub support_angle_deg: f64,
+    /// C++ `enable_support_ironing`. Iron a solid support interface. BBL `"0"`.
+    pub enable_support_ironing: bool,
+    /// C++ `support_ironing_pattern` (`zig-zag` / concentric).
+    pub support_ironing_pattern: IroningPattern,
+    /// C++ `support_ironing_spacing` (mm). BBL `"0.15"`.
+    pub support_ironing_spacing_mm: f64,
+    /// C++ `support_ironing_inset` (mm). BBL `"0"`.
+    pub support_ironing_inset_mm: f64,
     /// C++ `support_expansion` (mm). Grow (+) or shrink (−) the contact
     /// footprint. BBL `"0"`.
     pub support_expansion_mm: f64,
@@ -1321,6 +1335,12 @@ impl Default for SliceSettings {
             support_base_pattern: SupportBasePattern::Default,
             support_base_pattern_spacing_mm: 2.5,
             support_interface_pattern: SupportInterfacePattern::Auto,
+            support_interface_spacing_mm: 0.5,
+            support_angle_deg: 0.0,
+            enable_support_ironing: false,
+            support_ironing_pattern: IroningPattern::Rectilinear,
+            support_ironing_spacing_mm: 0.15,
+            support_ironing_inset_mm: 0.0,
             support_expansion_mm: 0.0,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
@@ -1629,6 +1649,19 @@ impl SliceSettings {
             f64::INFINITY
         } else {
             (w / self.support_density).max(w)
+        }
+    }
+
+    /// C++ `interface_spacing = support_interface_spacing + flow.spacing()`.
+    /// Keep `width × 1.1` at the BBL default 0.5 so existing hatch does not move.
+    pub fn support_interface_hatch_spacing_mm(&self) -> f64 {
+        let w = self.line_width_for(FlowRole::SupportMaterial, false);
+        if self.support_interface_spacing_mm.abs() < 1e-9 {
+            w
+        } else if (self.support_interface_spacing_mm - 0.5).abs() > 1e-9 {
+            (self.support_interface_spacing_mm.max(0.0) + w).max(w)
+        } else {
+            (w * 1.1).max(w)
         }
     }
 

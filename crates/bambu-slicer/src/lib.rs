@@ -1675,6 +1675,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn support_angle_rotates_column_hatch() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        let a = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_angle_deg = 45.0;
+        let b = slice_mesh(&mesh, &settings).unwrap();
+        let paths = |layers: &[Layer]| -> Vec<Polyline> {
+            layers
+                .iter()
+                .flat_map(|l| l.support.iter().chain(l.support_interface.iter()))
+                .cloned()
+                .collect()
+        };
+        let pa = paths(&a.layers);
+        let pb = paths(&b.layers);
+        assert!(!pa.is_empty() && !pb.is_empty(), "expected classic columns");
+        assert_ne!(
+            pa, pb,
+            "C++ support_angle 45 should rotate hatch off the default 0°"
+        );
+    }
+
+    #[test]
+    fn support_interface_spacing_densifies_contact() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        let default_n = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support_interface.len())
+            .sum::<usize>();
+        settings.support_interface_spacing_mm = 0.5;
+        let same_n = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support_interface.len())
+            .sum::<usize>();
+        assert_eq!(
+            default_n, same_n,
+            "BBL 0.5 mm interface spacing should keep width×1.1 hatch"
+        );
+        settings.support_interface_spacing_mm = 2.0;
+        let coarse = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support_interface.len())
+            .sum::<usize>();
+        settings.support_interface_spacing_mm = 0.0;
+        let solid = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support_interface.len())
+            .sum::<usize>();
+        assert!(
+            solid > coarse,
+            "solid interface (spacing 0) should add hatch vs 2 mm: coarse={coarse} solid={solid}"
+        );
+    }
+
+    #[test]
+    fn support_ironing_covers_solid_interface() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        let off = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            off.layers.iter().all(|l| l.ironing.is_empty()),
+            "BBL enable_support_ironing 0 should skip ironing"
+        );
+        settings.enable_support_ironing = true;
+        settings.support_interface_spacing_mm = 0.0;
+        let on = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            on.layers.iter().any(|l| !l.ironing.is_empty()),
+            "C++ support ironing should recross a solid interface"
+        );
+    }
+
     fn support_region_area_mm2(layers: &[Layer]) -> f64 {
         layers
             .iter()
