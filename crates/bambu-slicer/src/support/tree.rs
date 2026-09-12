@@ -22,7 +22,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Po
         return;
     }
     let diameter = settings.tree_branch_diameter_mm.max(settings.line_width_mm);
-    let spacing = scale(diameter.max(MIN_MM));
+    let spacing = scale(settings.tree_branch_distance_mm.max(MIN_MM));
     let contacts: Vec<Vec<Point>> = overhangs
         .par_iter()
         .map(|overhang| sample_contacts(overhang, spacing))
@@ -63,7 +63,6 @@ fn drop_nodes(
     diameter: f64,
 ) -> Vec<Vec<Point>> {
     let n = layers.len();
-    let xy = settings.support_xy_distance_mm + diameter * 0.5;
     let tan_a = settings.tree_branch_angle_deg.to_radians().tan();
     let merge = scale(diameter.max(MIN_MM));
     let mut nodes = vec![Vec::new(); n];
@@ -75,6 +74,7 @@ fn drop_nodes(
     for i in (0..n - 1).rev() {
         let dz = (layers[i + 1].print_z_mm - layers[i].print_z_mm).max(1e-6);
         let max_move = scale((dz * tan_a).max(MIN_MM));
+        let xy = settings.support_xy_gap_mm(i) + diameter * 0.5;
         let forbidden = offset_polygons(&layers[i].contours, xy);
         let target = centroid(&current);
         let mut next: Vec<Point> = current

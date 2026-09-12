@@ -995,6 +995,9 @@ pub struct SliceSettings {
     pub support_threshold_angle_deg: f64,
     pub support_density: f64,
     pub support_xy_distance_mm: f64,
+    /// C++ `support_object_first_layer_gap` (mm). XY gap on object layer 0.
+    /// C++ default 0.2; BBL omits the key.
+    pub support_object_first_layer_gap_mm: f64,
     pub support_top_z_distance_mm: f64,
     pub support_interface_layers: u32,
     /// C++ `support_interface_loop_pattern`. Cover the top contact with loops
@@ -1022,6 +1025,9 @@ pub struct SliceSettings {
     pub support_ironing_spacing_mm: f64,
     /// C++ `support_ironing_inset` (mm). BBL `"0"`.
     pub support_ironing_inset_mm: f64,
+    /// C++ `support_ironing_direction` (degrees). Rotate support-interface
+    /// ironing independently of [`Self::support_angle_deg`]. BBL `"0"`.
+    pub support_ironing_direction_deg: f64,
     /// C++ `support_expansion` (mm). Grow (+) or shrink (−) the contact
     /// footprint. BBL `"0"`.
     pub support_expansion_mm: f64,
@@ -1029,6 +1035,9 @@ pub struct SliceSettings {
     pub tree_branch_angle_deg: f64,
     /// Disk diameter at each tree node (`tree_support_branch_diameter`).
     pub tree_branch_diameter_mm: f64,
+    /// C++ `tree_support_branch_distance` (mm). Spacing of tree contact samples.
+    /// C++ default 5; BBL omits the key.
+    pub tree_branch_distance_mm: f64,
     /// C++ `tree_support_wall_count` in `[-1, 2]`. BBL `"-1"` auto keeps the
     /// current disk outlines; `1`/`2` add sheath loops; `0` is infill-only.
     pub tree_support_wall_count: i32,
@@ -1079,6 +1088,9 @@ pub struct SliceSettings {
     pub ironing_spacing_mm: f64,
     /// Inset from the ironed contour. `0` means half the nozzle diameter.
     pub ironing_inset_mm: f64,
+    /// C++ `ironing_direction` (degrees). Combined with infill direction
+    /// mod 180 (`Fill.cpp`). Default 45; BBL omits the key.
+    pub ironing_direction_deg: f64,
     pub ironing_speed_mm_s: f64,
     /// C++ `default_acceleration` (mm/s²). Used by the G-code time estimator.
     pub default_acceleration_mm_s2: f64,
@@ -1402,6 +1414,7 @@ impl Default for SliceSettings {
             support_threshold_angle_deg: 30.0,
             support_density: 0.15,
             support_xy_distance_mm: 0.35,
+            support_object_first_layer_gap_mm: 0.2,
             support_top_z_distance_mm: 0.2,
             support_interface_layers: 2,
             support_interface_loop_pattern: false,
@@ -1414,9 +1427,11 @@ impl Default for SliceSettings {
             support_ironing_pattern: IroningPattern::Rectilinear,
             support_ironing_spacing_mm: 0.15,
             support_ironing_inset_mm: 0.0,
+            support_ironing_direction_deg: 0.0,
             support_expansion_mm: 0.0,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
+            tree_branch_distance_mm: 5.0,
             tree_support_wall_count: -1,
             interface_shells: false,
             bottom_shell_layers: 3,
@@ -1442,6 +1457,7 @@ impl Default for SliceSettings {
             ironing_flow: 0.10,
             ironing_spacing_mm: 0.15,
             ironing_inset_mm: 0.21,
+            ironing_direction_deg: 45.0,
             ironing_speed_mm_s: 30.0,
             default_acceleration_mm_s2: 10000.0,
             outer_wall_acceleration_mm_s2: 0.0,
@@ -1681,6 +1697,15 @@ impl SliceSettings {
         self.brim_width_mm > 0.0 && self.brim_type.has_outer()
     }
 
+    /// C++ `gap_xy` vs `gap_xy_first_layer` (`support_object_first_layer_gap`).
+    pub fn support_xy_gap_mm(&self, object_layer_idx: usize) -> f64 {
+        if object_layer_idx == 0 {
+            self.support_object_first_layer_gap_mm
+        } else {
+            self.support_xy_distance_mm
+        }
+    }
+
     /// C++ `LayerRegion` custom bridge angle when `bridge_angle > 0`.
     pub fn bridge_fill_angle_deg(&self, bridged: bool) -> f64 {
         if bridged && self.bridge_angle_deg > 0.0 {
@@ -1688,6 +1713,11 @@ impl SliceSettings {
         } else {
             self.infill_direction_deg
         }
+    }
+
+    /// C++ `Fill.cpp` ironing: `(int(ironing_direction + infill_direction) % 180)`.
+    pub fn ironing_angle_deg(&self) -> f64 {
+        (self.ironing_direction_deg + self.infill_direction_deg).rem_euclid(180.0)
     }
 
     /// C++ other-layer `skirt_done.size() < skirt_height || has_infinite_skirt`,

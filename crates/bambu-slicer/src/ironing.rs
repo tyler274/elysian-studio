@@ -36,7 +36,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
                 settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
             ),
             IroningPattern::Rectilinear => {
-                infill::solid_monotonic(&inset_area, spacing, i, settings.infill_direction_deg)
+                infill::solid_monotonic(&inset_area, spacing, i, settings.ironing_angle_deg())
             }
         };
     });

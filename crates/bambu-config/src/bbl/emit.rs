@@ -259,6 +259,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "tree_support_branch_distance",
+        num_str(settings.tree_branch_distance_mm),
+    );
+    insert(
+        &mut map,
         "tree_support_wall_count",
         settings.tree_support_wall_count.to_string(),
     );
@@ -272,6 +277,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "support_object_xy_distance",
         num_str(settings.support_xy_distance_mm),
+    );
+    insert(
+        &mut map,
+        "support_object_first_layer_gap",
+        num_str(settings.support_object_first_layer_gap_mm),
     );
     insert(
         &mut map,
@@ -332,6 +342,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "support_ironing_inset",
         num_str(settings.support_ironing_inset_mm),
+    );
+    insert(
+        &mut map,
+        "support_ironing_direction",
+        num_str(settings.support_ironing_direction_deg),
     );
     insert(
         &mut map,
@@ -554,6 +569,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "ironing_inset",
         num_str(settings.ironing_inset_mm),
+    );
+    insert(
+        &mut map,
+        "ironing_direction",
+        num_str(settings.ironing_direction_deg),
     );
     insert(
         &mut map,

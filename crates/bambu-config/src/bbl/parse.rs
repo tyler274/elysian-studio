@@ -82,6 +82,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "ironing_flow"
             | "ironing_spacing"
             | "ironing_inset"
+            | "ironing_direction"
             | "ironing_speed"
             | "extruder"
             | "wall_filament"
@@ -374,6 +375,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "tree_support_branch_diameter") {
         s.tree_branch_diameter_mm = v.max(0.0);
     }
+    if let Some(v) = num(map, "tree_support_branch_distance") {
+        s.tree_branch_distance_mm = v.max(0.0);
+    }
     if let Some(v) = i32_val(map, "tree_support_wall_count") {
         s.tree_support_wall_count = v.clamp(-1, 2);
     }
@@ -385,6 +389,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "support_object_xy_distance") {
         s.support_xy_distance_mm = v;
+    }
+    if let Some(v) = num(map, "support_object_first_layer_gap") {
+        s.support_object_first_layer_gap_mm = v.max(0.0);
     }
     if let Some(v) = num(map, "support_top_z_distance") {
         s.support_top_z_distance_mm = v;
@@ -427,6 +434,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "support_ironing_inset") {
         s.support_ironing_inset_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "support_ironing_direction") {
+        s.support_ironing_direction_deg = v.rem_euclid(360.0);
     }
     if let Some(v) = num(map, "support_expansion") {
         s.support_expansion_mm = v;
@@ -581,6 +591,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "ironing_inset") {
         s.ironing_inset_mm = v;
+    }
+    if let Some(v) = num(map, "ironing_direction") {
+        s.ironing_direction_deg = v.rem_euclid(360.0);
     }
     if let Some(v) = num(map, "ironing_speed") {
         s.ironing_speed_mm_s = v;

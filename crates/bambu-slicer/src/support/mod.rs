@@ -308,14 +308,13 @@ pub(super) fn fill_support_interface(
 
 fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {
     let n = layers.len();
-    let xy = settings.support_xy_distance_mm;
     let mut column: Vec<Polygon> = Vec::new();
     let mut regions: Vec<Vec<Polygon>> = vec![Vec::new(); n];
     for i in (0..n).rev() {
         let mut acc = column;
         acc.extend(overhangs[i].iter().cloned());
         column = union_polygons(&acc);
-        let forbidden = offset_polygons(&layers[i].contours, xy);
+        let forbidden = offset_polygons(&layers[i].contours, settings.support_xy_gap_mm(i));
         regions[i] = difference_polygons(&column, &forbidden);
     }
 
@@ -377,7 +376,8 @@ fn iron_support_interface(layers: &mut [Layer], settings: &SliceSettings) {
     let inset = settings.support_ironing_inset_mm.max(0.0);
     let spacing = settings.support_ironing_spacing_mm.max(0.02);
     let clip = settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE;
-    let angle = settings.support_angle_deg;
+    // C++ `support_ironing_direction` (degrees), not `support_angle`.
+    let angle = settings.support_ironing_direction_deg;
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if layer.support_interface.is_empty() {
             return;

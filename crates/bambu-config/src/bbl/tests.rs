@@ -227,12 +227,17 @@ fn upstream_fdm_process_0_20() {
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
+    assert!(s.support_ironing_direction_deg.abs() < 1e-9);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
+    assert!((s.support_object_first_layer_gap_mm - 0.2).abs() < 1e-9);
+    assert!((s.tree_branch_diameter_mm - 2.0).abs() < 1e-9);
+    assert!((s.tree_branch_distance_mm - 5.0).abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, -1);
     assert!(!s.interface_shells);
     assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
+    assert!((s.ironing_direction_deg - 45.0).abs() < 1e-9);
     assert_eq!(
         s.reduce_infill_retraction_mode,
         crate::ReduceInfillRetractionMode::Auto
@@ -366,6 +371,30 @@ fn brim_type_and_bridge_angle_match_cpp() {
     assert!((s.bridge_fill_angle_deg(true) - 90.0).abs() < 1e-9);
     s.bridge_angle_deg = 0.0;
     assert!((s.bridge_fill_angle_deg(true) - 45.0).abs() < 1e-9);
+}
+
+#[test]
+fn ironing_direction_and_support_ironing_direction_match_cpp() {
+    let mut s = SliceSettings::default();
+    assert!((s.ironing_direction_deg - 45.0).abs() < 1e-9);
+    assert!(s.support_ironing_direction_deg.abs() < 1e-9);
+    assert!((s.ironing_angle_deg() - 90.0).abs() < 1e-9);
+    s.infill_direction_deg = 0.0;
+    s.ironing_direction_deg = 45.0;
+    assert!((s.ironing_angle_deg() - 45.0).abs() < 1e-9);
+}
+
+#[test]
+fn support_first_layer_gap_and_tree_branch_distance_match_cpp() {
+    let mut s = SliceSettings::default();
+    assert!((s.support_object_first_layer_gap_mm - 0.2).abs() < 1e-9);
+    assert!((s.tree_branch_distance_mm - 5.0).abs() < 1e-9);
+    assert!((s.support_xy_gap_mm(0) - 0.2).abs() < 1e-9);
+    assert!((s.support_xy_gap_mm(1) - 0.35).abs() < 1e-9);
+    s.support_object_first_layer_gap_mm = 1.5;
+    s.support_xy_distance_mm = 0.8;
+    assert!((s.support_xy_gap_mm(0) - 1.5).abs() < 1e-9);
+    assert!((s.support_xy_gap_mm(3) - 0.8).abs() < 1e-9);
 }
 
 #[test]
@@ -747,8 +776,11 @@ fn project_settings_json_roundtrip() {
     src.support_interface_spacing_mm = 0.0;
     src.support_angle_deg = 45.0;
     src.enable_support_ironing = true;
+    src.support_ironing_direction_deg = 30.0;
     src.support_expansion_mm = 2.0;
     src.tree_support_wall_count = 2;
+    src.support_object_first_layer_gap_mm = 1.5;
+    src.tree_branch_distance_mm = 3.0;
     src.interface_shells = true;
     src.precise_outer_wall = true;
     src.symmetric_infill_y_axis = true;
@@ -762,6 +794,7 @@ fn project_settings_json_roundtrip() {
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
+    src.ironing_direction_deg = 0.0;
     src.temperature_c = 215;
     src.temperature_initial_layer_c = 230;
     src.cool_plate.later_c = 35;
@@ -803,8 +836,11 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.support_interface_spacing_mm.abs() < 1e-9);
     assert!((loaded.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(loaded.enable_support_ironing);
+    assert!((loaded.support_ironing_direction_deg - 30.0).abs() < 1e-9);
     assert!((loaded.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(loaded.tree_support_wall_count, 2);
+    assert!((loaded.support_object_first_layer_gap_mm - 1.5).abs() < 1e-9);
+    assert!((loaded.tree_branch_distance_mm - 3.0).abs() < 1e-9);
     assert!(loaded.interface_shells);
     assert!(loaded.precise_outer_wall);
     assert!(loaded.symmetric_infill_y_axis);
@@ -821,6 +857,7 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
+    assert!(loaded.ironing_direction_deg.abs() < 1e-9);
     assert_eq!(loaded.temperature_c, 215);
     assert_eq!(loaded.temperature_initial_layer_c, 230);
     assert_eq!(loaded.cool_plate.later_c, 35);
@@ -919,8 +956,11 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_interface_spacing".into(), "0".into());
     pairs.insert("support_angle".into(), "45".into());
     pairs.insert("enable_support_ironing".into(), "1".into());
+    pairs.insert("support_ironing_direction".into(), "30".into());
     pairs.insert("support_expansion".into(), "2".into());
     pairs.insert("tree_support_wall_count".into(), "2".into());
+    pairs.insert("support_object_first_layer_gap".into(), "1.5".into());
+    pairs.insert("tree_support_branch_distance".into(), "3".into());
     pairs.insert("interface_shells".into(), "1".into());
     pairs.insert("precise_outer_wall".into(), "1".into());
     pairs.insert("symmetric_infill_y_axis".into(), "1".into());
@@ -933,6 +973,7 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("initial_layer_flow_ratio".into(), "1.1".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
+    pairs.insert("ironing_direction".into(), "0".into());
     apply_config_pairs(&mut s, &pairs, true);
     assert!((s.infill_density - 1.0).abs() < 1e-9);
     assert_eq!(s.fill_multiline, 4);
@@ -959,8 +1000,11 @@ fn region_overrides_skip_object_keys() {
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
+    assert!(s.support_ironing_direction_deg.abs() < 1e-9);
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, -1);
+    assert!((s.support_object_first_layer_gap_mm - 0.2).abs() < 1e-9);
+    assert!((s.tree_branch_distance_mm - 5.0).abs() < 1e-9);
     assert!(!s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
@@ -976,6 +1020,7 @@ fn region_overrides_skip_object_keys() {
     assert!((s.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
+    assert!(s.ironing_direction_deg.abs() < 1e-9);
     apply_config_pairs(&mut s, &pairs, false);
     assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
     assert!(s.enable_support);
@@ -994,8 +1039,11 @@ fn region_overrides_skip_object_keys() {
     assert!(s.support_interface_spacing_mm.abs() < 1e-9);
     assert!((s.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(s.enable_support_ironing);
+    assert!((s.support_ironing_direction_deg - 30.0).abs() < 1e-9);
     assert!((s.support_expansion_mm - 2.0).abs() < 1e-9);
     assert_eq!(s.tree_support_wall_count, 2);
+    assert!((s.support_object_first_layer_gap_mm - 1.5).abs() < 1e-9);
+    assert!((s.tree_branch_distance_mm - 3.0).abs() < 1e-9);
     assert!(s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);

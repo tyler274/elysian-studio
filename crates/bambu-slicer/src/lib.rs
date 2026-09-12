@@ -1825,6 +1825,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn support_ironing_direction_rotates_hatch() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.enable_support_ironing = true;
+        settings.support_interface_spacing_mm = 0.0;
+        settings.support_angle_deg = 45.0;
+        settings.support_ironing_direction_deg = 0.0;
+        let along_zero = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_ironing_direction_deg = 45.0;
+        let along_45 = slice_mesh(&mesh, &settings).unwrap();
+        let hatch = |sliced: &SliceResult| {
+            sliced
+                .layers
+                .iter()
+                .find(|l| !l.ironing.is_empty())
+                .map(|l| l.ironing.clone())
+        };
+        let a = hatch(&along_zero).expect("support ironing at 0");
+        let b = hatch(&along_45).expect("support ironing at 45");
+        assert!(!a.is_empty());
+        assert_ne!(
+            a, b,
+            "C++ support_ironing_direction should rotate hatch, not support_angle"
+        );
+    }
+
     fn support_region_area_mm2(layers: &[Layer]) -> f64 {
         layers
             .iter()
@@ -1852,6 +1879,65 @@ mod tests {
         assert!(
             shrunk > 0.0,
             "a 1 mm shrink should still leave table-wing columns"
+        );
+    }
+
+    #[test]
+    fn support_first_layer_gap_shrinks_layer_zero() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_object_first_layer_gap_mm = 0.2;
+        let tight = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_object_first_layer_gap_mm = 3.0;
+        let wide = slice_mesh(&mesh, &settings).unwrap();
+        let net0 = |layers: &[Layer]| {
+            layers[0]
+                .support_region
+                .iter()
+                .map(signed_contour_area_mm2)
+                .sum::<f64>()
+                .abs()
+        };
+        let a = net0(&tight.layers);
+        let b = net0(&wide.layers);
+        assert!(a > 0.0, "layer 0 should still have support at 0.2 mm gap");
+        assert!(
+            b < a * 0.9,
+            "C++ support_object_first_layer_gap should trim layer-0 columns: tight={a} wide={b}"
+        );
+        let mid = tight.layers.len() / 2;
+        let net_mid = |layers: &[Layer]| {
+            layers[mid]
+                .support_region
+                .iter()
+                .map(signed_contour_area_mm2)
+                .sum::<f64>()
+                .abs()
+        };
+        assert!(
+            (net_mid(&tight.layers) - net_mid(&wide.layers)).abs() < 1.0,
+            "upper layers still use support_object_xy_distance"
+        );
+    }
+
+    #[test]
+    fn tree_branch_distance_sparsifies_trunks() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_type = SupportType::Tree;
+        settings.tree_branch_distance_mm = 1.0;
+        let dense = slice_mesh(&mesh, &settings).unwrap();
+        settings.tree_branch_distance_mm = 8.0;
+        let sparse = slice_mesh(&mesh, &settings).unwrap();
+        let dense_area = support_region_area_mm2(&dense.layers);
+        let sparse_area = support_region_area_mm2(&sparse.layers);
+        assert!(
+            dense_area > sparse_area * 1.15,
+            "C++ tree_support_branch_distance should space contact samples: dense={dense_area} sparse={sparse_area}"
+        );
+        assert!(
+            sparse_area > 0.0,
+            "an 8 mm spacing should still reach the 8 mm table wing"
         );
     }
 
@@ -2263,6 +2349,25 @@ mod tests {
         assert_ne!(
             a, b,
             "C++ bridge_angle > 0 should override infill_direction on bridged bottoms"
+        );
+    }
+
+    #[test]
+    fn ironing_direction_rotates_top_hatch() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        settings.infill_direction_deg = 0.0;
+        settings.ironing_direction_deg = 0.0;
+        let along_zero = slice_mesh(&mesh, &settings).unwrap();
+        settings.ironing_direction_deg = 45.0;
+        let along_45 = slice_mesh(&mesh, &settings).unwrap();
+        let n = along_zero.layers.len();
+        assert!(!along_zero.layers[n - 1].ironing.is_empty());
+        assert_ne!(
+            along_zero.layers[n - 1].ironing,
+            along_45.layers[n - 1].ironing,
+            "C++ ironing_direction + infill_direction should rotate rectilinear ironing"
         );
     }
 
