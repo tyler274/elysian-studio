@@ -3,7 +3,7 @@
 use bambu_config::{
     FlowRole, InfillPattern, SliceSettings, SurfacePattern, LOOP_CLIPPING_OVER_NOZZLE,
 };
-use bambu_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline};
+use bambu_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline, TriangleMesh};
 use wide::{i64x4, CmpLt};
 
 use crate::clip::clip_polylines;
@@ -61,6 +61,73 @@ pub fn generate(
         InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => Vec::new(),
     };
     apply_sparse_multiline(paths, settings)
+}
+
+/// C++ `Fill::extended_object_bounding_box().center().x()` when
+/// `symmetric_infill_y_axis` is on.
+pub(crate) fn object_center_x(
+    settings: &SliceSettings,
+    mesh: Option<&TriangleMesh>,
+) -> Option<i64> {
+    if !settings.symmetric_infill_y_axis {
+        return None;
+    }
+    let aabb = mesh?.aabb()?;
+    Some(scale(f64::from((aabb.min.x + aabb.max.x) * 0.5)))
+}
+
+/// C++ `ExPolygon::symmetric_y` then fill, then `MultiPoint::symmetric_y` on
+/// the paths. Reflection is about a vertical line (object X-center).
+pub(crate) fn with_symmetric_y(
+    region: &[Polygon],
+    axis_x: Option<i64>,
+    fill: impl FnOnce(&[Polygon]) -> Vec<Polyline>,
+) -> Vec<Polyline> {
+    let Some(axis) = axis_x else {
+        return fill(region);
+    };
+    let mirrored = symmetric_y_polygons(region, axis);
+    let mut paths = fill(&mirrored);
+    symmetric_y_paths(&mut paths, axis);
+    paths
+}
+
+pub(crate) fn with_symmetric_y_layers(
+    layers: &[Vec<Polygon>],
+    axis_x: Option<i64>,
+    fill: impl FnOnce(&[Vec<Polygon>]) -> Vec<Vec<Polyline>>,
+) -> Vec<Vec<Polyline>> {
+    let Some(axis) = axis_x else {
+        return fill(layers);
+    };
+    let mirrored: Vec<Vec<Polygon>> = layers
+        .iter()
+        .map(|region| symmetric_y_polygons(region, axis))
+        .collect();
+    let mut out = fill(&mirrored);
+    for paths in &mut out {
+        symmetric_y_paths(paths, axis);
+    }
+    out
+}
+
+fn symmetric_y_polygons(region: &[Polygon], axis_x: i64) -> Vec<Polygon> {
+    region
+        .iter()
+        .map(|poly| poly.iter().map(|p| symmetric_y_point(*p, axis_x)).collect())
+        .collect()
+}
+
+fn symmetric_y_paths(paths: &mut [Polyline], axis_x: i64) {
+    for path in paths {
+        for p in path {
+            *p = symmetric_y_point(*p, axis_x);
+        }
+    }
+}
+
+fn symmetric_y_point(p: Point, axis_x: i64) -> Point {
+    Point::new(2 * axis_x - p.x, p.y)
 }
 
 /// C++ `multiline_fill`: n copies of each polyline offset by line width.
@@ -522,6 +589,33 @@ mod tests {
             (x45 - y45).abs() < 0.2,
             "45° lines should have similar |dx| and |dy|, got ({x45}, {y45})"
         );
+    }
+
+    #[test]
+    fn symmetric_y_fills_mirrored_region_then_unmirrors() {
+        let region = vec![vec![
+            Point::from_mm(0.0, 0.0),
+            Point::from_mm(20.0, 0.0),
+            Point::from_mm(20.0, 8.0),
+            Point::from_mm(8.0, 8.0),
+            Point::from_mm(8.0, 20.0),
+            Point::from_mm(0.0, 20.0),
+        ]];
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.4;
+        settings.infill_direction_deg = 45.0;
+        let axis = Point::from_mm(10.0, 0.0).x;
+        let off = generate(&region, &settings, 1, 1.0);
+        let on = with_symmetric_y(&region, Some(axis), |r| generate(r, &settings, 1, 1.0));
+        assert!(!off.is_empty());
+        assert!(!on.is_empty());
+        assert_ne!(
+            off, on,
+            "C++ mirrors the island about object X-center before fill"
+        );
+        let same = with_symmetric_y(&region, None, |r| generate(r, &settings, 1, 1.0));
+        assert_eq!(same, off);
     }
 
     #[test]

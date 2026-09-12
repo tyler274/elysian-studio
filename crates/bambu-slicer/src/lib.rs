@@ -552,7 +552,8 @@ fn slice_prepared(
             layer_region_perimeters(&prepared, i, hint)
         } else {
             let upper = prepared.get(i + 1).map(|layer| layer.contours.as_slice());
-            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper, i);
+            let lower = (i > 0).then(|| prepared[i - 1].contours.as_slice());
+            let peri = perimeters::generate(&prepared[i].contours, settings, hint, upper, i, lower);
             let mut outer_walls = peri.outer;
             let mut inner_walls = peri.inner;
             apply_layer_fuzzy(
@@ -670,7 +671,8 @@ fn layer_region_perimeters(
             .and_then(|layer| layer.regions.get(r))
             .map(Vec::as_slice)
             .filter(|u| !u.is_empty());
-        let peri = perimeters::generate(polys, cfg, seam_hint, upper, i);
+        let lower = (i > 0).then(|| prepared[i - 1].contours.as_slice());
+        let peri = perimeters::generate(polys, cfg, seam_hint, upper, i, lower);
         seam_hint = peri.seam_hint;
         let mut outer = peri.outer;
         let mut inner = peri.inner;
@@ -1034,6 +1036,66 @@ mod tests {
         assert!(
             (start_y - max_y).abs() < 0.05,
             "start_y={start_y} max_y={max_y}"
+        );
+    }
+
+    #[test]
+    fn seam_away_from_overhangs_keeps_rear_on_supported_cube() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.seam = SeamPosition::Rear;
+        settings.seam_placement_away_from_overhangs = true;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let result = slice_mesh(&mesh, &settings).unwrap();
+        let mid = &result.layers[result.layers.len() / 2];
+        let start_y = mid.outer_walls[0][0].to_mm().1;
+        let max_y = mid.outer_walls[0]
+            .iter()
+            .map(|p| p.to_mm().1)
+            .fold(f64::MIN, f64::max);
+        assert!(
+            (start_y - max_y).abs() < 0.05,
+            "supported cube should keep rear: start_y={start_y} max_y={max_y}"
+        );
+    }
+
+    #[test]
+    fn seam_away_from_overhangs_leaves_rear_off_a_y_tab() {
+        let mut mesh = TriangleMesh::cube(20.0);
+        mesh.append(&TriangleMesh::aabb_box(
+            glam::Vec3::new(6.0, 20.0, 8.0),
+            glam::Vec3::new(14.0, 24.0, 12.0),
+        ));
+        let mut settings = SliceSettings::default();
+        settings.seam = SeamPosition::Rear;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let on_overhang = slice_mesh(&mesh, &settings).unwrap();
+        settings.seam_placement_away_from_overhangs = true;
+        let away = slice_mesh(&mesh, &settings).unwrap();
+        let tab_y = |layers: &[Layer]| {
+            layers
+                .iter()
+                .find(|layer| {
+                    layer
+                        .outer_walls
+                        .iter()
+                        .flatten()
+                        .any(|p| p.to_mm().1 > 20.5)
+                })
+                .expect("tab layers")
+                .outer_walls[0][0]
+                .to_mm()
+                .1
+        };
+        let hang_y = tab_y(&on_overhang.layers);
+        let away_y = tab_y(&away.layers);
+        assert!(
+            hang_y > 20.5,
+            "rear without the flag should sit on the tab, got {hang_y}"
+        );
+        assert!(
+            away_y <= 20.5,
+            "C++ seam_placement_away_from_overhangs should keep rear on the cube, got {away_y}"
         );
     }
 
@@ -1928,6 +1990,32 @@ mod tests {
         assert!(
             x0 > 0.9 && y0 < 0.15,
             "0° sparse should run along X, got ({x0}, {y0})"
+        );
+    }
+
+    #[test]
+    fn symmetric_infill_y_axis_mirrors_asymmetric_sparse() {
+        let mut mesh = TriangleMesh::cube(20.0);
+        mesh.append(&TriangleMesh::aabb_box(
+            glam::Vec3::new(20.0, 0.0, 0.0),
+            glam::Vec3::new(28.0, 8.0, 20.0),
+        ));
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.infill_density = 0.3;
+        settings.infill_direction_deg = 45.0;
+        settings.top_shell_layers = 1;
+        settings.bottom_shell_layers = 1;
+        let off = slice_mesh(&mesh, &settings).unwrap();
+        settings.symmetric_infill_y_axis = true;
+        let on = slice_mesh(&mesh, &settings).unwrap();
+        let mid_off = &off.layers[off.layers.len() / 2];
+        let mid_on = &on.layers[on.layers.len() / 2];
+        assert!(!mid_off.infill.is_empty());
+        assert!(!mid_on.infill.is_empty());
+        assert_ne!(
+            mid_off.infill, mid_on.infill,
+            "C++ symmetric_infill_y_axis should fill the mirrored island"
         );
     }
 

@@ -81,15 +81,29 @@ pub fn generate(
     seam_hint: Option<bambu_geom::Point>,
     upper: Option<&[Polygon]>,
     layer_idx: usize,
+    lower: Option<&[Polygon]>,
 ) -> PerimeterResult {
-    match settings.wall_generator {
+    let mut result = match settings.wall_generator {
         WallGenerator::Classic => {
             classic_perimeters(contours, settings, seam_hint, upper, layer_idx)
         }
         WallGenerator::Arachne => {
             arachne_perimeters(contours, settings, seam_hint, upper, layer_idx)
         }
+    };
+    if settings.seam_placement_away_from_overhangs {
+        if let Some(supported) = lower.filter(|polys| !polys.is_empty()) {
+            if let Some(hint) = seams::retime_away_from_overhangs(
+                &mut result.outer,
+                &mut result.inner,
+                settings.seam,
+                supported,
+            ) {
+                result.seam_hint = Some(hint);
+            }
+        }
     }
+    result
 }
 
 fn classic_perimeters(
@@ -461,7 +475,7 @@ fn seam_rings(
 ) -> Vec<Polyline> {
     rings.retain(|r| r.len() >= 3);
     for ring in &mut rings {
-        seams::apply_seam(ring, settings.seam, *hint);
+        seams::apply_seam(ring, settings.seam, *hint, None);
         *hint = ring.first().copied();
     }
     rings
@@ -513,8 +527,8 @@ mod tests {
         off.infill_wall_overlap = 0.0;
         let mut on = off.clone();
         on.infill_wall_overlap = 0.15;
-        let a = generate(&contours, &off, None, None, 1);
-        let b = generate(&contours, &on, None, None, 1);
+        let a = generate(&contours, &off, None, None, 1, None);
+        let b = generate(&contours, &on, None, None, 1, None);
         let area_off = region_area(&a.infill_region);
         let area_on = region_area(&b.infill_region);
         assert!(
@@ -523,7 +537,7 @@ mod tests {
         );
         let mut arachne = on.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let c = generate(&contours, &arachne, None, None, 1);
+        let c = generate(&contours, &arachne, None, None, 1, None);
         assert!(
             (region_area(&c.infill_region) - area_on).abs() < 1.0,
             "arachne should apply the same overlap grow"
@@ -538,7 +552,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.gap_infill_speed_mm_s = 45.0;
         settings.infill_wall_overlap = 0.15;
-        let peri = generate(&contours, &settings, None, None, 1);
+        let peri = generate(&contours, &settings, None, None, 1, None);
         assert!(!peri.gap_infill.is_empty());
         assert!(
             peri.infill_region.is_empty(),
@@ -554,8 +568,8 @@ mod tests {
         classic.wall_generator = WallGenerator::Classic;
         let mut arachne = classic.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let a = generate(&contours, &classic, None, None, 1);
-        let b = generate(&contours, &arachne, None, None, 1);
+        let a = generate(&contours, &classic, None, None, 1, None);
+        let b = generate(&contours, &arachne, None, None, 1, None);
         assert_eq!(a.outer.len(), 1);
         assert_eq!(b.outer.len(), 1);
         assert!(!a.inner.is_empty());
@@ -574,8 +588,8 @@ mod tests {
         classic.wall_generator = WallGenerator::Classic;
         let mut arachne = classic.clone();
         arachne.wall_generator = WallGenerator::Arachne;
-        let a = generate(&contours, &classic, None, None, 1);
-        let b = generate(&contours, &arachne, None, None, 1);
+        let a = generate(&contours, &classic, None, None, 1, None);
+        let b = generate(&contours, &arachne, None, None, 1, None);
         assert_eq!(a.outer.len(), 1);
         assert!(a.inner.is_empty(), "classic cannot fit a second wall");
         assert!(
@@ -605,7 +619,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.wall_generator = WallGenerator::Classic;
         settings.gap_infill_speed_mm_s = 45.0;
-        let peri = generate(&contours, &settings, None, None, 1);
+        let peri = generate(&contours, &settings, None, None, 1, None);
         assert!(!peri.gap_infill.is_empty());
         let path = &peri.gap_infill[0];
         let len = wall_len(&peri.gap_infill);
@@ -627,7 +641,7 @@ mod tests {
         settings.wall_loops = 2;
         settings.gap_infill_speed_mm_s = 45.0;
         settings.filter_out_gap_fill_mm = 100.0;
-        let peri = generate(&contours, &settings, None, None, 1);
+        let peri = generate(&contours, &settings, None, None, 1, None);
         assert!(
             peri.gap_infill.is_empty(),
             "100 mm filter should drop the leftover"
@@ -643,7 +657,7 @@ mod tests {
         settings.min_feature_size = 0.25;
         settings.nozzle_diameter_mm = 0.4;
         settings.wall_generator = WallGenerator::Arachne;
-        let peri = generate(&contours, &settings, None, None, 1);
+        let peri = generate(&contours, &settings, None, None, 1, None);
         assert!(peri.outer.is_empty());
         assert!(peri.inner.is_empty());
     }
@@ -656,9 +670,9 @@ mod tests {
         settings.gap_infill_speed_mm_s = 0.0;
         settings.outer_wall_line_width_mm = 0.42;
         settings.inner_wall_line_width_mm = 0.42;
-        let same = generate(&contours, &settings, None, None, 1);
+        let same = generate(&contours, &settings, None, None, 1, None);
         settings.inner_wall_line_width_mm = 0.60;
-        let wide = generate(&contours, &settings, None, None, 1);
+        let wide = generate(&contours, &settings, None, None, 1, None);
         let min_x = |paths: &[Polyline]| {
             paths
                 .iter()
@@ -686,15 +700,15 @@ mod tests {
         let mut settings = SliceSettings::default();
         settings.wall_loops = 2;
         settings.gap_infill_speed_mm_s = 0.0;
-        let even = generate(&contours, &settings, None, None, 0);
+        let even = generate(&contours, &settings, None, None, 0, None);
         settings.alternate_extra_wall = true;
-        let odd = generate(&contours, &settings, None, None, 1);
-        let even_on = generate(&contours, &settings, None, None, 2);
+        let odd = generate(&contours, &settings, None, None, 1, None);
+        let even_on = generate(&contours, &settings, None, None, 2, None);
         assert_eq!(even.inner.len(), 1);
         assert_eq!(odd.inner.len(), 2);
         assert_eq!(even_on.inner.len(), 1);
         settings.spiral_mode = true;
-        let spiral_odd = generate(&contours, &settings, None, None, 1);
+        let spiral_odd = generate(&contours, &settings, None, None, 1, None);
         assert_eq!(spiral_odd.inner.len(), 1);
     }
 }

@@ -32,6 +32,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "fill_multiline"
             | "infill_combination"
             | "infill_direction"
+            | "symmetric_infill_y_axis"
             | "minimum_sparse_infill_area"
             | "infill_wall_overlap"
             | "seam_position"
@@ -225,6 +226,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "infill_direction") {
         s.infill_direction_deg = v.rem_euclid(360.0);
     }
+    if let Some(v) = bool_val(map, "symmetric_infill_y_axis") {
+        s.symmetric_infill_y_axis = v;
+    }
     if let Some(v) = num(map, "minimum_sparse_infill_area") {
         s.minimum_sparse_infill_area_mm2 = v.max(0.0);
     }
@@ -235,6 +239,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
         if let Some(p) = SeamPosition::from_name(&name) {
             s.seam = p;
         }
+    }
+    if let Some(v) = bool_val(map, "seam_placement_away_from_overhangs") {
+        s.seam_placement_away_from_overhangs = v;
     }
     if let Some(v) = percent(map, "seam_gap") {
         s.seam_gap = v.max(0.0);

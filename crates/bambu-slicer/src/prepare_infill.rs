@@ -409,6 +409,7 @@ fn emit_shells(
     } else {
         sparse_paths(&thick, &zs, settings, mesh)
     };
+    let axis = infill::object_center_x(settings, mesh);
     let lower_src = shared_sparse.unwrap_or(&shells.sparse);
 
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
@@ -428,14 +429,16 @@ fn emit_shells(
         let top_surface =
             SliceSettings::surface_fill_spacing_mm(top_w, settings.top_surface_density)
                 .map(|spacing| {
-                    infill::solid_surface(
-                        &shells.top[i],
-                        spacing,
-                        i,
-                        settings.top_surface_pattern,
-                        settings.infill_direction_deg,
-                        settings.nozzle_diameter_mm,
-                    )
+                    infill::with_symmetric_y(&shells.top[i], axis, |region| {
+                        infill::solid_surface(
+                            region,
+                            spacing,
+                            i,
+                            settings.top_surface_pattern,
+                            settings.infill_direction_deg,
+                            settings.nozzle_diameter_mm,
+                        )
+                    })
                 })
                 .unwrap_or_default();
         let bottom_w = if i > 0 {
@@ -457,24 +460,27 @@ fn emit_shells(
         };
         let bottom_paths = SliceSettings::surface_fill_spacing_mm(bottom_w, bottom_density)
             .map(|spacing| {
-                infill::solid_surface(
-                    &shells.bottom[i],
-                    spacing,
-                    i.wrapping_add(1),
-                    settings.bottom_surface_pattern,
-                    settings.infill_direction_deg,
-                    settings.nozzle_diameter_mm,
-                )
+                infill::with_symmetric_y(&shells.bottom[i], axis, |region| {
+                    infill::solid_surface(
+                        region,
+                        spacing,
+                        i.wrapping_add(1),
+                        settings.bottom_surface_pattern,
+                        settings.infill_direction_deg,
+                        settings.nozzle_diameter_mm,
+                    )
+                })
             })
             .unwrap_or_default();
-        let mut solid_infill = infill::solid(&wide, solid_w, i, settings.infill_direction_deg);
-        solid_infill.extend(closed_concentric(
-            &narrow,
-            solid_w,
-            settings.nozzle_diameter_mm,
-        ));
-        let floating_vertical_shell =
-            closed_concentric(&floating, solid_w, settings.nozzle_diameter_mm);
+        let mut solid_infill = infill::with_symmetric_y(&wide, axis, |region| {
+            infill::solid(region, solid_w, i, settings.infill_direction_deg)
+        });
+        solid_infill.extend(infill::with_symmetric_y(&narrow, axis, |region| {
+            closed_concentric(region, solid_w, settings.nozzle_diameter_mm)
+        }));
+        let floating_vertical_shell = infill::with_symmetric_y(&floating, axis, |region| {
+            closed_concentric(region, solid_w, settings.nozzle_diameter_mm)
+        });
         let infill = leftover_paths[i].clone();
         let combined = thick_paths[i].clone();
         let combined_h = thick_h[i];
@@ -681,11 +687,14 @@ fn sparse_paths(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
 ) -> Vec<Vec<Polyline>> {
+    let axis = infill::object_center_x(settings, mesh);
     match settings.infill_pattern {
-        InfillPattern::Lightning => infill::generate_lightning(sparse, settings)
-            .into_iter()
-            .map(|paths| infill::apply_sparse_multiline(paths, settings))
-            .collect(),
+        InfillPattern::Lightning => infill::with_symmetric_y_layers(sparse, axis, |regions| {
+            infill::generate_lightning(regions, settings)
+                .into_iter()
+                .map(|paths| infill::apply_sparse_multiline(paths, settings))
+                .collect()
+        }),
         InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => {
             let support_only = settings.infill_pattern == InfillPattern::SupportCubic;
             let spacing = infill::adaptive::line_spacing_mm(settings);
@@ -694,17 +703,23 @@ fn sparse_paths(
             (0..sparse.len())
                 .into_par_iter()
                 .map(|i| {
-                    let paths = octree
-                        .as_ref()
-                        .map(|octree| infill::adaptive::fill(&sparse[i], octree, zs[i]))
-                        .unwrap_or_default();
-                    infill::apply_sparse_multiline(paths, settings)
+                    infill::with_symmetric_y(&sparse[i], axis, |region| {
+                        let paths = octree
+                            .as_ref()
+                            .map(|octree| infill::adaptive::fill(region, octree, zs[i]))
+                            .unwrap_or_default();
+                        infill::apply_sparse_multiline(paths, settings)
+                    })
                 })
                 .collect()
         }
         _ => (0..sparse.len())
             .into_par_iter()
-            .map(|i| infill::generate(&sparse[i], settings, i, zs[i]))
+            .map(|i| {
+                infill::with_symmetric_y(&sparse[i], axis, |region| {
+                    infill::generate(region, settings, i, zs[i])
+                })
+            })
             .collect(),
     }
 }

@@ -799,12 +799,18 @@ pub struct SliceSettings {
     pub infill_combination: bool,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
     pub infill_direction_deg: f64,
+    /// C++ `symmetric_infill_y_axis`. Mirror fill about the object X-center so
+    /// left/right twins share a texture. BBL `"0"`.
+    pub symmetric_infill_y_axis: bool,
     /// C++ `minimum_sparse_infill_area` (mm²). Sparse islands at or below this
     /// become internal solid. 0 disables.
     pub minimum_sparse_infill_area_mm2: f64,
     /// C++ `infill_wall_overlap` as a fraction of line width (BBL default 15%).
     pub infill_wall_overlap: f64,
     pub seam: SeamPosition,
+    /// C++ `seam_placement_away_from_overhangs`. Aligned / rear / nearest
+    /// seams skip vertices that are not over the layer below. BBL `"0"`.
+    pub seam_placement_away_from_overhangs: bool,
     /// C++ `seam_gap` as a fraction of nozzle diameter (default 15%).
     pub seam_gap: f64,
     pub wall_generator: WallGenerator,
@@ -1261,9 +1267,11 @@ impl Default for SliceSettings {
             fill_multiline: 1,
             infill_combination: false,
             infill_direction_deg: 45.0,
+            symmetric_infill_y_axis: false,
             minimum_sparse_infill_area_mm2: 15.0,
             infill_wall_overlap: 0.15,
             seam: SeamPosition::Aligned,
+            seam_placement_away_from_overhangs: false,
             seam_gap: 0.15,
             wall_generator: WallGenerator::Classic,
             wall_sequence: WallSequence::InnerOuter,

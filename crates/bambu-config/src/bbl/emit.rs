@@ -133,6 +133,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "infill_direction",
         num_str(settings.infill_direction_deg),
     );
+    insert_bool(
+        &mut map,
+        "symmetric_infill_y_axis",
+        settings.symmetric_infill_y_axis,
+    );
     insert(
         &mut map,
         "minimum_sparse_infill_area",
@@ -144,6 +149,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         pct_str(settings.infill_wall_overlap),
     );
     insert(&mut map, "seam_position", settings.seam.as_str());
+    insert_bool(
+        &mut map,
+        "seam_placement_away_from_overhangs",
+        settings.seam_placement_away_from_overhangs,
+    );
     insert(&mut map, "seam_gap", pct_str(settings.seam_gap));
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());

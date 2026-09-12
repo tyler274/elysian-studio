@@ -192,6 +192,7 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(s.fill_multiline, 1);
     assert!(!s.infill_combination);
     assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
+    assert!(!s.symmetric_infill_y_axis);
     assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
     assert!((s.bridge_flow - 1.0).abs() < 1e-9);
@@ -240,6 +241,8 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
     assert!(!s.precise_outer_wall);
     assert!(!s.is_infill_first);
+    assert_eq!(s.seam, crate::SeamPosition::Aligned);
+    assert!(!s.seam_placement_away_from_overhangs);
     assert!((s.seam_gap - 0.15).abs() < 1e-9);
     assert!((s.seam_gap_mm() - 0.06).abs() < 1e-9);
     assert!((s.min_feature_size - 0.25).abs() < 1e-9);
@@ -684,6 +687,8 @@ fn project_settings_json_roundtrip() {
     src.tree_support_wall_count = 2;
     src.interface_shells = true;
     src.precise_outer_wall = true;
+    src.symmetric_infill_y_axis = true;
+    src.seam_placement_away_from_overhangs = true;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -732,6 +737,8 @@ fn project_settings_json_roundtrip() {
     assert_eq!(loaded.tree_support_wall_count, 2);
     assert!(loaded.interface_shells);
     assert!(loaded.precise_outer_wall);
+    assert!(loaded.symmetric_infill_y_axis);
+    assert!(loaded.seam_placement_away_from_overhangs);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -837,6 +844,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("tree_support_wall_count".into(), "2".into());
     pairs.insert("interface_shells".into(), "1".into());
     pairs.insert("precise_outer_wall".into(), "1".into());
+    pairs.insert("symmetric_infill_y_axis".into(), "1".into());
+    pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -869,6 +878,8 @@ fn region_overrides_skip_object_keys() {
     assert_eq!(s.tree_support_wall_count, -1);
     assert!(!s.interface_shells);
     assert!(s.precise_outer_wall);
+    assert!(s.symmetric_infill_y_axis);
+    assert!(!s.seam_placement_away_from_overhangs);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
@@ -893,6 +904,8 @@ fn region_overrides_skip_object_keys() {
     assert_eq!(s.tree_support_wall_count, 2);
     assert!(s.interface_shells);
     assert!(s.precise_outer_wall);
+    assert!(s.symmetric_infill_y_axis);
+    assert!(s.seam_placement_away_from_overhangs);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
 }
