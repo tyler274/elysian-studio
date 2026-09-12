@@ -138,6 +138,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "infill_direction",
         num_str(settings.infill_direction_deg),
     );
+    insert(&mut map, "bridge_angle", num_str(settings.bridge_angle_deg));
     insert_bool(
         &mut map,
         "symmetric_infill_y_axis",
@@ -196,6 +197,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.skirt_distance_mm),
     );
     insert(&mut map, "brim_width", num_str(settings.brim_width_mm));
+    insert(&mut map, "brim_type", settings.brim_type.as_str());
     insert(
         &mut map,
         "brim_object_gap",

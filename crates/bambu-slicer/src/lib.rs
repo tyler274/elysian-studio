@@ -804,9 +804,9 @@ fn signed_contour_area_mm2(poly: &Polygon) -> f64 {
 mod tests {
     use super::*;
     use bambu_config::{
-        DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition,
-        SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType, SurfacePattern,
-        TopOneWallType, WallGenerator,
+        BrimType, DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern,
+        SeamPosition, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
+        SurfacePattern, TopOneWallType, WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -1195,6 +1195,12 @@ mod tests {
         settings.brim_object_gap_mm = 0.4;
         let gapped = slice_mesh(&mesh, &settings).unwrap();
         assert_eq!(gapped.layers[0].brim.len(), 3);
+        settings.brim_type = BrimType::NoBrim;
+        let skipped = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            skipped.layers[0].brim.is_empty(),
+            "C++ brim_type no_brim skips loops even when brim_width > 0"
+        );
     }
 
     #[test]
@@ -2226,6 +2232,37 @@ mod tests {
         assert!(
             bridges >= 1,
             "expected bridge fill on the slab overhang, got {bridges}"
+        );
+    }
+
+    #[test]
+    fn bridge_angle_rotates_table_hatch() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = false;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.bottom_surface_pattern = SurfacePattern::Rectilinear;
+        settings.infill_direction_deg = 0.0;
+        let auto = slice_mesh(&mesh, &settings).unwrap();
+        settings.bridge_angle_deg = 45.0;
+        let forced = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(
+            auto.layers[0].bottom_surface, forced.layers[0].bottom_surface,
+            "C++ custom bridge angle does not apply on layer 0"
+        );
+        let hatch = |sliced: &SliceResult| {
+            sliced
+                .layers
+                .iter()
+                .find(|l| !l.bridge.is_empty())
+                .map(|l| l.bridge.clone())
+        };
+        let a = hatch(&auto).expect("bridge at infill_direction");
+        let b = hatch(&forced).expect("bridge at bridge_angle 90");
+        assert!(!a.is_empty());
+        assert_ne!(
+            a, b,
+            "C++ bridge_angle > 0 should override infill_direction on bridged bottoms"
         );
     }
 

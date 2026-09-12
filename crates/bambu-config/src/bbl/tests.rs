@@ -54,6 +54,7 @@ fn vertical_shell_region_keys() {
     pairs.insert("bottom_shell_thickness".into(), "0.8".into());
     pairs.insert("minimum_sparse_infill_area".into(), "12".into());
     pairs.insert("infill_direction".into(), "30".into());
+    pairs.insert("bridge_angle".into(), "90".into());
     pairs.insert("infill_wall_overlap".into(), "25%".into());
     pairs.insert("bridge_flow".into(), "0.95".into());
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.92".into());
@@ -69,6 +70,7 @@ fn vertical_shell_region_keys() {
     assert!((s.bottom_shell_thickness_mm - 0.8).abs() < 1e-9);
     assert!((s.minimum_sparse_infill_area_mm2 - 12.0).abs() < 1e-9);
     assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
+    assert!((s.bridge_angle_deg - 90.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
     assert!((s.bridge_flow - 0.95).abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 0.92).abs() < 1e-9);
@@ -197,6 +199,8 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(s.fill_multiline, 1);
     assert!(!s.infill_combination);
     assert!((s.infill_direction_deg - 45.0).abs() < 1e-9);
+    assert!(s.bridge_angle_deg.abs() < 1e-9);
+    assert_eq!(s.brim_type, crate::BrimType::AutoBrim);
     assert!(!s.symmetric_infill_y_axis);
     assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
@@ -343,6 +347,25 @@ fn gcode_path_flow_factor_matches_cpp_extrude() {
     assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, true) - 1.2).abs() < 1e-9);
     assert!((s.gcode_path_flow_factor(crate::FlowRole::SolidInfill, true) - 1.2).abs() < 1e-9);
     assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, false) - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn brim_type_and_bridge_angle_match_cpp() {
+    let mut s = SliceSettings::default();
+    s.brim_width_mm = 5.0;
+    assert!(s.has_outer_brim());
+    s.brim_type = crate::BrimType::NoBrim;
+    assert!(!s.has_outer_brim());
+    s.brim_type = crate::BrimType::InnerOnly;
+    assert!(!s.has_outer_brim());
+    s.brim_type = crate::BrimType::OuterOnly;
+    assert!(s.has_outer_brim());
+    s.infill_direction_deg = 45.0;
+    s.bridge_angle_deg = 90.0;
+    assert!((s.bridge_fill_angle_deg(false) - 45.0).abs() < 1e-9);
+    assert!((s.bridge_fill_angle_deg(true) - 90.0).abs() < 1e-9);
+    s.bridge_angle_deg = 0.0;
+    assert!((s.bridge_fill_angle_deg(true) - 45.0).abs() < 1e-9);
 }
 
 #[test]
@@ -729,6 +752,8 @@ fn project_settings_json_roundtrip() {
     src.interface_shells = true;
     src.precise_outer_wall = true;
     src.symmetric_infill_y_axis = true;
+    src.bridge_angle_deg = 90.0;
+    src.brim_type = crate::BrimType::NoBrim;
     src.seam_placement_away_from_overhangs = true;
     src.internal_solid_infill_pattern = crate::SurfacePattern::Concentric;
     src.initial_layer_infill_line_width_mm = 0.8;
@@ -783,6 +808,8 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.interface_shells);
     assert!(loaded.precise_outer_wall);
     assert!(loaded.symmetric_infill_y_axis);
+    assert!((loaded.bridge_angle_deg - 90.0).abs() < 1e-9);
+    assert_eq!(loaded.brim_type, crate::BrimType::NoBrim);
     assert!(loaded.seam_placement_away_from_overhangs);
     assert_eq!(
         loaded.internal_solid_infill_pattern,
@@ -897,6 +924,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("interface_shells".into(), "1".into());
     pairs.insert("precise_outer_wall".into(), "1".into());
     pairs.insert("symmetric_infill_y_axis".into(), "1".into());
+    pairs.insert("bridge_angle".into(), "90".into());
+    pairs.insert("brim_type".into(), "no_brim".into());
     pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
     pairs.insert("internal_solid_infill_pattern".into(), "concentric".into());
     pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
@@ -935,6 +964,8 @@ fn region_overrides_skip_object_keys() {
     assert!(!s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
+    assert!((s.bridge_angle_deg - 90.0).abs() < 1e-9);
+    assert_eq!(s.brim_type, crate::BrimType::AutoBrim);
     assert!(!s.seam_placement_away_from_overhangs);
     assert_eq!(
         s.internal_solid_infill_pattern,
@@ -968,6 +999,8 @@ fn region_overrides_skip_object_keys() {
     assert!(s.interface_shells);
     assert!(s.precise_outer_wall);
     assert!(s.symmetric_infill_y_axis);
+    assert!((s.bridge_angle_deg - 90.0).abs() < 1e-9);
+    assert_eq!(s.brim_type, crate::BrimType::NoBrim);
     assert!(s.seam_placement_away_from_overhangs);
     assert_eq!(
         s.internal_solid_infill_pattern,

@@ -203,6 +203,49 @@ impl DraftShield {
     }
 }
 
+/// C++ `BrimType` (`brim_type`). Default `auto_brim` uses [`SliceSettings::brim_width_mm`]
+/// for outer loops (auto-width is not implemented). Public BBL hides inner brim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BrimType {
+    #[default]
+    AutoBrim,
+    BrimEars,
+    OuterOnly,
+    InnerOnly,
+    OuterAndInner,
+    NoBrim,
+}
+
+impl BrimType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "auto_brim" | "auto" => Self::AutoBrim,
+            "brim_ears" | "painted" => Self::BrimEars,
+            "outer_only" | "outer brim only" | "outer" => Self::OuterOnly,
+            "inner_only" | "inner brim only" | "inner" => Self::InnerOnly,
+            "outer_and_inner" | "outer and inner brim" => Self::OuterAndInner,
+            "no_brim" | "no-brim" | "none" => Self::NoBrim,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoBrim => "auto_brim",
+            Self::BrimEars => "brim_ears",
+            Self::OuterOnly => "outer_only",
+            Self::InnerOnly => "inner_only",
+            Self::OuterAndInner => "outer_and_inner",
+            Self::NoBrim => "no_brim",
+        }
+    }
+
+    /// C++ outer brim: auto / ears / outer_only / outer_and_inner.
+    pub fn has_outer(self) -> bool {
+        !matches!(self, Self::NoBrim | Self::InnerOnly)
+    }
+}
+
 /// C++ `OverhangFanThreshold` (`overhang_fan_threshold`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(u8)]
@@ -802,6 +845,9 @@ pub struct SliceSettings {
     pub infill_combination: bool,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
     pub infill_direction_deg: f64,
+    /// C++ `bridge_angle` (degrees). `0` keeps auto / infill direction; `> 0`
+    /// forces that angle on bridged bottoms (`LayerRegion.cpp` `custom_angle > 0`).
+    pub bridge_angle_deg: f64,
     /// C++ `symmetric_infill_y_axis`. Mirror fill about the object X-center so
     /// left/right twins share a texture. BBL `"0"`.
     pub symmetric_infill_y_axis: bool,
@@ -910,8 +956,11 @@ pub struct SliceSettings {
     pub ooze_prevention: bool,
     /// Gap between the outermost brim (or the object) and the innermost skirt loop.
     pub skirt_distance_mm: f64,
-    /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0.
+    /// Outer brim width on layer 0 (0 disables). Ignored when [`Self::raft_layers`] > 0
+    /// or [`Self::brim_type`] has no outer brim.
     pub brim_width_mm: f64,
+    /// C++ `brim_type`. BBL omits the key (`auto_brim`).
+    pub brim_type: BrimType,
     /// C++ `brim_object_gap` (mm). Space between the object and the innermost brim loop.
     pub brim_object_gap_mm: f64,
     /// Support-style layers under the object (`raft_layers`). 0 disables.
@@ -1279,6 +1328,7 @@ impl Default for SliceSettings {
             fill_multiline: 1,
             infill_combination: false,
             infill_direction_deg: 45.0,
+            bridge_angle_deg: 0.0,
             symmetric_infill_y_axis: false,
             minimum_sparse_infill_area_mm2: 15.0,
             infill_wall_overlap: 0.15,
@@ -1335,6 +1385,7 @@ impl Default for SliceSettings {
             ooze_prevention: false,
             skirt_distance_mm: 2.0,
             brim_width_mm: 0.0,
+            brim_type: BrimType::AutoBrim,
             brim_object_gap_mm: 0.0,
             raft_layers: 0,
             raft_contact_distance_mm: 0.1,
@@ -1623,6 +1674,20 @@ impl SliceSettings {
     pub fn has_skirt(&self) -> bool {
         (self.skirt_height > 0 && self.skirt_loops > 0)
             || self.draft_shield != DraftShield::Disabled
+    }
+
+    /// Outer brim loops from `brim_width` (C++ `brim_type != btNoBrim` / inner-only).
+    pub fn has_outer_brim(&self) -> bool {
+        self.brim_width_mm > 0.0 && self.brim_type.has_outer()
+    }
+
+    /// C++ `LayerRegion` custom bridge angle when `bridge_angle > 0`.
+    pub fn bridge_fill_angle_deg(&self, bridged: bool) -> f64 {
+        if bridged && self.bridge_angle_deg > 0.0 {
+            self.bridge_angle_deg
+        } else {
+            self.infill_direction_deg
+        }
     }
 
     /// C++ other-layer `skirt_done.size() < skirt_height || has_infinite_skirt`,

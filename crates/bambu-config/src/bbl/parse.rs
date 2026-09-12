@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::{
-    EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
+    BrimType, EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
     IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
     SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType, SurfacePattern,
     TopOneWallType, WallGenerator, WallSequence, ZHopType,
@@ -32,6 +32,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "fill_multiline"
             | "infill_combination"
             | "infill_direction"
+            | "bridge_angle"
             | "symmetric_infill_y_axis"
             | "minimum_sparse_infill_area"
             | "infill_wall_overlap"
@@ -232,6 +233,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "infill_direction") {
         s.infill_direction_deg = v.rem_euclid(360.0);
     }
+    if let Some(v) = num(map, "bridge_angle") {
+        s.bridge_angle_deg = v.max(0.0);
+    }
     if let Some(v) = bool_val(map, "symmetric_infill_y_axis") {
         s.symmetric_infill_y_axis = v;
     }
@@ -317,6 +321,11 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "brim_width") {
         s.brim_width_mm = v;
+    }
+    if let Some(name) = text(map, "brim_type") {
+        if let Some(kind) = BrimType::from_name(&name) {
+            s.brim_type = kind;
+        }
     }
     if let Some(v) = num(map, "brim_object_gap") {
         s.brim_object_gap_mm = v.max(0.0);

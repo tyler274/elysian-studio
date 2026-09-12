@@ -466,7 +466,7 @@ fn emit_shells(
                         spacing,
                         i.wrapping_add(1),
                         settings.bottom_surface_pattern,
-                        settings.infill_direction_deg,
+                        settings.bridge_fill_angle_deg(i > 0),
                         settings.nozzle_diameter_mm,
                     )
                 })

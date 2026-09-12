@@ -27,7 +27,7 @@ pub fn concentric_loops(
 }
 
 pub fn brim(contours: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
-    if settings.brim_width_mm <= 0.0 {
+    if !settings.has_outer_brim() {
         return Vec::new();
     }
     let w = settings.line_width_for(bambu_config::FlowRole::ExternalPerimeter, true);
@@ -41,7 +41,7 @@ pub fn skirt(footprint: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
     }
     let brim_outer = if settings.draft_shield != bambu_config::DraftShield::Disabled {
         0.0
-    } else if settings.brim_width_mm > 0.0 {
+    } else if settings.has_outer_brim() {
         settings.brim_object_gap_mm.max(0.0) + settings.brim_width_mm
     } else {
         0.0
@@ -122,7 +122,7 @@ mod tests {
         let flush = brim(&[contour.clone()], &settings);
         assert_eq!(flush.len(), 3);
         settings.brim_object_gap_mm = 0.5;
-        let gapped = brim(&[contour], &settings);
+        let gapped = brim(&[contour.clone()], &settings);
         assert_eq!(gapped.len(), 3);
         let flush_inner = min_x(flush.last().unwrap());
         let gapped_inner = min_x(gapped.last().unwrap());
@@ -130,6 +130,8 @@ mod tests {
             (gapped_inner - (flush_inner - 0.5)).abs() < 0.05,
             "innermost brim should move out by the gap: flush={flush_inner} gapped={gapped_inner}"
         );
+        settings.brim_type = bambu_config::BrimType::NoBrim;
+        assert!(brim(&[contour], &settings).is_empty());
     }
 
     #[test]
