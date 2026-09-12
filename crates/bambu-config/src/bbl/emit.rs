@@ -493,6 +493,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "initial_layer_flow_ratio",
         num_str(settings.initial_layer_flow_ratio),
     );
+    insert(
+        &mut map,
+        "print_flow_ratio",
+        num_str(settings.print_flow_ratio),
+    );
     insert_bool(&mut map, "thick_bridges", settings.thick_bridges);
     insert(
         &mut map,

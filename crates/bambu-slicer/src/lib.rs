@@ -738,17 +738,21 @@ fn prepare_layer_contours(
     (spec, contours)
 }
 
-/// Bambu `_shrink_contour_holes`: offset outer rings by `contour_mm` and holes
-/// by `-hole_mm` (positive hole compensation enlarges holes).
+/// Bambu `_shrink_contour_holes`: offset outer rings by `contour_mm`. Positive
+/// `hole_mm` enlarges holes. C++ Clipper1 uses `offset(hole, -delta)` on CW
+/// holes; Clipper2 inflate expands a path with a positive delta, so the hole
+/// polygon is grown by `+hole_mm` before the difference.
+///
+/// Clipper NonZero rings are CCW outers / CW holes. Centroid-in-polygon is
+/// wrong for a centered hole: the outer centroid sits inside the hole ring.
 fn compensate_xy(polygons: &[Polygon], contour_mm: f64, hole_mm: f64) -> Vec<Polygon> {
     if contour_mm.abs() < 1e-9 && hole_mm.abs() < 1e-9 {
         return polygons.to_vec();
     }
     let mut outers = Vec::new();
     let mut holes = Vec::new();
-    for (i, poly) in polygons.iter().enumerate() {
-        let c = ring_centroid(poly);
-        if clip::point_in_polygons_skip(c, polygons, i) {
+    for poly in polygons {
+        if signed_contour_area_mm2(poly) < 0.0 {
             holes.push(poly.clone());
         } else {
             outers.push(poly.clone());
@@ -766,19 +770,11 @@ fn compensate_xy(polygons: &[Polygon], contour_mm: f64, hole_mm: f64) -> Vec<Pol
         let hole_offs = if hole_mm.abs() < 1e-9 {
             holes
         } else {
-            offset_polygons(&holes, -hole_mm)
+            offset_polygons(&holes, hole_mm)
         };
         acc = difference_polygons(&acc, &hole_offs);
     }
     union_polygons(&acc)
-}
-
-fn ring_centroid(poly: &[Point]) -> Point {
-    let n = poly.len().max(1) as i64;
-    Point::new(
-        poly.iter().map(|p| p.x).sum::<i64>() / n,
-        poly.iter().map(|p| p.y).sum::<i64>() / n,
-    )
 }
 
 pub fn contour_area_mm2(poly: &Polygon) -> f64 {
@@ -2848,6 +2844,36 @@ mod tests {
         assert!(
             area(&b.layers, mid) > area(&a.layers, mid) + 5.0,
             "inner layers should grow"
+        );
+    }
+
+    #[test]
+    fn xy_hole_compensation_enlarges_holes() {
+        let settings = SliceSettings::default();
+        let solid = TriangleMesh::cube(20.0);
+        let mut cutter = TriangleMesh::cube(10.0);
+        cutter.translate(glam::Vec3::new(5.0, 5.0, 5.0));
+        let mut hole = bambu_model::ModelVolume::model_part("cut", cutter, 2);
+        hole.volume_type = bambu_model::VolumeType::Negative;
+        let volumes = vec![bambu_model::ModelVolume::model_part("body", solid, 1), hole];
+        let plain = slice_volumes(&volumes, &settings).unwrap();
+        let mut grown = settings;
+        grown.xy_hole_compensation_mm = 0.4;
+        let bigger = slice_volumes(&volumes, &grown).unwrap();
+        let net_area = |layer: &Layer| {
+            layer
+                .contours
+                .iter()
+                .map(signed_contour_area_mm2)
+                .sum::<f64>()
+                .abs()
+        };
+        let mid = plain.layers.len() / 2;
+        let a = net_area(&plain.layers[mid]);
+        let b = net_area(&bigger.layers[mid]);
+        assert!(
+            b < a - 5.0,
+            "positive hole compensation should enlarge holes and shrink net area: plain={a} grown={b}"
         );
     }
 

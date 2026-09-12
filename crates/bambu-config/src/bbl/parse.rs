@@ -71,6 +71,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "bridge_flow"
             | "top_solid_infill_flow_ratio"
             | "initial_layer_flow_ratio"
+            | "print_flow_ratio"
             | "top_surface_speed"
             | "small_perimeter_speed"
             | "small_perimeter_threshold"
@@ -533,6 +534,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "initial_layer_flow_ratio") {
         s.initial_layer_flow_ratio = v.max(0.0);
+    }
+    if let Some(v) = num(map, "print_flow_ratio") {
+        s.print_flow_ratio = v.max(0.0);
     }
     if let Some(v) = bool_val(map, "thick_bridges") {
         s.thick_bridges = v;

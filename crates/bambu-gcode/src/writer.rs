@@ -324,7 +324,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
             // C++ `erIroning` is not top solid, so first-layer ironing still
-            // takes `initial_layer_flow_ratio`.
+            // takes `print_flow_ratio * initial_layer_flow_ratio`.
             let factor = settings.gcode_path_flow_factor(FlowRole::SolidInfill, first);
             w.emit_feature("Ironing", iron_flow.width_mm)?;
             w.emit_marked(

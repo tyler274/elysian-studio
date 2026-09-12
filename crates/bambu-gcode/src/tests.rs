@@ -884,6 +884,49 @@ fn initial_layer_flow_ratio_scales_first_layer_not_top() {
 }
 
 #[test]
+fn print_flow_ratio_scales_all_extrusion() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let base = write_gcode(&settings, &sliced).unwrap();
+    settings.print_flow_ratio = 2.0;
+    let scaled = write_gcode(&settings, &sliced).unwrap();
+    let wall_base = feature_positive_e(&base, "Outer wall");
+    let wall_scaled = feature_positive_e(&scaled, "Outer wall");
+    let top_base = feature_positive_e(&base, "Top surface");
+    let top_scaled = feature_positive_e(&scaled, "Top surface");
+    let first_base = feature_positive_e(layer_block(&base, 0).expect("layer 0"), "Outer wall");
+    let first_scaled = feature_positive_e(layer_block(&scaled, 0).expect("layer 0"), "Outer wall");
+    assert!(wall_base > 0.0);
+    assert!(top_base > 0.0);
+    assert!(
+        (wall_scaled / wall_base - 2.0).abs() < 1e-5,
+        "wall {wall_scaled} / {wall_base} = {}",
+        wall_scaled / wall_base
+    );
+    assert!(
+        (top_scaled / top_base - 2.0).abs() < 1e-5,
+        "top {top_scaled} / {top_base} = {}",
+        top_scaled / top_base
+    );
+    assert!(
+        (first_scaled / first_base - 2.0).abs() < 1e-5,
+        "first wall {first_scaled} / {first_base} = {}",
+        first_scaled / first_base
+    );
+    settings.top_solid_infill_flow_ratio = 0.5;
+    let stacked = write_gcode(&settings, &sliced).unwrap();
+    let top_stacked = feature_positive_e(&stacked, "Top surface");
+    assert!(
+        (top_stacked / top_base - 1.0).abs() < 1e-5,
+        "print 2 × top 0.5 should leave top E unchanged: {top_stacked} / {top_base} = {}",
+        top_stacked / top_base
+    );
+}
+
+#[test]
 fn layer_cooling_slows_short_bbl_layers() {
     let mesh = TriangleMesh::cube(10.0);
     let mut settings = SliceSettings::bbl_0_20();

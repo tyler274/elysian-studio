@@ -59,6 +59,7 @@ fn vertical_shell_region_keys() {
     pairs.insert("bridge_flow".into(), "0.95".into());
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.92".into());
     pairs.insert("initial_layer_flow_ratio".into(), "1.05".into());
+    pairs.insert("print_flow_ratio".into(), "1.1".into());
     pairs.insert("top_surface_density".into(), "40%".into());
     pairs.insert("bottom_surface_density".into(), "60".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -75,6 +76,7 @@ fn vertical_shell_region_keys() {
     assert!((s.bridge_flow - 0.95).abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 0.92).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.05).abs() < 1e-9);
+    assert!((s.print_flow_ratio - 1.1).abs() < 1e-9);
     assert!((s.top_surface_density - 0.40).abs() < 1e-9);
     assert!((s.bottom_surface_density - 0.60).abs() < 1e-9);
     pairs.insert("seam_gap".into(), "20%".into());
@@ -207,6 +209,7 @@ fn upstream_fdm_process_0_20() {
     assert!((s.bridge_flow - 1.0).abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 1.0).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.0).abs() < 1e-9);
+    assert!((s.print_flow_ratio - 1.0).abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.alternate_extra_wall);
     assert!(s.enable_arc_fitting);
@@ -352,6 +355,13 @@ fn gcode_path_flow_factor_matches_cpp_extrude() {
     assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, true) - 1.2).abs() < 1e-9);
     assert!((s.gcode_path_flow_factor(crate::FlowRole::SolidInfill, true) - 1.2).abs() < 1e-9);
     assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, false) - 1.0).abs() < 1e-9);
+    s.print_flow_ratio = 2.0;
+    assert!(
+        (s.gcode_path_flow_factor(crate::FlowRole::TopSolidInfill, true) - 1.6).abs() < 1e-9,
+        "print_flow_ratio multiplies before top solid"
+    );
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, true) - 2.4).abs() < 1e-9);
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, false) - 2.0).abs() < 1e-9);
 }
 
 #[test]
@@ -371,6 +381,13 @@ fn brim_type_and_bridge_angle_match_cpp() {
     assert!((s.bridge_fill_angle_deg(true) - 90.0).abs() < 1e-9);
     s.bridge_angle_deg = 0.0;
     assert!((s.bridge_fill_angle_deg(true) - 45.0).abs() < 1e-9);
+}
+
+#[test]
+fn print_flow_ratio_and_xy_hole_compensation_match_cpp() {
+    let s = SliceSettings::default();
+    assert!((s.print_flow_ratio - 1.0).abs() < 1e-9);
+    assert!(s.xy_hole_compensation_mm.abs() < 1e-9);
 }
 
 #[test]
@@ -791,6 +808,7 @@ fn project_settings_json_roundtrip() {
     src.initial_layer_infill_line_width_mm = 0.8;
     src.top_solid_infill_flow_ratio = 0.9;
     src.initial_layer_flow_ratio = 1.1;
+    src.print_flow_ratio = 1.2;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -854,6 +872,7 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!((loaded.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
     assert!((loaded.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
+    assert!((loaded.print_flow_ratio - 1.2).abs() < 1e-9);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -971,6 +990,7 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.9".into());
     pairs.insert("initial_layer_flow_ratio".into(), "1.1".into());
+    pairs.insert("print_flow_ratio".into(), "1.2".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     pairs.insert("ironing_direction".into(), "0".into());
@@ -1018,6 +1038,7 @@ fn region_overrides_skip_object_keys() {
     assert!(s.initial_layer_infill_line_width_mm.abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
+    assert!((s.print_flow_ratio - 1.2).abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     assert!(s.ironing_direction_deg.abs() < 1e-9);

@@ -891,6 +891,10 @@ pub struct SliceSettings {
     pub top_solid_infill_flow_ratio: f64,
     /// C++ `initial_layer_flow_ratio`. Applied in G-code only; top solid wins.
     pub initial_layer_flow_ratio: f64,
+    /// C++ `print_flow_ratio` (PrintRegionConfig / calib). Multiplies every
+    /// path in G-code before top-solid / first-layer ratios. Default 1; BBL
+    /// omits the key.
+    pub print_flow_ratio: f64,
     /// C++ `nozzle_temperature` (later layers).
     pub temperature_c: u16,
     /// C++ `nozzle_temperature_initial_layer`.
@@ -1363,6 +1367,7 @@ impl Default for SliceSettings {
             flow_ratio: 1.0,
             top_solid_infill_flow_ratio: 1.0,
             initial_layer_flow_ratio: 1.0,
+            print_flow_ratio: 1.0,
             temperature_c: 220,
             temperature_initial_layer_c: 220,
             bed_temperature_c: 60,
@@ -1639,16 +1644,19 @@ impl SliceSettings {
         }
     }
 
-    /// C++ `GCode::_extrude`: top solid uses `top_solid_infill_flow_ratio`;
-    /// other first-layer paths use `initial_layer_flow_ratio`.
+    /// C++ `GCode::_extrude`: `print_flow_ratio` first, then top solid uses
+    /// `top_solid_infill_flow_ratio`; other first-layer paths use
+    /// `initial_layer_flow_ratio`.
     pub fn gcode_path_flow_factor(&self, role: FlowRole, first_layer: bool) -> f64 {
-        if role == FlowRole::TopSolidInfill {
+        let print = self.print_flow_ratio.max(0.0);
+        let role_or_first = if role == FlowRole::TopSolidInfill {
             self.top_solid_infill_flow_ratio.max(0.0)
         } else if first_layer {
             self.initial_layer_flow_ratio.max(0.0)
         } else {
             1.0
-        }
+        };
+        print * role_or_first
     }
 
     /// C++ Classic `is_outer_wall_first` for the two FEATURE buckets.
