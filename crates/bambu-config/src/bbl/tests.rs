@@ -277,6 +277,11 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(s.top_one_wall, crate::TopOneWallType::AllTop);
     assert!(!s.only_one_wall_first_layer);
     assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
+    assert_eq!(s.fuzzy_skin_noise_type, crate::FuzzySkinNoiseType::Classic);
+    assert_eq!(s.fuzzy_skin_mode, crate::FuzzySkinMode::Displacement);
+    assert!((s.fuzzy_skin_scale - 1.0).abs() < 1e-9);
+    assert_eq!(s.fuzzy_skin_octaves, 4);
+    assert!((s.fuzzy_skin_persistence - 0.5).abs() < 1e-9);
     assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
     assert!(!s.detect_thin_wall);
     assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
@@ -600,6 +605,18 @@ fn flatten_standard_0_20_merges_inherits() {
     assert_eq!(
         value_text(obj.get("avoid_crossing_wall_includes_support").unwrap()).as_deref(),
         Some("0")
+    );
+    assert_eq!(
+        value_text(obj.get("fuzzy_skin").unwrap()).as_deref(),
+        Some("none")
+    );
+    assert_eq!(
+        value_text(obj.get("fuzzy_skin_noise_type").unwrap()).as_deref(),
+        Some("classic")
+    );
+    assert_eq!(
+        value_text(obj.get("fuzzy_skin_mode").unwrap()).as_deref(),
+        Some("displacement")
     );
     assert_eq!(
         value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
@@ -966,6 +983,11 @@ fn project_settings_json_roundtrip() {
     src.prime_tower_max_speed_mm_s = 80.0;
     src.wipe_tower_no_sparse_layers = true;
     src.detect_thin_wall = true;
+    src.fuzzy_skin_noise_type = crate::FuzzySkinNoiseType::Perlin;
+    src.fuzzy_skin_mode = crate::FuzzySkinMode::Combined;
+    src.fuzzy_skin_scale = 2.0;
+    src.fuzzy_skin_octaves = 6;
+    src.fuzzy_skin_persistence = 0.4;
     src.reduce_crossing_wall = true;
     src.max_travel_detour_distance = 50.0;
     src.max_travel_detour_is_percent = true;
@@ -1058,6 +1080,14 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.prime_tower_max_speed_mm_s - 80.0).abs() < 1e-9);
     assert!(loaded.wipe_tower_no_sparse_layers);
     assert!(loaded.detect_thin_wall);
+    assert_eq!(
+        loaded.fuzzy_skin_noise_type,
+        crate::FuzzySkinNoiseType::Perlin
+    );
+    assert_eq!(loaded.fuzzy_skin_mode, crate::FuzzySkinMode::Combined);
+    assert!((loaded.fuzzy_skin_scale - 2.0).abs() < 1e-9);
+    assert_eq!(loaded.fuzzy_skin_octaves, 6);
+    assert!((loaded.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
     assert!(loaded.reduce_crossing_wall);
     assert!(loaded.max_travel_detour_is_percent);
     assert!((loaded.max_travel_detour_distance - 50.0).abs() < 1e-9);
@@ -1173,6 +1203,11 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("ooze_prevention".into(), "1".into());
     pairs.insert("ironing_direction".into(), "0".into());
     pairs.insert("detect_thin_wall".into(), "1".into());
+    pairs.insert("fuzzy_skin_noise_type".into(), "perlin".into());
+    pairs.insert("fuzzy_skin_mode".into(), "combined".into());
+    pairs.insert("fuzzy_skin_scale".into(), "2".into());
+    pairs.insert("fuzzy_skin_octaves".into(), "6".into());
+    pairs.insert("fuzzy_skin_persistence".into(), "0.4".into());
     pairs.insert("wipe_tower_no_sparse_layers".into(), "1".into());
     pairs.insert("reduce_crossing_wall".into(), "1".into());
     pairs.insert("max_travel_detour_distance".into(), "50%".into());
@@ -1237,6 +1272,11 @@ fn region_overrides_skip_object_keys() {
     assert!(!s.ooze_prevention);
     assert!(s.ironing_direction_deg.abs() < 1e-9);
     assert!(s.detect_thin_wall);
+    assert_eq!(s.fuzzy_skin_noise_type, crate::FuzzySkinNoiseType::Perlin);
+    assert_eq!(s.fuzzy_skin_mode, crate::FuzzySkinMode::Combined);
+    assert!((s.fuzzy_skin_scale - 2.0).abs() < 1e-9);
+    assert_eq!(s.fuzzy_skin_octaves, 6);
+    assert!((s.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
     assert!(!s.wipe_tower_no_sparse_layers);
     assert!(!s.reduce_crossing_wall);
     assert!(s.max_travel_detour_distance.abs() < 1e-9);
@@ -1288,6 +1328,11 @@ fn region_overrides_skip_object_keys() {
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
     assert!(s.detect_thin_wall);
+    assert_eq!(s.fuzzy_skin_noise_type, crate::FuzzySkinNoiseType::Perlin);
+    assert_eq!(s.fuzzy_skin_mode, crate::FuzzySkinMode::Combined);
+    assert!((s.fuzzy_skin_scale - 2.0).abs() < 1e-9);
+    assert_eq!(s.fuzzy_skin_octaves, 6);
+    assert!((s.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
     assert!(s.wipe_tower_no_sparse_layers);
     assert!(s.reduce_crossing_wall);
     assert!(s.max_travel_detour_is_percent);

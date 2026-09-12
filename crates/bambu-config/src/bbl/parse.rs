@@ -49,6 +49,11 @@ pub fn is_region_key(key: &str) -> bool {
             | "fuzzy_skin_thickness"
             | "fuzzy_skin_point_distance"
             | "fuzzy_skin_first_layer"
+            | "fuzzy_skin_noise_type"
+            | "fuzzy_skin_mode"
+            | "fuzzy_skin_scale"
+            | "fuzzy_skin_octaves"
+            | "fuzzy_skin_persistence"
             | "bottom_shell_layers"
             | "top_shell_layers"
             | "top_shell_thickness"
@@ -309,6 +314,25 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = bool_val(map, "fuzzy_skin_first_layer") {
         s.fuzzy_skin_first_layer = v;
+    }
+    if let Some(name) = text(map, "fuzzy_skin_noise_type") {
+        if let Some(t) = crate::FuzzySkinNoiseType::from_name(&name) {
+            s.fuzzy_skin_noise_type = t;
+        }
+    }
+    if let Some(name) = text(map, "fuzzy_skin_mode") {
+        if let Some(m) = crate::FuzzySkinMode::from_name(&name) {
+            s.fuzzy_skin_mode = m;
+        }
+    }
+    if let Some(v) = num(map, "fuzzy_skin_scale") {
+        s.fuzzy_skin_scale = v.max(0.01);
+    }
+    if let Some(v) = u32_val(map, "fuzzy_skin_octaves") {
+        s.fuzzy_skin_octaves = v.clamp(1, 16);
+    }
+    if let Some(v) = num(map, "fuzzy_skin_persistence") {
+        s.fuzzy_skin_persistence = v.clamp(0.0, 1.0);
     }
     if let Some(v) = u32_val(map, "skirt_loops") {
         s.skirt_loops = v;

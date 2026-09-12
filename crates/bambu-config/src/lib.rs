@@ -540,6 +540,68 @@ impl FuzzySkinType {
     }
 }
 
+/// C++ `NoiseType` (`fuzzy_skin_noise_type`). BBL default is `classic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FuzzySkinNoiseType {
+    #[default]
+    Classic,
+    Perlin,
+    Billow,
+    RidgedMulti,
+    Voronoi,
+}
+
+impl FuzzySkinNoiseType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "classic" | "uniform" => Self::Classic,
+            "perlin" => Self::Perlin,
+            "billow" => Self::Billow,
+            "ridgedmulti" | "ridged_multi" | "ridged-multi" => Self::RidgedMulti,
+            "voronoi" | "cellular" => Self::Voronoi,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Perlin => "perlin",
+            Self::Billow => "billow",
+            Self::RidgedMulti => "ridgedmulti",
+            Self::Voronoi => "voronoi",
+        }
+    }
+}
+
+/// C++ `FuzzySkinMode` (`fuzzy_skin_mode`). Classic walls only displace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FuzzySkinMode {
+    #[default]
+    Displacement,
+    Extrusion,
+    Combined,
+}
+
+impl FuzzySkinMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "displacement" | "displace" => Self::Displacement,
+            "extrusion" | "width" => Self::Extrusion,
+            "combined" | "both" => Self::Combined,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Displacement => "displacement",
+            Self::Extrusion => "extrusion",
+            Self::Combined => "combined",
+        }
+    }
+}
+
 /// C++ `IroningType` (`ironing_type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum IroningType {
@@ -884,6 +946,16 @@ pub struct SliceSettings {
     pub fuzzy_skin_point_distance_mm: f64,
     /// Apply jitter on object layer 0 (`fuzzy_skin_first_layer`).
     pub fuzzy_skin_first_layer: bool,
+    /// C++ `fuzzy_skin_noise_type`. BBL `"classic"`.
+    pub fuzzy_skin_noise_type: FuzzySkinNoiseType,
+    /// C++ `fuzzy_skin_mode`. Classic walls only displace; extrusion/combined are Arachne.
+    pub fuzzy_skin_mode: FuzzySkinMode,
+    /// C++ `fuzzy_skin_scale` (mm). Frequency is `1 / scale`.
+    pub fuzzy_skin_scale: f64,
+    /// C++ `fuzzy_skin_octaves`.
+    pub fuzzy_skin_octaves: u32,
+    /// C++ `fuzzy_skin_persistence`.
+    pub fuzzy_skin_persistence: f64,
     pub nozzle_diameter_mm: f64,
     /// C++ `nozzle_diameter` (one entry per logical nozzle).
     pub nozzle_diameters_mm: Vec<f64>,
@@ -1405,6 +1477,11 @@ impl Default for SliceSettings {
             fuzzy_skin_thickness_mm: 0.3,
             fuzzy_skin_point_distance_mm: 0.8,
             fuzzy_skin_first_layer: false,
+            fuzzy_skin_noise_type: FuzzySkinNoiseType::Classic,
+            fuzzy_skin_mode: FuzzySkinMode::Displacement,
+            fuzzy_skin_scale: 1.0,
+            fuzzy_skin_octaves: 4,
+            fuzzy_skin_persistence: 0.5,
             nozzle_diameter_mm: 0.4,
             nozzle_diameters_mm: vec![0.4],
             filament_diameter_mm: 1.75,

@@ -188,6 +188,31 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "fuzzy_skin_first_layer",
         settings.fuzzy_skin_first_layer,
     );
+    insert(
+        &mut map,
+        "fuzzy_skin_noise_type",
+        settings.fuzzy_skin_noise_type.as_str(),
+    );
+    insert(
+        &mut map,
+        "fuzzy_skin_mode",
+        settings.fuzzy_skin_mode.as_str(),
+    );
+    insert(
+        &mut map,
+        "fuzzy_skin_scale",
+        num_str(settings.fuzzy_skin_scale),
+    );
+    insert(
+        &mut map,
+        "fuzzy_skin_octaves",
+        settings.fuzzy_skin_octaves.to_string(),
+    );
+    insert(
+        &mut map,
+        "fuzzy_skin_persistence",
+        num_str(settings.fuzzy_skin_persistence),
+    );
     insert(&mut map, "skirt_loops", settings.skirt_loops.to_string());
     insert(&mut map, "skirt_height", settings.skirt_height.to_string());
     insert(&mut map, "draft_shield", settings.draft_shield.as_str());
