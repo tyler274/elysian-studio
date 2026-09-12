@@ -1,8 +1,8 @@
 use super::*;
 use crate::parse::parse_axis;
 use bambu_config::{
-    FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SliceSettings, SupportType,
-    WallSequence,
+    FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SeamScarfType,
+    SliceSettings, SupportType, WallSequence,
 };
 use bambu_geom::TriangleMesh;
 use bambu_slicer::{slice_mesh, slice_volumes};
@@ -218,6 +218,91 @@ fn seam_gap_shortens_closed_outer_walls() {
     assert!(
         gapped < closed,
         "15% nozzle seam gap should shorten closed walls: closed={closed} gapped={gapped}"
+    );
+}
+
+#[test]
+fn cube_default_walls_omit_scarf_z() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        !feature_has_ze(layer1, "Outer wall"),
+        "BBL scarf type none should keep walls at layer Z\n{layer1}"
+    );
+}
+
+#[test]
+fn scarf_external_ramps_z_on_later_outer_walls() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.enable_arc_fitting = false;
+    settings.override_filament_scarf_seam_setting = true;
+    settings.seam_slope_type = SeamScarfType::External;
+    settings.seam_slope_inner_walls = false;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer0 = layer_block(&gcode, 0).expect("layer 0");
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        !feature_has_ze(layer0, "Outer wall"),
+        "C++ skips scarf on the first layer\n{layer0}"
+    );
+    assert!(
+        feature_has_ze(layer1, "Outer wall"),
+        "override + external should emit G1 XYZ E on later outer walls\n{layer1}"
+    );
+    assert!(
+        !feature_has_ze(layer1, "Inner wall"),
+        "external type should not scarf inner walls\n{layer1}"
+    );
+}
+
+#[test]
+fn process_scarf_type_needs_filament_override() {
+    let path = vec![
+        bambu_geom::Point::from_mm(0.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 10.0),
+        bambu_geom::Point::from_mm(0.0, 10.0),
+    ];
+    let layer0 = empty_gcode_layer(0, 0.2);
+    let mut layer1 = empty_gcode_layer(1, 0.4);
+    layer1.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer0, layer1],
+    };
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = false;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.seam_slope_type = SeamScarfType::External;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        !feature_has_ze(layer1, "Outer wall"),
+        "filament type none should win without override\n{layer1}"
+    );
+    settings.override_filament_scarf_seam_setting = true;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        feature_has_ze(layer1, "Outer wall"),
+        "override should apply process scarf type\n{layer1}"
     );
 }
 
@@ -2429,6 +2514,29 @@ fn feature_line_width(gcode: &str, feature: &str) -> Option<f64> {
         }
     }
     None
+}
+
+fn feature_has_ze(block: &str, feature: &str) -> bool {
+    let mut in_feat = false;
+    for line in block.lines() {
+        if let Some(rest) = line.strip_prefix("; FEATURE: ") {
+            in_feat = rest == feature;
+            continue;
+        }
+        if !in_feat || !line.starts_with("G1 ") {
+            continue;
+        }
+        let has_z = line
+            .split_whitespace()
+            .any(|tok| tok.starts_with('Z') && tok.len() > 1);
+        let has_e = line
+            .split_whitespace()
+            .any(|tok| tok.starts_with('E') && tok.len() > 1);
+        if has_z && has_e {
+            return true;
+        }
+    }
+    false
 }
 
 fn feature_extrusion(gcode: &str, feature: &str) -> f64 {

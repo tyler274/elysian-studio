@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::{
     BrimType, EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
     IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
-    SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType, SurfacePattern,
-    TopOneWallType, WallGenerator, WallSequence, ZHopType,
+    SeamScarfType, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
+    SurfacePattern, TopOneWallType, WallGenerator, WallSequence, ZHopType,
 };
 
 /// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
@@ -38,6 +38,14 @@ pub fn is_region_key(key: &str) -> bool {
             | "infill_wall_overlap"
             | "seam_position"
             | "seam_gap"
+            | "seam_slope_type"
+            | "seam_slope_start_height"
+            | "seam_slope_gap"
+            | "seam_slope_min_length"
+            | "seam_slope_entire_loop"
+            | "seam_slope_steps"
+            | "seam_slope_inner_walls"
+            | "override_filament_scarf_seam_setting"
             | "wall_generator"
             | "detect_thin_wall"
             | "wall_sequence"
@@ -265,6 +273,39 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = percent(map, "seam_gap") {
         s.seam_gap = v.max(0.0);
+    }
+    if let Some(name) = text(map, "seam_slope_type") {
+        if let Some(t) = SeamScarfType::from_name(&name) {
+            s.seam_slope_type = t;
+        }
+    }
+    if let Some(name) = text(map, "filament_scarf_seam_type") {
+        if let Some(t) = SeamScarfType::from_name(&name) {
+            s.filament_scarf_seam_type = t;
+        }
+    }
+    if let Some(v) = bool_val(map, "override_filament_scarf_seam_setting") {
+        s.override_filament_scarf_seam_setting = v;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "seam_slope_start_height") {
+        s.seam_slope_start_height = v.max(0.0);
+        s.seam_slope_start_height_is_percent = is_percent;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "seam_slope_gap") {
+        s.seam_slope_gap = v.max(0.0);
+        s.seam_slope_gap_is_percent = is_percent;
+    }
+    if let Some(v) = num(map, "seam_slope_min_length") {
+        s.seam_slope_min_length_mm = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "seam_slope_entire_loop") {
+        s.seam_slope_entire_loop = v;
+    }
+    if let Some(v) = u32_val(map, "seam_slope_steps") {
+        s.seam_slope_steps = v.max(1);
+    }
+    if let Some(v) = bool_val(map, "seam_slope_inner_walls") {
+        s.seam_slope_inner_walls = v;
     }
     if let Some(name) = text(map, "wall_generator") {
         if let Some(g) = WallGenerator::from_name(&name) {

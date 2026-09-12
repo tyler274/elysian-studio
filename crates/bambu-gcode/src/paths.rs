@@ -95,8 +95,31 @@ impl Writer<'_> {
             return Ok(());
         }
         let mut current_feature: Option<&str> = None;
+        let external = supported_feature == "Outer wall";
         for path in job.paths {
             if path.len() < 2 {
+                continue;
+            }
+            // C++ `GCode::extrude_loop` scarfs the closed loop before overhang
+            // speed splits; a split run is no longer a loop (`closed && single`).
+            if job.closed && self.should_scarf(true, external) {
+                if current_feature != Some(supported_feature) {
+                    self.emit_feature(supported_feature, job.width_mm)?;
+                    current_feature = Some(supported_feature);
+                }
+                let mut feed = job.print_f;
+                if apply_small {
+                    feed = small_perimeter_feed(self.settings, path, job.closed, feed);
+                }
+                feed = self.settings.cap_extrude_feed_mm_min(feed, job.mm3_per_mm);
+                self.emit_one_path(
+                    path,
+                    true,
+                    job.e_per_mm,
+                    feed,
+                    external,
+                    job.arc_tolerance_mm,
+                )?;
                 continue;
             }
             let runs = match support {

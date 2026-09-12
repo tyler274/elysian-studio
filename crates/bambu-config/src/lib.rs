@@ -110,6 +110,40 @@ impl SeamPosition {
     }
 }
 
+/// C++ `SeamScarfType` (`seam_slope_type` / `filament_scarf_seam_type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SeamScarfType {
+    #[default]
+    None,
+    /// Outer contours (`external` / "Contour").
+    External,
+    /// Contours and holes (`all`).
+    All,
+}
+
+impl SeamScarfType {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "none" | "off" | "0" | "false" | "disabled" => Self::None,
+            "external" | "contour" | "outer" => Self::External,
+            "all" | "contour and hole" | "holes" => Self::All,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::External => "external",
+            Self::All => "all",
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// C++ `wall_generator` (`classic` offset onions vs `arachne`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WallGenerator {
@@ -924,6 +958,26 @@ pub struct SliceSettings {
     pub seam_placement_away_from_overhangs: bool,
     /// C++ `seam_gap` as a fraction of nozzle diameter (default 15%).
     pub seam_gap: f64,
+    /// C++ `seam_slope_type`. BBL `"none"`.
+    pub seam_slope_type: SeamScarfType,
+    /// C++ `filament_scarf_seam_type`. Used unless `override_filament_scarf_seam_setting`.
+    pub filament_scarf_seam_type: SeamScarfType,
+    /// C++ `override_filament_scarf_seam_setting`. BBL `"0"`.
+    pub override_filament_scarf_seam_setting: bool,
+    /// C++ `seam_slope_start_height` (mm or percent of layer height). Default 10%.
+    pub seam_slope_start_height: f64,
+    pub seam_slope_start_height_is_percent: bool,
+    /// C++ `seam_slope_gap` (mm or percent of nozzle). BBL `"0"`.
+    pub seam_slope_gap: f64,
+    pub seam_slope_gap_is_percent: bool,
+    /// C++ `seam_slope_min_length` (mm). 0 disables the scarf.
+    pub seam_slope_min_length_mm: f64,
+    /// C++ `seam_slope_entire_loop`.
+    pub seam_slope_entire_loop: bool,
+    /// C++ `seam_slope_steps`. Minimum segments along the ramp.
+    pub seam_slope_steps: u32,
+    /// C++ `seam_slope_inner_walls`. Scarf inner walls when the type is on.
+    pub seam_slope_inner_walls: bool,
     pub wall_generator: WallGenerator,
     /// C++ `detect_thin_wall`. Open centerlines for islands that cannot hold
     /// two line widths. BBL `"0"`.
@@ -1466,6 +1520,17 @@ impl Default for SliceSettings {
             seam: SeamPosition::Aligned,
             seam_placement_away_from_overhangs: false,
             seam_gap: 0.15,
+            seam_slope_type: SeamScarfType::None,
+            filament_scarf_seam_type: SeamScarfType::None,
+            override_filament_scarf_seam_setting: false,
+            seam_slope_start_height: 10.0,
+            seam_slope_start_height_is_percent: true,
+            seam_slope_gap: 0.0,
+            seam_slope_gap_is_percent: false,
+            seam_slope_min_length_mm: 10.0,
+            seam_slope_entire_loop: false,
+            seam_slope_steps: 10,
+            seam_slope_inner_walls: true,
             wall_generator: WallGenerator::Classic,
             detect_thin_wall: false,
             wall_sequence: WallSequence::InnerOuter,
@@ -1812,6 +1877,35 @@ impl SliceSettings {
     /// C++ `scale_(nozzle_diameter) * (seam_gap / 100)` in millimetres.
     pub fn seam_gap_mm(&self) -> f64 {
         self.nozzle_diameter_mm.max(0.0) * self.seam_gap.max(0.0)
+    }
+
+    /// C++ `override_filament_scarf_seam_setting` vs `filament_scarf_seam_type`.
+    pub fn effective_seam_slope_type(&self) -> SeamScarfType {
+        if self.override_filament_scarf_seam_setting {
+            self.seam_slope_type
+        } else {
+            self.filament_scarf_seam_type
+        }
+    }
+
+    /// C++ scarf start as a 0–1 fraction of the current layer height.
+    pub fn scarf_start_ratio(&self, layer_height_mm: f64) -> f64 {
+        let h = layer_height_mm.max(1e-9);
+        let mm = if self.seam_slope_start_height_is_percent {
+            h * self.seam_slope_start_height / 100.0
+        } else {
+            self.seam_slope_start_height
+        };
+        (mm / h).clamp(0.0, 1.0)
+    }
+
+    /// C++ `enable_seam_slope` role/type gate without hole detection.
+    pub fn scarf_applies_to_wall(&self, external_perimeter: bool) -> bool {
+        match self.effective_seam_slope_type() {
+            SeamScarfType::None => false,
+            SeamScarfType::External => external_perimeter,
+            SeamScarfType::All => external_perimeter || self.seam_slope_inner_walls,
+        }
     }
 
     /// C++ `PerimeterGenerator` wall count: `wall_loops`, plus one on odd

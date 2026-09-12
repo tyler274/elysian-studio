@@ -161,6 +161,59 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.seam_placement_away_from_overhangs,
     );
     insert(&mut map, "seam_gap", pct_str(settings.seam_gap));
+    insert(
+        &mut map,
+        "seam_slope_type",
+        settings.seam_slope_type.as_str(),
+    );
+    insert(
+        &mut map,
+        "filament_scarf_seam_type",
+        settings.filament_scarf_seam_type.as_str(),
+    );
+    insert_bool(
+        &mut map,
+        "override_filament_scarf_seam_setting",
+        settings.override_filament_scarf_seam_setting,
+    );
+    insert(
+        &mut map,
+        "seam_slope_start_height",
+        if settings.seam_slope_start_height_is_percent {
+            format!("{}%", num_str(settings.seam_slope_start_height))
+        } else {
+            num_str(settings.seam_slope_start_height)
+        },
+    );
+    insert(
+        &mut map,
+        "seam_slope_gap",
+        if settings.seam_slope_gap_is_percent {
+            format!("{}%", num_str(settings.seam_slope_gap))
+        } else {
+            num_str(settings.seam_slope_gap)
+        },
+    );
+    insert(
+        &mut map,
+        "seam_slope_min_length",
+        num_str(settings.seam_slope_min_length_mm),
+    );
+    insert_bool(
+        &mut map,
+        "seam_slope_entire_loop",
+        settings.seam_slope_entire_loop,
+    );
+    insert(
+        &mut map,
+        "seam_slope_steps",
+        settings.seam_slope_steps.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "seam_slope_inner_walls",
+        settings.seam_slope_inner_walls,
+    );
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert_bool(&mut map, "detect_thin_wall", settings.detect_thin_wall);
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());

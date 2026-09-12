@@ -58,6 +58,8 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         writeln!(w.out, "; LAYER_HEIGHT: {height}")?;
         writeln!(w.out, ";LAYER:{}", layer.index)?;
         w.state.first_layer = first;
+        w.state.layer_height_mm = layer.height_mm;
+        w.state.layer_print_z_mm = layer.print_z_mm;
         w.emit_accel(settings.travel_acceleration_for_layer(first))?;
         writeln!(w.out, "G1 Z{:.3} F600", layer.print_z_mm)?;
         w.state.z = layer.print_z_mm;

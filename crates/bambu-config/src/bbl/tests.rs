@@ -291,6 +291,19 @@ fn upstream_fdm_process_0_20() {
     assert!(!s.seam_placement_away_from_overhangs);
     assert!((s.seam_gap - 0.15).abs() < 1e-9);
     assert!((s.seam_gap_mm() - 0.06).abs() < 1e-9);
+    assert_eq!(s.seam_slope_type, crate::SeamScarfType::None);
+    assert_eq!(s.filament_scarf_seam_type, crate::SeamScarfType::None);
+    assert!(!s.override_filament_scarf_seam_setting);
+    assert!(s.seam_slope_start_height_is_percent);
+    assert!((s.seam_slope_start_height - 10.0).abs() < 1e-9);
+    assert!((s.scarf_start_ratio(0.2) - 0.10).abs() < 1e-9);
+    assert!(s.seam_slope_gap.abs() < 1e-9);
+    assert!(!s.seam_slope_gap_is_percent);
+    assert!((s.seam_slope_min_length_mm - 10.0).abs() < 1e-9);
+    assert!(!s.seam_slope_entire_loop);
+    assert_eq!(s.seam_slope_steps, 10);
+    assert!(s.seam_slope_inner_walls);
+    assert_eq!(s.effective_seam_slope_type(), crate::SeamScarfType::None);
     assert!((s.min_feature_size - 0.25).abs() < 1e-9);
     assert!((s.min_bead_width - 0.85).abs() < 1e-9);
     assert!(s.small_perimeter_speed_is_percent);
@@ -617,6 +630,22 @@ fn flatten_standard_0_20_merges_inherits() {
     assert_eq!(
         value_text(obj.get("fuzzy_skin_mode").unwrap()).as_deref(),
         Some("displacement")
+    );
+    assert_eq!(
+        value_text(obj.get("seam_slope_type").unwrap()).as_deref(),
+        Some("none")
+    );
+    assert_eq!(
+        value_text(obj.get("override_filament_scarf_seam_setting").unwrap()).as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        value_text(obj.get("seam_slope_start_height").unwrap()).as_deref(),
+        Some("10%")
+    );
+    assert_eq!(
+        value_text(obj.get("seam_slope_min_length").unwrap()).as_deref(),
+        Some("10")
     );
     assert_eq!(
         value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
@@ -988,6 +1017,9 @@ fn project_settings_json_roundtrip() {
     src.fuzzy_skin_scale = 2.0;
     src.fuzzy_skin_octaves = 6;
     src.fuzzy_skin_persistence = 0.4;
+    src.seam_slope_type = crate::SeamScarfType::External;
+    src.override_filament_scarf_seam_setting = true;
+    src.seam_slope_min_length_mm = 8.0;
     src.reduce_crossing_wall = true;
     src.max_travel_detour_distance = 50.0;
     src.max_travel_detour_is_percent = true;
@@ -1088,6 +1120,13 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.fuzzy_skin_scale - 2.0).abs() < 1e-9);
     assert_eq!(loaded.fuzzy_skin_octaves, 6);
     assert!((loaded.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
+    assert_eq!(loaded.seam_slope_type, crate::SeamScarfType::External);
+    assert!(loaded.override_filament_scarf_seam_setting);
+    assert!((loaded.seam_slope_min_length_mm - 8.0).abs() < 1e-9);
+    assert_eq!(
+        loaded.effective_seam_slope_type(),
+        crate::SeamScarfType::External
+    );
     assert!(loaded.reduce_crossing_wall);
     assert!(loaded.max_travel_detour_is_percent);
     assert!((loaded.max_travel_detour_distance - 50.0).abs() < 1e-9);
@@ -1208,6 +1247,10 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("fuzzy_skin_scale".into(), "2".into());
     pairs.insert("fuzzy_skin_octaves".into(), "6".into());
     pairs.insert("fuzzy_skin_persistence".into(), "0.4".into());
+    pairs.insert("seam_slope_type".into(), "external".into());
+    pairs.insert("override_filament_scarf_seam_setting".into(), "1".into());
+    pairs.insert("seam_slope_min_length".into(), "8".into());
+    pairs.insert("filament_scarf_seam_type".into(), "all".into());
     pairs.insert("wipe_tower_no_sparse_layers".into(), "1".into());
     pairs.insert("reduce_crossing_wall".into(), "1".into());
     pairs.insert("max_travel_detour_distance".into(), "50%".into());
@@ -1277,6 +1320,14 @@ fn region_overrides_skip_object_keys() {
     assert!((s.fuzzy_skin_scale - 2.0).abs() < 1e-9);
     assert_eq!(s.fuzzy_skin_octaves, 6);
     assert!((s.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
+    assert_eq!(s.seam_slope_type, crate::SeamScarfType::External);
+    assert!(s.override_filament_scarf_seam_setting);
+    assert!((s.seam_slope_min_length_mm - 8.0).abs() < 1e-9);
+    assert_eq!(s.filament_scarf_seam_type, crate::SeamScarfType::None);
+    assert_eq!(
+        s.effective_seam_slope_type(),
+        crate::SeamScarfType::External
+    );
     assert!(!s.wipe_tower_no_sparse_layers);
     assert!(!s.reduce_crossing_wall);
     assert!(s.max_travel_detour_distance.abs() < 1e-9);
@@ -1333,6 +1384,10 @@ fn region_overrides_skip_object_keys() {
     assert!((s.fuzzy_skin_scale - 2.0).abs() < 1e-9);
     assert_eq!(s.fuzzy_skin_octaves, 6);
     assert!((s.fuzzy_skin_persistence - 0.4).abs() < 1e-9);
+    assert_eq!(s.seam_slope_type, crate::SeamScarfType::External);
+    assert!(s.override_filament_scarf_seam_setting);
+    assert!((s.seam_slope_min_length_mm - 8.0).abs() < 1e-9);
+    assert_eq!(s.filament_scarf_seam_type, crate::SeamScarfType::All);
     assert!(s.wipe_tower_no_sparse_layers);
     assert!(s.reduce_crossing_wall);
     assert!(s.max_travel_detour_is_percent);

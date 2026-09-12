@@ -66,6 +66,10 @@ pub(crate) struct WriterState {
     pub(crate) layer_contours: Vec<Polygon>,
     /// C++ `SupportLayer::support_islands` for support-island travel.
     pub(crate) support_islands: Vec<Polygon>,
+    /// Current slab height (`Layer::height`) for scarf Z.
+    pub(crate) layer_height_mm: f64,
+    /// C++ `m_nominal_z` (top of the current slab).
+    pub(crate) layer_print_z_mm: f64,
 }
 
 impl<'a> Writer<'a> {
@@ -479,9 +483,10 @@ impl<'a> Writer<'a> {
         if closed && pts.first() != pts.last() {
             pts.push(pts[0]);
         }
-        // C++ `GCode::extrude_loop`: clip `seam_gap` from the end unless spiral vase
-        // disabled loop clipping or a scarf seam is active (BBL scarf is `none`).
-        if closed && !self.settings.spiral_mode {
+        let scarf = self.should_scarf(closed, external_perimeter);
+        // C++ `GCode::extrude_loop`: clip `seam_gap` unless spiral vase or a scarf
+        // seam is active (`clip_length = 0` when `enable_seam_slope`).
+        if closed && !self.settings.spiral_mode && !scarf {
             let gap = self.settings.seam_gap_mm();
             if gap > TRAVEL_EPS_MM {
                 pts = clip_end(&pts, gap);
@@ -500,9 +505,11 @@ impl<'a> Writer<'a> {
         } else {
             ""
         };
-        // C++ `LayerRegion::simplify_path`: arc-fit when enabled, else Douglas-Peucker
-        // with `resolution` (including spiral mode, which cannot emit G2/G3).
-        if self.settings.enable_arc_fitting && !self.settings.spiral_mode {
+        if scarf {
+            self.emit_scarfed_linear_path(&pts, e_per_mm, print_f, marker)?;
+        } else if self.settings.enable_arc_fitting && !self.settings.spiral_mode {
+            // C++ `LayerRegion::simplify_path`: arc-fit when enabled, else Douglas-Peucker
+            // with `resolution` (including spiral mode, which cannot emit G2/G3).
             let (simplified, fits) = fit_arcs_and_simplify(&pts, arc_tolerance_mm.max(0.001));
             self.emit_fitted_path(&simplified, &fits, e_per_mm, print_f, marker)?;
         } else {
@@ -512,6 +519,131 @@ impl<'a> Writer<'a> {
         self.state.last_print_f = print_f;
         // C++ `m_last_processor_extrusion_role`: outer walls are `erExternalPerimeter`.
         self.state.last_leave_forces_retract = external_perimeter;
+        Ok(())
+    }
+
+    /// C++ `enable_seam_slope` without hole / conditional-angle gating.
+    pub(crate) fn should_scarf(&self, closed: bool, external_perimeter: bool) -> bool {
+        closed
+            && !self.state.first_layer
+            && !self.settings.spiral_mode
+            && self.state.dest_is_perimeter
+            && self.settings.seam_slope_min_length_mm > TRAVEL_EPS_MM
+            && self.state.layer_height_mm > TRAVEL_EPS_MM
+            && self.settings.scarf_applies_to_wall(external_perimeter)
+    }
+
+    /// C++ `ExtrusionLoopSloped` start ramp: Z from `start_ratio` to 1 over
+    /// `min(min_length, loop)` (or the whole loop). Linear G1 only.
+    fn emit_scarfed_linear_path(
+        &mut self,
+        pts: &[Point],
+        e_per_mm: f64,
+        print_f: f64,
+        marker: &str,
+    ) -> Result<(), GcodeError> {
+        let loop_len: f64 = pts.windows(2).map(|w| xy_dist(xy(w[0]), xy(w[1]))).sum();
+        if loop_len < TRAVEL_EPS_MM {
+            return Ok(());
+        }
+        let scarf_len = if self.settings.seam_slope_entire_loop {
+            loop_len
+        } else {
+            self.settings.seam_slope_min_length_mm.min(loop_len)
+        };
+        if scarf_len < TRAVEL_EPS_MM {
+            return self.emit_linear_path(pts, e_per_mm, print_f, marker);
+        }
+        let steps = self.settings.seam_slope_steps.max(1) as f64;
+        let max_seg = (scarf_len / steps).max(TRAVEL_EPS_MM);
+        let start_ratio = self.settings.scarf_start_ratio(self.state.layer_height_mm);
+        let height = self.state.layer_height_mm;
+        let print_z = self.state.layer_print_z_mm;
+        let start_z = lerp(print_z - height, print_z, start_ratio);
+        if (self.state.z - start_z).abs() > TRAVEL_EPS_MM {
+            writeln!(
+                self.out,
+                "G1 Z{:.3} F{:.0}",
+                start_z,
+                self.settings.z_travel_speed_mm_s() * 60.0
+            )?;
+            self.state.z = start_z;
+        }
+        let mut walked = 0.0;
+        let mut trail = vec![xy(pts[0])];
+        for window in pts.windows(2) {
+            let b = xy(window[1]);
+            let dist = xy_dist(xy(window[0]), b);
+            if dist < TRAVEL_EPS_MM {
+                continue;
+            }
+            let mut remaining = dist;
+            let mut from = xy(window[0]);
+            while remaining > TRAVEL_EPS_MM {
+                if walked + TRAVEL_EPS_MM >= scarf_len {
+                    self.push_extrude_xy(b, remaining * e_per_mm, print_f, marker, &mut trail)?;
+                    walked += remaining;
+                    break;
+                }
+                let take = remaining.min(scarf_len - walked).min(max_seg);
+                let t = take / remaining;
+                let dest = (from.0 + (b.0 - from.0) * t, from.1 + (b.1 - from.1) * t);
+                walked += take;
+                remaining -= take;
+                from = dest;
+                let ratio = lerp(start_ratio, 1.0, (walked / scarf_len).min(1.0));
+                let z = lerp(print_z - height, print_z, ratio);
+                self.push_extrude_xyz(
+                    dest,
+                    z,
+                    take * e_per_mm * ratio,
+                    print_f,
+                    marker,
+                    &mut trail,
+                )?;
+            }
+        }
+        self.state.wipe = trail.into_iter().rev().collect();
+        Ok(())
+    }
+
+    fn push_extrude_xy(
+        &mut self,
+        dest: (f64, f64),
+        de: f64,
+        print_f: f64,
+        marker: &str,
+        trail: &mut Vec<(f64, f64)>,
+    ) -> Result<(), GcodeError> {
+        self.state.e += de;
+        writeln!(
+            self.out,
+            "G1 X{:.3} Y{:.3} E{:.5} F{:.0}{marker}",
+            dest.0, dest.1, self.state.e, print_f
+        )?;
+        self.state.last = Some(dest);
+        trail.push(dest);
+        Ok(())
+    }
+
+    fn push_extrude_xyz(
+        &mut self,
+        dest: (f64, f64),
+        z: f64,
+        de: f64,
+        print_f: f64,
+        marker: &str,
+        trail: &mut Vec<(f64, f64)>,
+    ) -> Result<(), GcodeError> {
+        self.state.e += de;
+        writeln!(
+            self.out,
+            "G1 X{:.3} Y{:.3} Z{:.3} E{:.5} F{:.0}{marker}",
+            dest.0, dest.1, z, self.state.e, print_f
+        )?;
+        self.state.last = Some(dest);
+        self.state.z = z;
+        trail.push(dest);
         Ok(())
     }
 
@@ -614,6 +746,10 @@ impl<'a> Writer<'a> {
 
 pub(crate) fn xy_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
+}
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
 }
 
 fn xy_len(path: &[(f64, f64)]) -> f64 {
