@@ -1,6 +1,7 @@
 //! Bambu `Metadata/model_settings.config` (plates, object names, parts).
 //!
 //! Triangle AMS mapping and assemble-view transforms stay ignored.
+//! Object-level process keys overlay onto each volume; part keys win.
 //! Parameter-modifier region keys on `<part>` overlay PrintRegion settings.
 //! Triangle `paint_supports` / `paint_seam` / `paint_fuzzy_skin` live on the mesh.
 
@@ -70,6 +71,9 @@ pub fn apply(model: &mut Model, xml: &str) -> Result<(), IoError> {
         if let Some(parts) = parsed.parts.get(&obj.object_id) {
             apply_parts(obj, parts);
         }
+        if let Some(cfg) = parsed.object_config.get(&obj.object_id) {
+            apply_object_config(obj, cfg);
+        }
     }
     if parsed.plates.is_empty() {
         return Ok(());
@@ -115,6 +119,18 @@ fn apply_parts(obj: &mut bambu_model::ModelObject, parts: &[PartRec]) {
         }
     }
     obj.rebuild_printable_mesh();
+}
+
+/// Part keys win over object keys (C++ volume config overlays object config).
+fn apply_object_config(obj: &mut bambu_model::ModelObject, cfg: &BTreeMap<String, String>) {
+    if cfg.is_empty() {
+        return;
+    }
+    for vol in &mut obj.volumes {
+        let mut merged = cfg.clone();
+        merged.extend(std::mem::take(&mut vol.config));
+        vol.config = merged;
+    }
 }
 
 fn find_part(parts: &[PartRec], part_id: u32) -> Option<&PartRec> {
@@ -267,6 +283,8 @@ pub fn parse_matrix(s: &str) -> Mat4 {
 
 struct ParsedSettings {
     names: BTreeMap<u32, String>,
+    /// C++ object-level process keys (`wall_loops`, `sparse_infill_density`, …).
+    object_config: BTreeMap<u32, BTreeMap<String, String>>,
     parts: BTreeMap<u32, Vec<PartRec>>,
     plates: Vec<PlateRec>,
 }
@@ -277,6 +295,7 @@ fn parse(xml: &str) -> Result<ParsedSettings, IoError> {
     let mut buf = Vec::new();
     let mut ctx = Ctx::Root;
     let mut names = BTreeMap::new();
+    let mut object_config: BTreeMap<u32, BTreeMap<String, String>> = BTreeMap::new();
     let mut parts: BTreeMap<u32, Vec<PartRec>> = BTreeMap::new();
     let mut plates = Vec::new();
     let mut plate = PlateRec::default();
@@ -317,7 +336,16 @@ fn parse(xml: &str) -> Result<ParsedSettings, IoError> {
                     }
                     b"metadata" => {
                         apply_metadata(
-                            ctx, object_id, &e, &mut names, &mut plate, &mut inst, &mut part,
+                            ctx,
+                            &e,
+                            MetaSink {
+                                object_id,
+                                names: &mut names,
+                                object_config: &mut object_config,
+                                plate: &mut plate,
+                                inst: &mut inst,
+                                part: &mut part,
+                            },
                         );
                     }
                     _ => {}
@@ -327,7 +355,16 @@ fn parse(xml: &str) -> Result<ParsedSettings, IoError> {
                 let local = e.local_name();
                 if local.as_ref() == b"metadata" {
                     apply_metadata(
-                        ctx, object_id, &e, &mut names, &mut plate, &mut inst, &mut part,
+                        ctx,
+                        &e,
+                        MetaSink {
+                            object_id,
+                            names: &mut names,
+                            object_config: &mut object_config,
+                            plate: &mut plate,
+                            inst: &mut inst,
+                            part: &mut part,
+                        },
                     );
                 }
             }
@@ -371,33 +408,51 @@ fn parse(xml: &str) -> Result<ParsedSettings, IoError> {
     plates.sort_by_key(|p| p.index);
     Ok(ParsedSettings {
         names,
+        object_config,
         parts,
         plates,
     })
 }
 
-fn apply_metadata(
-    ctx: Ctx,
+struct MetaSink<'a> {
+    object_id: u32,
+    names: &'a mut BTreeMap<u32, String>,
+    object_config: &'a mut BTreeMap<u32, BTreeMap<String, String>>,
+    plate: &'a mut PlateRec,
+    inst: &'a mut InstanceRec,
+    part: &'a mut PartRec,
+}
+
+fn apply_metadata(ctx: Ctx, e: &quick_xml::events::BytesStart<'_>, sink: MetaSink<'_>) {
+    match ctx {
+        Ctx::Object => apply_object_meta(sink.object_id, e, sink.names, sink.object_config),
+        Ctx::Part => apply_part_meta(sink.part, e),
+        Ctx::Plate => apply_plate_meta(sink.plate, e),
+        Ctx::Instance => apply_instance_meta(sink.inst, e),
+        Ctx::Root | Ctx::Skip => {}
+    }
+}
+
+fn apply_object_meta(
     object_id: u32,
     e: &quick_xml::events::BytesStart<'_>,
     names: &mut BTreeMap<u32, String>,
-    plate: &mut PlateRec,
-    inst: &mut InstanceRec,
-    part: &mut PartRec,
+    object_config: &mut BTreeMap<u32, BTreeMap<String, String>>,
 ) {
-    match ctx {
-        Ctx::Object => {
-            if attr(e, b"key").as_deref() == Some("name") {
-                if let Some(v) = attr(e, b"value") {
-                    names.insert(object_id, v);
-                }
-            }
-        }
-        Ctx::Part => apply_part_meta(part, e),
-        Ctx::Plate => apply_plate_meta(plate, e),
-        Ctx::Instance => apply_instance_meta(inst, e),
-        Ctx::Root | Ctx::Skip => {}
+    let Some(key) = attr(e, b"key") else {
+        return;
+    };
+    let Some(value) = attr(e, b"value") else {
+        return;
+    };
+    if key == "name" {
+        names.insert(object_id, value);
+        return;
     }
+    object_config
+        .entry(object_id)
+        .or_default()
+        .insert(key, value);
 }
 
 fn apply_part_meta(part: &mut PartRec, e: &quick_xml::events::BytesStart<'_>) {

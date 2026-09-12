@@ -785,3 +785,47 @@ fn parameter_modifier_config_load_and_roundtrip() {
         Some("100%")
     );
 }
+
+#[test]
+fn object_process_keys_apply_to_volumes() {
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns="{CORE_NS}">
+  <resources>
+{}
+  </resources>
+  <build>
+<item objectid="1"/>
+  </build>
+</model>"#,
+        cube_mesh_xml(1, "body", 20.0, Vec3::ZERO),
+    );
+    let settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="1">
+    <metadata key="name" value="chassis"/>
+    <metadata key="wall_loops" value="2"/>
+    <metadata key="sparse_infill_density" value="100%"/>
+    <metadata key="enable_support" value="0"/>
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="body"/>
+    </part>
+  </object>
+</config>"#;
+    let model = load_3mf_bytes(&pack_files(&[
+        (MODEL_PATH, &xml),
+        (MODEL_SETTINGS_PATH, settings),
+    ]))
+    .unwrap();
+    assert_eq!(model.objects[0].name, "chassis");
+    let vol = &model.objects[0].volumes[0];
+    assert_eq!(vol.config.get("wall_loops").map(String::as_str), Some("2"));
+    assert_eq!(
+        vol.config.get("sparse_infill_density").map(String::as_str),
+        Some("100%")
+    );
+    assert_eq!(
+        vol.config.get("enable_support").map(String::as_str),
+        Some("0")
+    );
+}

@@ -8,16 +8,14 @@
 mod common;
 
 use bambu_alloc as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 use bambu_config::SupportType;
-use bambu_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode, write_gcode};
+use bambu_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
 use bambu_io::load_3mf;
 use bambu_model::ModelVolume;
-use bambu_slicer::{slice_mesh, slice_volumes};
 
-use common::{find_bambu_studio, find_gcode, require_oracle};
+use common::{bambu_studio_or_skip, run_cpp_slice_3mf, rust_slice_plate, tests_dir};
 
 const TOWER_3MF: &str = "Multifilament+advanced+full+test+tower.3mf";
 
@@ -37,9 +35,7 @@ const TOWER_OBJECT_ROLES: &[&str] = &[
 ];
 
 fn tower_3mf_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/multicolor")
-        .join(TOWER_3MF)
+    tests_dir().join("multicolor").join(TOWER_3MF)
 }
 
 #[test]
@@ -114,15 +110,7 @@ fn tower_3mf_loads() {
 
 #[test]
 fn tower_matches_cpp_bambu_studio() {
-    let Some(bin) = find_bambu_studio() else {
-        if require_oracle() {
-            panic!(
-                "BAMBU_STUDIO_REQUIRE_ORACLE=1 but no C++ bambu-studio CLI was found. Set BAMBU_STUDIO or install Bambu Studio."
-            );
-        }
-        eprintln!(
-            "skipping C++ oracle: bambu-studio not on PATH (set BAMBU_STUDIO_REQUIRE_ORACLE=1 to fail)"
-        );
+    let Some(bin) = bambu_studio_or_skip() else {
         return;
     };
 
@@ -133,7 +121,7 @@ fn tower_matches_cpp_bambu_studio() {
         .clone()
         .expect("embedded project_settings.config");
 
-    let ours_gcode = rust_slice_plate(&model, &settings).expect("rust slice");
+    let ours_gcode = rust_slice_plate(&model, &settings, 0).expect("rust slice");
     let dir = std::env::temp_dir().join("bambu-studio-rs-oracle-tower");
     let cpp_dir = dir.join("cpp_out");
     let cpp_data = dir.join("cpp_data");
@@ -141,7 +129,7 @@ fn tower_matches_cpp_bambu_studio() {
     let _ = std::fs::create_dir_all(&cpp_data);
     std::fs::write(dir.join("tower_rs.gcode"), &ours_gcode).unwrap();
 
-    let cpp_gcode = run_cpp_slice_3mf(&bin, &cpp_dir, &cpp_data, &path).unwrap_or_else(|err| {
+    let cpp_gcode = run_cpp_slice_3mf(&bin, &cpp_dir, &cpp_data, &path, 1).unwrap_or_else(|err| {
         panic!(
             "C++ Bambu Studio oracle failed using {}:\n{err}",
             bin.display()
@@ -195,102 +183,4 @@ fn tower_matches_cpp_bambu_studio() {
     // CHANGE_LAYER comments vs the rewrite's object-only stack.
     let layer_slop = (cpp_layers / 10).max(15);
     assert_matches_cpp_with(&ours, &cpp, TOWER_OBJECT_ROLES, layer_slop, 0.8);
-}
-
-fn rust_slice_plate(
-    model: &bambu_model::Model,
-    settings: &bambu_config::SliceSettings,
-) -> Result<String, String> {
-    let mut volumes = model.world_volumes_for_plate(0);
-    if volumes.is_empty() {
-        return Err("plate 1 has no volumes".into());
-    }
-    ensure_on_bed_volumes(&mut volumes);
-    let sliced = if volumes.iter().any(ModelVolume::needs_volume_slice) {
-        slice_volumes(&volumes, settings).map_err(|e| e.to_string())?
-    } else {
-        let mut mesh = model
-            .mesh_for_plate(0)
-            .ok_or_else(|| "plate 1 mesh missing".to_string())?;
-        ensure_on_bed_mesh(&mut mesh);
-        slice_mesh(&mesh, settings).map_err(|e| e.to_string())?
-    };
-    write_gcode(settings, &sliced).map_err(|e| e.to_string())
-}
-
-fn ensure_on_bed_mesh(mesh: &mut bambu_geom::TriangleMesh) {
-    if let Some(aabb) = mesh.aabb() {
-        if aabb.min.z.abs() > 1e-4 {
-            let dz = -aabb.min.z;
-            for v in &mut mesh.vertices {
-                v.z += dz;
-            }
-        }
-    }
-}
-
-fn ensure_on_bed_volumes(volumes: &mut [ModelVolume]) {
-    let min_z = volumes
-        .iter()
-        .filter_map(|v| v.mesh.aabb())
-        .map(|a| a.min.z)
-        .fold(f32::INFINITY, f32::min);
-    if min_z.is_finite() && min_z.abs() > 1e-4 {
-        let dz = -min_z;
-        for vol in volumes {
-            for v in &mut vol.mesh.vertices {
-                v.z += dz;
-            }
-        }
-    }
-}
-
-fn run_cpp_slice_3mf(
-    bin: &Path,
-    outdir: &Path,
-    datadir: &Path,
-    input: &Path,
-) -> Result<String, String> {
-    let _ = std::fs::create_dir_all(outdir);
-    if let Ok(entries) = std::fs::read_dir(outdir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("gcode") {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-
-    let output = Command::new(bin)
-        .arg(format!("--datadir={}", datadir.display()))
-        .arg("--debug=0")
-        .arg("--slice=1")
-        .arg(format!("--outputdir={}", outdir.display()))
-        .arg("--ensure-on-bed")
-        .arg("--no-check")
-        .arg(input)
-        .output()
-        .map_err(|err| format!("failed to spawn {}: {err}", bin.display()))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let captured = format!(
-        "status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
-        output.status.code()
-    );
-
-    if !output.status.success() {
-        return Err(format!("{} --slice=1 failed: {captured}", bin.display()));
-    }
-
-    let gcode_path = find_gcode(outdir).ok_or_else(|| {
-        format!(
-            "{} succeeded but no .gcode under {}. {captured}",
-            bin.display(),
-            outdir.display()
-        )
-    })?;
-
-    std::fs::read_to_string(&gcode_path)
-        .map_err(|err| format!("failed to read {}: {err}. {captured}", gcode_path.display()))
 }
