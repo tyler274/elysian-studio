@@ -228,6 +228,8 @@ fn upstream_fdm_process_0_20() {
         crate::SupportInterfacePattern::Auto
     );
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert_eq!(s.support_interface_bottom_layers, 2);
+    assert!((s.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
@@ -455,6 +457,24 @@ fn sub_top_surface_pattern_match_cpp() {
         baked.sub_top_surface_pattern,
         crate::SurfacePattern::Monotonic
     );
+}
+
+#[test]
+fn support_interface_bottom_layers_and_spacing_match_cpp() {
+    let mut s = SliceSettings::default();
+    assert_eq!(s.support_interface_bottom_layers, 0);
+    assert!((s.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert_eq!(s.resolved_support_interface_bottom_layers(), 0);
+    s.support_interface_bottom_layers = -1;
+    assert_eq!(
+        s.resolved_support_interface_bottom_layers(),
+        s.support_interface_layers
+    );
+    s.support_interface_bottom_layers = 2;
+    assert_eq!(s.resolved_support_interface_bottom_layers(), 2);
+    let baked = SliceSettings::bbl_0_20();
+    assert_eq!(baked.support_interface_bottom_layers, 0);
+    assert!((baked.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
 }
 
 #[test]
@@ -834,6 +854,8 @@ fn project_settings_json_roundtrip() {
     src.support_base_pattern_spacing_mm = 1.0;
     src.support_interface_pattern = crate::SupportInterfacePattern::Concentric;
     src.support_interface_spacing_mm = 0.0;
+    src.support_interface_bottom_layers = 2;
+    src.support_bottom_interface_spacing_mm = 0.2;
     src.support_angle_deg = 45.0;
     src.enable_support_ironing = true;
     src.support_ironing_direction_deg = 30.0;
@@ -899,6 +921,8 @@ fn project_settings_json_roundtrip() {
         crate::SupportInterfacePattern::Concentric
     );
     assert!(loaded.support_interface_spacing_mm.abs() < 1e-9);
+    assert_eq!(loaded.support_interface_bottom_layers, 2);
+    assert!((loaded.support_bottom_interface_spacing_mm - 0.2).abs() < 1e-9);
     assert!((loaded.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(loaded.enable_support_ironing);
     assert!((loaded.support_ironing_direction_deg - 30.0).abs() < 1e-9);
@@ -1027,6 +1051,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_base_pattern_spacing".into(), "1".into());
     pairs.insert("support_interface_pattern".into(), "concentric".into());
     pairs.insert("support_interface_spacing".into(), "0".into());
+    pairs.insert("support_interface_bottom_layers".into(), "2".into());
+    pairs.insert("support_bottom_interface_spacing".into(), "0.2".into());
     pairs.insert("support_angle".into(), "45".into());
     pairs.insert("enable_support_ironing".into(), "1".into());
     pairs.insert("support_ironing_direction".into(), "30".into());
@@ -1076,6 +1102,8 @@ fn region_overrides_skip_object_keys() {
         crate::SupportInterfacePattern::Auto
     );
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert_eq!(s.support_interface_bottom_layers, 0);
+    assert!((s.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
@@ -1120,6 +1148,8 @@ fn region_overrides_skip_object_keys() {
         crate::SupportInterfacePattern::Concentric
     );
     assert!(s.support_interface_spacing_mm.abs() < 1e-9);
+    assert_eq!(s.support_interface_bottom_layers, 2);
+    assert!((s.support_bottom_interface_spacing_mm - 0.2).abs() < 1e-9);
     assert!((s.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(s.enable_support_ironing);
     assert!((s.support_ironing_direction_deg - 30.0).abs() < 1e-9);

@@ -298,6 +298,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "support_interface_top_layers",
         settings.support_interface_layers.to_string(),
     );
+    insert(
+        &mut map,
+        "support_interface_bottom_layers",
+        settings.support_interface_bottom_layers.to_string(),
+    );
+    insert(
+        &mut map,
+        "support_bottom_interface_spacing",
+        num_str(settings.support_bottom_interface_spacing_mm),
+    );
     insert_bool(
         &mut map,
         "support_interface_loop_pattern",

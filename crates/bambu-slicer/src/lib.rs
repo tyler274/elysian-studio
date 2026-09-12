@@ -1311,6 +1311,62 @@ mod tests {
     }
 
     #[test]
+    fn support_interface_bottom_layers_cover_in_model_floor() {
+        let mesh = TriangleMesh::pedestal_cap(20.0, 6.0, 16.0, 4.0, 8.0, 4.0);
+        let mut settings = support_beam_settings();
+        let none = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_interface_bottom_layers = 2;
+        let floors = slice_mesh(&mesh, &settings).unwrap();
+        let interface_layers = |sliced: &SliceResult| {
+            sliced
+                .layers
+                .iter()
+                .filter(|l| !l.support_interface.is_empty())
+                .count()
+        };
+        let a = interface_layers(&none);
+        let b = interface_layers(&floors);
+        assert!(
+            b > a,
+            "C++ support_interface_bottom_layers should hatch in-model floors: none={a} floors={b}"
+        );
+        settings.support_type = SupportType::Tree;
+        settings.support_interface_bottom_layers = 0;
+        let tree_none = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_interface_bottom_layers = 2;
+        let tree_floors = slice_mesh(&mesh, &settings).unwrap();
+        assert_eq!(
+            interface_layers(&tree_none),
+            interface_layers(&tree_floors),
+            "C++ tree hardcodes bottom interface layers to 0"
+        );
+    }
+
+    #[test]
+    fn support_bottom_interface_spacing_densifies_floor() {
+        let mesh = TriangleMesh::pedestal_cap(20.0, 6.0, 16.0, 4.0, 8.0, 4.0);
+        let mut settings = support_beam_settings();
+        settings.support_interface_bottom_layers = 2;
+        settings.support_bottom_interface_spacing_mm = 0.0;
+        let solid = slice_mesh(&mesh, &settings).unwrap();
+        settings.support_bottom_interface_spacing_mm = 2.0;
+        let coarse = slice_mesh(&mesh, &settings).unwrap();
+        let interface_len = |sliced: &SliceResult| {
+            sliced
+                .layers
+                .iter()
+                .map(|l| l.support_interface.len())
+                .sum::<usize>()
+        };
+        let a = interface_len(&solid);
+        let b = interface_len(&coarse);
+        assert!(
+            a > b,
+            "C++ support_bottom_interface_spacing 0 should densify floors vs 2 mm: solid={a} coarse={b}"
+        );
+    }
+
+    #[test]
     fn build_plate_only_still_supports_table_overhang() {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
         let mut settings = SliceSettings::default();

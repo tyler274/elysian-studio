@@ -11,6 +11,9 @@
 //! Tree auto can keep only cantilevers (`support_critical_regions_only`).
 //! Top contact can use loops (`support_interface_loop_pattern`) or a chosen
 //! hatch (`support_interface_pattern`; BBL `auto` stays 0° rectilinear).
+//! Classic in-model floors honor `support_interface_bottom_layers` (`-1` copies
+//! top; C++ default 0). Tree hardcodes 0. Bottom hatch uses
+//! `support_bottom_interface_spacing`.
 //! Tree trunks honor `support_base_pattern` (honeycomb / grid fill the disks;
 //! BBL `default` stays hollow) and `tree_support_wall_count` (`-1` auto outlines).
 //! `support_angle` rotates hatch. Solid interfaces can be ironed
@@ -319,10 +322,20 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
     }
 
     let interface_n = settings.support_interface_layers.max(1);
+    let bottom_n = settings.resolved_support_interface_bottom_layers();
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let support_spacing = settings.support_spacing_mm();
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
+    let bottom_spacing = settings.support_bottom_interface_hatch_spacing_mm();
+    let mut landing = vec![false; n];
+    for (i, region) in regions.iter().enumerate().skip(1) {
+        if region.is_empty() || !regions[i - 1].is_empty() {
+            continue;
+        }
+        let grown = offset_polygons(region, settings.support_xy_gap_mm(i) + 0.05);
+        landing[i] = !intersect_polygons(&grown, &layers[i - 1].contours).is_empty();
+    }
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if regions[i].is_empty() {
             return;
@@ -336,6 +349,8 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
             let j = i + d as usize;
             j < n && !overhangs[j].is_empty()
         });
+        let is_bottom =
+            bottom_n > 0 && (0..bottom_n).any(|d| i >= d as usize && landing[i - d as usize]);
         if is_interface {
             let is_contact = i + 1 < n && !overhangs[i + 1].is_empty();
             layer.support_interface = fill_support_interface(
@@ -345,6 +360,9 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
                 settings,
                 is_contact && settings.support_interface_loop_pattern,
             );
+        } else if is_bottom {
+            layer.support_interface =
+                fill_support_interface(&fill_region, bottom_spacing, i, settings, false);
         } else {
             layer.support = fill_support_base(&fill_region, support_spacing, i, settings);
         }

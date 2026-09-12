@@ -1004,6 +1004,11 @@ pub struct SliceSettings {
     pub support_object_first_layer_gap_mm: f64,
     pub support_top_z_distance_mm: f64,
     pub support_interface_layers: u32,
+    /// C++ `support_interface_bottom_layers`. `-1` means same as top; default 0
+    /// (no in-model floors). BBL `"2"`.
+    pub support_interface_bottom_layers: i32,
+    /// C++ `support_bottom_interface_spacing` (mm). BBL omits; default 0.5.
+    pub support_bottom_interface_spacing_mm: f64,
     /// C++ `support_interface_loop_pattern`. Cover the top contact with loops
     /// instead of hatch. BBL `"0"`.
     pub support_interface_loop_pattern: bool,
@@ -1433,6 +1438,8 @@ impl Default for SliceSettings {
             support_object_first_layer_gap_mm: 0.2,
             support_top_z_distance_mm: 0.2,
             support_interface_layers: 2,
+            support_interface_bottom_layers: 0,
+            support_bottom_interface_spacing_mm: 0.5,
             support_interface_loop_pattern: false,
             support_base_pattern: SupportBasePattern::Default,
             support_base_pattern_spacing_mm: 2.5,
@@ -1840,13 +1847,37 @@ impl SliceSettings {
     /// C++ `interface_spacing = support_interface_spacing + flow.spacing()`.
     /// Keep `width × 1.1` at the BBL default 0.5 so existing hatch does not move.
     pub fn support_interface_hatch_spacing_mm(&self) -> f64 {
-        let w = self.line_width_for(FlowRole::SupportMaterial, false);
-        if self.support_interface_spacing_mm.abs() < 1e-9 {
-            w
-        } else if (self.support_interface_spacing_mm - 0.5).abs() > 1e-9 {
-            (self.support_interface_spacing_mm.max(0.0) + w).max(w)
+        Self::support_hatch_spacing_mm(
+            self.support_interface_spacing_mm,
+            self.line_width_for(FlowRole::SupportMaterial, false),
+        )
+    }
+
+    /// C++ `support_bottom_interface_spacing + flow.spacing()`, same 0.5 default
+    /// as top so BBL-omitted floors keep `width × 1.1`.
+    pub fn support_bottom_interface_hatch_spacing_mm(&self) -> f64 {
+        Self::support_hatch_spacing_mm(
+            self.support_bottom_interface_spacing_mm,
+            self.line_width_for(FlowRole::SupportMaterial, false),
+        )
+    }
+
+    fn support_hatch_spacing_mm(spacing_mm: f64, width_mm: f64) -> f64 {
+        if spacing_mm.abs() < 1e-9 {
+            width_mm
+        } else if (spacing_mm - 0.5).abs() > 1e-9 {
+            (spacing_mm.max(0.0) + width_mm).max(width_mm)
         } else {
-            (w * 1.1).max(w)
+            (width_mm * 1.1).max(width_mm)
+        }
+    }
+
+    /// C++ `num_bottom_interface_layers`: `-1` copies top layer count.
+    pub fn resolved_support_interface_bottom_layers(&self) -> u32 {
+        if self.support_interface_bottom_layers < 0 {
+            self.support_interface_layers
+        } else {
+            self.support_interface_bottom_layers as u32
         }
     }
 

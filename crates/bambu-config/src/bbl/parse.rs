@@ -404,6 +404,12 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = u32_val(map, "support_interface_top_layers") {
         s.support_interface_layers = v;
     }
+    if let Some(v) = i32_val(map, "support_interface_bottom_layers") {
+        s.support_interface_bottom_layers = v.clamp(-1, 16);
+    }
+    if let Some(v) = num(map, "support_bottom_interface_spacing") {
+        s.support_bottom_interface_spacing_mm = v.max(0.0);
+    }
     if let Some(v) = bool_val(map, "support_interface_loop_pattern") {
         s.support_interface_loop_pattern = v;
     }
