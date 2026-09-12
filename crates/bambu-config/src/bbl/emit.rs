@@ -295,6 +295,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "support_bottom_z_distance",
+        num_str(settings.support_bottom_z_distance_mm),
+    );
+    insert(
+        &mut map,
         "support_interface_top_layers",
         settings.support_interface_layers.to_string(),
     );

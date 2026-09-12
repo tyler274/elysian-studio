@@ -402,6 +402,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "support_top_z_distance") {
         s.support_top_z_distance_mm = v;
     }
+    if let Some(v) = num(map, "support_bottom_z_distance") {
+        s.support_bottom_z_distance_mm = v;
+    }
     if let Some(v) = u32_val(map, "support_interface_top_layers") {
         s.support_interface_layers = v;
     }

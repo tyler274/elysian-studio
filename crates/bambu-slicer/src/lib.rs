@@ -1366,6 +1366,69 @@ mod tests {
         );
     }
 
+    fn highest_support_print_z(result: &SliceResult) -> Option<f64> {
+        result
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .map(|l| l.print_z_mm)
+            .max_by(|a, b| a.total_cmp(b))
+    }
+
+    #[test]
+    fn support_top_z_distance_leaves_air_gap() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        for ty in [SupportType::Classic, SupportType::Tree] {
+            let mut zero = support_beam_settings();
+            zero.support_type = ty;
+            zero.support_top_z_distance_mm = 0.0;
+            zero.support_bottom_z_distance_mm = 0.0;
+            let mut gap = zero.clone();
+            gap.support_top_z_distance_mm = 0.2;
+            let mut wide = zero.clone();
+            wide.support_top_z_distance_mm = 0.6;
+            let z0 = highest_support_print_z(&slice_mesh(&mesh, &zero).unwrap());
+            let z1 = highest_support_print_z(&slice_mesh(&mesh, &gap).unwrap());
+            let z2 = highest_support_print_z(&slice_mesh(&mesh, &wide).unwrap());
+            assert!(
+                z0.is_some() && z1.is_some() && z2.is_some(),
+                "{ty:?}: expected support under the slab"
+            );
+            let z0 = z0.unwrap();
+            let z1 = z1.unwrap();
+            let z2 = z2.unwrap();
+            assert!(
+                z1 < z0 - 0.05,
+                "{ty:?}: C++ support_top_z_distance 0.2 should drop the contact below soluble: soluble={z0} gap={z1}"
+            );
+            assert!(
+                z2 < z1 - 0.15,
+                "{ty:?}: a 0.6 mm top gap should sit below the 0.2 mm contact: gap={z1} wide={z2}"
+            );
+        }
+    }
+
+    #[test]
+    fn support_bottom_z_distance_leaves_air_gap_on_model() {
+        let mesh = TriangleMesh::pedestal_cap(20.0, 6.0, 16.0, 4.0, 8.0, 4.0);
+        let mut tight = support_beam_settings();
+        tight.support_top_z_distance_mm = 0.0;
+        tight.support_bottom_z_distance_mm = 0.0;
+        tight.support_on_build_plate_only = false;
+        let mut gapped = tight.clone();
+        gapped.support_bottom_z_distance_mm = 0.6;
+        let a = support_fill_layers(&slice_mesh(&mesh, &tight).unwrap());
+        let b = support_fill_layers(&slice_mesh(&mesh, &gapped).unwrap());
+        assert!(
+            a >= 8,
+            "cap support should rest on the pedestal without a bottom gap, got {a}"
+        );
+        assert!(
+            b < a,
+            "C++ support_bottom_z_distance should skip in-model landing layers: tight={a} gapped={b}"
+        );
+    }
+
     #[test]
     fn build_plate_only_still_supports_table_overhang() {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);

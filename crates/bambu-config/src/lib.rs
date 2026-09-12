@@ -1002,7 +1002,11 @@ pub struct SliceSettings {
     /// C++ `support_object_first_layer_gap` (mm). XY gap on object layer 0.
     /// C++ default 0.2; BBL omits the key.
     pub support_object_first_layer_gap_mm: f64,
+    /// C++ `support_top_z_distance` (mm). Air gap under the overhang. BBL `"0.2"`.
     pub support_top_z_distance_mm: f64,
+    /// C++ `support_bottom_z_distance` (mm). Air gap above in-model landings.
+    /// `<= 0` copies the top gap. BBL `"0.2"`.
+    pub support_bottom_z_distance_mm: f64,
     pub support_interface_layers: u32,
     /// C++ `support_interface_bottom_layers`. `-1` means same as top; default 0
     /// (no in-model floors). BBL `"2"`.
@@ -1441,6 +1445,7 @@ impl Default for SliceSettings {
             support_xy_distance_mm: 0.35,
             support_object_first_layer_gap_mm: 0.2,
             support_top_z_distance_mm: 0.2,
+            support_bottom_z_distance_mm: 0.2,
             support_interface_layers: 2,
             support_interface_bottom_layers: 0,
             support_bottom_interface_spacing_mm: 0.5,
@@ -1738,6 +1743,37 @@ impl SliceSettings {
             self.support_object_first_layer_gap_mm
         } else {
             self.support_xy_distance_mm
+        }
+    }
+
+    /// C++ `gap_support_object` as a whole-layer count. Zero is soluble.
+    pub fn support_top_gap_layers(&self) -> usize {
+        Self::z_gap_layers(self.support_top_z_distance_mm, self.layer_height_mm)
+    }
+
+    /// C++ `gap_object_support`. `<= 0` copies [`Self::support_top_z_distance_mm`].
+    pub fn resolved_support_bottom_z_distance_mm(&self) -> f64 {
+        if self.support_bottom_z_distance_mm <= 0.0 {
+            self.support_top_z_distance_mm
+        } else {
+            self.support_bottom_z_distance_mm
+        }
+    }
+
+    /// C++ `gap_object_support` as a whole-layer count. Zero is soluble.
+    pub fn support_bottom_gap_layers(&self) -> usize {
+        Self::z_gap_layers(
+            self.resolved_support_bottom_z_distance_mm(),
+            self.layer_height_mm,
+        )
+    }
+
+    /// C++ `std::round(gap / layer_height + EPSILON)` when support shares object Z.
+    fn z_gap_layers(gap_mm: f64, layer_height_mm: f64) -> usize {
+        if gap_mm <= 1e-9 {
+            0
+        } else {
+            (gap_mm / layer_height_mm.max(1e-6) + 1e-4).round() as usize
         }
     }
 

@@ -108,30 +108,35 @@ fn draw(
     radii: &[f64],
 ) {
     let n = layers.len();
+    let top_gap = settings.support_top_gap_layers();
     let interface_n = settings.support_interface_layers.max(1);
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let pad_spacing = support_w.max(MIN_MM);
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        if top_gap > 0 && super::overhang_in_range(overhangs, i, 0, top_gap) {
+            return;
+        }
         let radius = radii[i];
         let disks: Vec<Polygon> = nodes[i].iter().map(|p| regular_ngon(*p, radius)).collect();
         let unioned = union_polygons(&disks);
         let mut region = unioned.clone();
-        let is_contact = !overhangs[i].is_empty();
+        let contact_idx = if top_gap == 0 { i } else { i + top_gap + 1 };
+        let contact = overhangs.get(contact_idx).filter(|o| !o.is_empty());
         let is_roof = (1..=interface_n).any(|d| {
-            let j = i + d as usize;
+            let j = i + top_gap + d as usize;
             j < n && !overhangs[j].is_empty()
         });
-        if is_contact {
-            region.extend(overhangs[i].iter().cloned());
+        if let Some(overhang) = contact {
+            region.extend(overhang.iter().cloned());
             region = union_polygons(&region);
         }
         layer.support_region = region.clone();
-        if is_contact {
-            let fill = offset_polygons(&overhangs[i], -inset.min(radius * 0.25));
+        if let Some(overhang) = contact {
+            let fill = offset_polygons(overhang, -inset.min(radius * 0.25));
             let fill = if fill.is_empty() {
-                overhangs[i].clone()
+                overhang.to_vec()
             } else {
                 fill
             };

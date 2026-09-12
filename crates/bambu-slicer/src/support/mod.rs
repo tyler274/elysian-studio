@@ -14,6 +14,8 @@
 //! Classic in-model floors honor `support_interface_bottom_layers` (`-1` copies
 //! top; C++ default 0). Tree hardcodes 0. Bottom hatch uses
 //! `support_bottom_interface_spacing`.
+//! Top/bottom Z gaps (`support_top_z_distance` / `support_bottom_z_distance`)
+//! skip whole object layers under overhangs and above in-model landings.
 //! Tree trunks honor `support_base_pattern` (honeycomb / grid fill the disks;
 //! BBL `default` stays hollow) and `tree_support_wall_count` (`-1` auto outlines).
 //! `support_angle` rotates hatch. Solid interfaces can be ironed
@@ -309,6 +311,35 @@ pub(super) fn fill_support_interface(
     }
 }
 
+pub(super) fn overhang_in_range(
+    overhangs: &[Vec<Polygon>],
+    layer: usize,
+    first: usize,
+    last: usize,
+) -> bool {
+    (first..=last).any(|delta| {
+        overhangs
+            .get(layer.saturating_add(delta))
+            .is_some_and(|overhang| !overhang.is_empty())
+    })
+}
+
+fn mark_on_model_landings(
+    regions: &[Vec<Polygon>],
+    layers: &[Layer],
+    settings: &SliceSettings,
+) -> Vec<bool> {
+    let mut landing = vec![false; regions.len()];
+    for (i, region) in regions.iter().enumerate().skip(1) {
+        if region.is_empty() || !regions[i - 1].is_empty() {
+            continue;
+        }
+        let grown = offset_polygons(region, settings.support_xy_gap_mm(i) + 0.05);
+        landing[i] = !intersect_polygons(&grown, &layers[i - 1].contours).is_empty();
+    }
+    landing
+}
+
 fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {
     let n = layers.len();
     let mut column: Vec<Polygon> = Vec::new();
@@ -321,6 +352,37 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
         regions[i] = difference_polygons(&column, &forbidden);
     }
 
+    let top_gap = settings.support_top_gap_layers();
+    let bottom_gap = settings.support_bottom_gap_layers();
+    if top_gap > 0 {
+        for (i, region) in regions.iter_mut().enumerate() {
+            if overhang_in_range(overhangs, i, 1, top_gap) {
+                region.clear();
+            }
+        }
+    }
+
+    let mut landing = mark_on_model_landings(&regions, layers, settings);
+    if bottom_gap > 0 {
+        let mut skip = vec![false; n];
+        for (i, is_landing) in landing.iter().enumerate() {
+            if !is_landing {
+                continue;
+            }
+            for delta in 0..bottom_gap {
+                if let Some(slot) = skip.get_mut(i + delta) {
+                    *slot = true;
+                }
+            }
+        }
+        for (region, skip_layer) in regions.iter_mut().zip(skip) {
+            if skip_layer {
+                region.clear();
+            }
+        }
+        landing = mark_on_model_landings(&regions, layers, settings);
+    }
+
     let interface_n = settings.support_interface_layers.max(1);
     let bottom_n = settings.resolved_support_interface_bottom_layers();
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
@@ -328,14 +390,6 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
     let support_spacing = settings.support_spacing_mm();
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let bottom_spacing = settings.support_bottom_interface_hatch_spacing_mm();
-    let mut landing = vec![false; n];
-    for (i, region) in regions.iter().enumerate().skip(1) {
-        if region.is_empty() || !regions[i - 1].is_empty() {
-            continue;
-        }
-        let grown = offset_polygons(region, settings.support_xy_gap_mm(i) + 0.05);
-        landing[i] = !intersect_polygons(&grown, &layers[i - 1].contours).is_empty();
-    }
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
         if regions[i].is_empty() {
             return;
@@ -346,13 +400,13 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
             return;
         }
         let is_interface = (1..=interface_n).any(|d| {
-            let j = i + d as usize;
+            let j = i + top_gap + d as usize;
             j < n && !overhangs[j].is_empty()
         });
         let is_bottom =
             bottom_n > 0 && (0..bottom_n).any(|d| i >= d as usize && landing[i - d as usize]);
         if is_interface {
-            let is_contact = i + 1 < n && !overhangs[i + 1].is_empty();
+            let is_contact = i + top_gap + 1 < n && !overhangs[i + top_gap + 1].is_empty();
             layer.support_interface = fill_support_interface(
                 &fill_region,
                 interface_spacing,

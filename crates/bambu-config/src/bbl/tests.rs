@@ -232,6 +232,8 @@ fn upstream_fdm_process_0_20() {
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert_eq!(s.support_interface_bottom_layers, 2);
     assert!((s.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert!((s.support_top_z_distance_mm - 0.2).abs() < 1e-9);
+    assert!((s.support_bottom_z_distance_mm - 0.2).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
@@ -489,6 +491,30 @@ fn support_interface_bottom_layers_and_spacing_match_cpp() {
     let baked = SliceSettings::bbl_0_20();
     assert_eq!(baked.support_interface_bottom_layers, 0);
     assert!((baked.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn support_z_gap_layers_match_cpp() {
+    let mut s = SliceSettings::default();
+    assert!((s.support_top_z_distance_mm - 0.2).abs() < 1e-9);
+    assert!((s.support_bottom_z_distance_mm - 0.2).abs() < 1e-9);
+    assert_eq!(s.support_top_gap_layers(), 1);
+    assert_eq!(s.support_bottom_gap_layers(), 1);
+    s.support_top_z_distance_mm = 0.0;
+    assert_eq!(s.support_top_gap_layers(), 0);
+    s.support_bottom_z_distance_mm = 0.0;
+    assert_eq!(
+        s.support_bottom_gap_layers(),
+        0,
+        "C++ copies top when bottom <= 0"
+    );
+    s.support_top_z_distance_mm = 0.4;
+    assert_eq!(s.support_bottom_gap_layers(), 2);
+    s.support_bottom_z_distance_mm = 0.6;
+    assert_eq!(s.support_bottom_gap_layers(), 3);
+    let baked = SliceSettings::bbl_0_20();
+    assert!((baked.support_top_z_distance_mm - 0.2).abs() < 1e-9);
+    assert!((baked.support_bottom_z_distance_mm - 0.2).abs() < 1e-9);
 }
 
 #[test]
@@ -874,6 +900,8 @@ fn project_settings_json_roundtrip() {
     src.support_interface_spacing_mm = 0.0;
     src.support_interface_bottom_layers = 2;
     src.support_bottom_interface_spacing_mm = 0.2;
+    src.support_top_z_distance_mm = 0.4;
+    src.support_bottom_z_distance_mm = 0.6;
     src.support_angle_deg = 45.0;
     src.enable_support_ironing = true;
     src.support_ironing_direction_deg = 30.0;
@@ -942,6 +970,8 @@ fn project_settings_json_roundtrip() {
     assert!(loaded.support_interface_spacing_mm.abs() < 1e-9);
     assert_eq!(loaded.support_interface_bottom_layers, 2);
     assert!((loaded.support_bottom_interface_spacing_mm - 0.2).abs() < 1e-9);
+    assert!((loaded.support_top_z_distance_mm - 0.4).abs() < 1e-9);
+    assert!((loaded.support_bottom_z_distance_mm - 0.6).abs() < 1e-9);
     assert!((loaded.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(loaded.enable_support_ironing);
     assert!((loaded.support_ironing_direction_deg - 30.0).abs() < 1e-9);
@@ -1073,6 +1103,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_interface_spacing".into(), "0".into());
     pairs.insert("support_interface_bottom_layers".into(), "2".into());
     pairs.insert("support_bottom_interface_spacing".into(), "0.2".into());
+    pairs.insert("support_top_z_distance".into(), "0.4".into());
+    pairs.insert("support_bottom_z_distance".into(), "0.6".into());
     pairs.insert("support_angle".into(), "45".into());
     pairs.insert("enable_support_ironing".into(), "1".into());
     pairs.insert("support_ironing_direction".into(), "30".into());
@@ -1125,6 +1157,8 @@ fn region_overrides_skip_object_keys() {
     assert!((s.support_interface_spacing_mm - 0.5).abs() < 1e-9);
     assert_eq!(s.support_interface_bottom_layers, 0);
     assert!((s.support_bottom_interface_spacing_mm - 0.5).abs() < 1e-9);
+    assert!((s.support_top_z_distance_mm - 0.2).abs() < 1e-9);
+    assert!((s.support_bottom_z_distance_mm - 0.2).abs() < 1e-9);
     assert!(s.support_angle_deg.abs() < 1e-9);
     assert!(!s.enable_support_ironing);
     assert!(s.support_ironing_direction_deg.abs() < 1e-9);
@@ -1172,6 +1206,8 @@ fn region_overrides_skip_object_keys() {
     assert!(s.support_interface_spacing_mm.abs() < 1e-9);
     assert_eq!(s.support_interface_bottom_layers, 2);
     assert!((s.support_bottom_interface_spacing_mm - 0.2).abs() < 1e-9);
+    assert!((s.support_top_z_distance_mm - 0.4).abs() < 1e-9);
+    assert!((s.support_bottom_z_distance_mm - 0.6).abs() < 1e-9);
     assert!((s.support_angle_deg - 45.0).abs() < 1e-9);
     assert!(s.enable_support_ironing);
     assert!((s.support_ironing_direction_deg - 30.0).abs() < 1e-9);
