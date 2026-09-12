@@ -466,6 +466,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         num_str(settings.bridge_speed_mm_s),
     );
     insert(&mut map, "bridge_flow", num_str(settings.bridge_flow));
+    insert(
+        &mut map,
+        "top_solid_infill_flow_ratio",
+        num_str(settings.top_solid_infill_flow_ratio),
+    );
+    insert(
+        &mut map,
+        "initial_layer_flow_ratio",
+        num_str(settings.initial_layer_flow_ratio),
+    );
     insert_bool(&mut map, "thick_bridges", settings.thick_bridges);
     insert(
         &mut map,

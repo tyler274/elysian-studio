@@ -83,12 +83,13 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         };
         let e = |paths, closed, print_f, role, role_first| {
             let flow = Flow::for_role(settings, role, flow_h, role_first);
+            let factor = settings.gcode_path_flow_factor(role, first);
             Extrude {
                 paths,
                 closed,
-                e_per_mm: flow.e_per_mm(),
+                e_per_mm: flow.e_per_mm() * factor,
                 print_f,
-                mm3_per_mm: flow.mm3_per_mm(),
+                mm3_per_mm: flow.mm3_per_mm() * factor,
                 width_mm: flow.width_mm,
                 arc_tolerance_mm: settings.arc_fit_tolerance_mm(role),
             }
@@ -164,14 +165,15 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 let emit_inner = |w: &mut Writer<'_>, paths: &[Polyline]| {
                     w.set_print_role(PrintAccel::InnerWall);
                     let flow = Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first);
+                    let factor = settings.gcode_path_flow_factor(FlowRole::Perimeter, first);
                     w.emit_wall_paths(
                         "Inner wall",
                         Extrude {
                             paths,
                             closed: true,
-                            e_per_mm: flow.e_per_mm(),
+                            e_per_mm: flow.e_per_mm() * factor,
                             print_f: feeds.inner,
-                            mm3_per_mm: flow.mm3_per_mm(),
+                            mm3_per_mm: flow.mm3_per_mm() * factor,
                             width_mm: flow.width_mm,
                             arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::Perimeter),
                         },
@@ -226,15 +228,16 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 if !layer.combined_infill.is_empty() {
                     let h = layer.combined_infill_height_mm.max(flow_h);
                     let flow = Flow::for_role(settings, FlowRole::SparseInfill, h, object_first);
+                    let factor = settings.gcode_path_flow_factor(FlowRole::SparseInfill, first);
                     w.emit_role(
                         "Sparse infill",
                         PrintAccel::SparseInfill,
                         Extrude {
                             paths: &layer.combined_infill,
                             closed: false,
-                            e_per_mm: flow.e_per_mm(),
+                            e_per_mm: flow.e_per_mm() * factor,
                             print_f: feeds.sparse,
-                            mm3_per_mm: flow.mm3_per_mm(),
+                            mm3_per_mm: flow.mm3_per_mm() * factor,
                             width_mm: flow.width_mm,
                             arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::SparseInfill),
                         },
@@ -271,6 +274,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         object_first,
                         settings.thick_bridges,
                     );
+                    let factor = settings.gcode_path_flow_factor(FlowRole::SolidInfill, first);
                     w.emit_feature("Bridge", bridge_flow.width_mm)?;
                     w.set_print_role(PrintAccel::Default);
                     w.emit_marked(
@@ -281,9 +285,9 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                             w.emit_paths(Extrude {
                                 paths: &layer.bridge,
                                 closed: false,
-                                e_per_mm: bridge_flow.e_per_mm(),
+                                e_per_mm: bridge_flow.e_per_mm() * factor,
                                 print_f: feeds.bridge,
-                                mm3_per_mm: bridge_flow.mm3_per_mm(),
+                                mm3_per_mm: bridge_flow.mm3_per_mm() * factor,
                                 width_mm: bridge_flow.width_mm,
                                 arc_tolerance_mm: settings
                                     .arc_fit_tolerance_mm(FlowRole::SolidInfill),
@@ -319,6 +323,9 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             w.set_print_role(PrintAccel::Default);
             let iron_flow =
                 Flow::from_settings(settings, layer.height_mm * settings.ironing_flow.max(0.0));
+            // C++ `erIroning` is not top solid, so first-layer ironing still
+            // takes `initial_layer_flow_ratio`.
+            let factor = settings.gcode_path_flow_factor(FlowRole::SolidInfill, first);
             w.emit_feature("Ironing", iron_flow.width_mm)?;
             w.emit_marked(
                 settings.ironing_fan_speed >= 0,
@@ -329,9 +336,9 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         paths: &layer.ironing,
                         // C++ ironing is `ExtrusionPath`, not a closed loop.
                         closed: false,
-                        e_per_mm: iron_flow.e_per_mm(),
+                        e_per_mm: iron_flow.e_per_mm() * factor,
                         print_f: settings.ironing_speed_mm_s * 60.0,
-                        mm3_per_mm: iron_flow.mm3_per_mm(),
+                        mm3_per_mm: iron_flow.mm3_per_mm() * factor,
                         width_mm: iron_flow.width_mm,
                         arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::TopSolidInfill),
                     })

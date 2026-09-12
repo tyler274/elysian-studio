@@ -823,6 +823,67 @@ fn flow_ratio_scales_extrusion() {
 }
 
 #[test]
+fn top_solid_infill_flow_ratio_scales_top_extrusion() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let base = write_gcode(&settings, &sliced).unwrap();
+    settings.top_solid_infill_flow_ratio = 2.0;
+    let scaled = write_gcode(&settings, &sliced).unwrap();
+    let top_base = feature_positive_e(&base, "Top surface");
+    let top_scaled = feature_positive_e(&scaled, "Top surface");
+    let wall_base = feature_positive_e(&base, "Outer wall");
+    let wall_scaled = feature_positive_e(&scaled, "Outer wall");
+    assert!(top_base > 0.0);
+    assert!(
+        (top_scaled / top_base - 2.0).abs() < 1e-5,
+        "top {top_scaled} / {top_base} = {}",
+        top_scaled / top_base
+    );
+    assert!(
+        (wall_scaled / wall_base - 1.0).abs() < 1e-5,
+        "wall {wall_scaled} / {wall_base} = {}",
+        wall_scaled / wall_base
+    );
+}
+
+#[test]
+fn initial_layer_flow_ratio_scales_first_layer_not_top() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let base = write_gcode(&settings, &sliced).unwrap();
+    settings.initial_layer_flow_ratio = 2.0;
+    let scaled = write_gcode(&settings, &sliced).unwrap();
+    let first_base = feature_positive_e(layer_block(&base, 0).expect("layer 0"), "Outer wall");
+    let first_scaled = feature_positive_e(layer_block(&scaled, 0).expect("layer 0"), "Outer wall");
+    let later_base = feature_positive_e(layer_block(&base, 1).expect("layer 1"), "Outer wall");
+    let later_scaled = feature_positive_e(layer_block(&scaled, 1).expect("layer 1"), "Outer wall");
+    let top_base = feature_positive_e(&base, "Top surface");
+    let top_scaled = feature_positive_e(&scaled, "Top surface");
+    assert!(first_base > 0.0);
+    assert!(
+        (first_scaled / first_base - 2.0).abs() < 1e-5,
+        "first wall {first_scaled} / {first_base} = {}",
+        first_scaled / first_base
+    );
+    assert!(
+        (later_scaled / later_base - 1.0).abs() < 1e-5,
+        "later wall {later_scaled} / {later_base} = {}",
+        later_scaled / later_base
+    );
+    assert!(top_base > 0.0);
+    assert!(
+        (top_scaled / top_base - 1.0).abs() < 1e-5,
+        "C++ top solid does not take initial_layer_flow_ratio"
+    );
+}
+
+#[test]
 fn layer_cooling_slows_short_bbl_layers() {
     let mesh = TriangleMesh::cube(10.0);
     let mut settings = SliceSettings::bbl_0_20();
@@ -2203,6 +2264,32 @@ fn feature_retract_count(gcode: &str, feature: &str) -> usize {
 fn line_e(line: &str) -> Option<f64> {
     line.split_whitespace()
         .find_map(|tok| tok.strip_prefix('E').and_then(|rest| rest.parse().ok()))
+}
+
+fn feature_positive_e(gcode: &str, feature: &str) -> f64 {
+    let mut current = "";
+    let mut last_e = None;
+    let mut sum = 0.0;
+    for line in gcode.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("; FEATURE:") {
+            current = rest.trim();
+            continue;
+        }
+        let Some(e) = line_e(trimmed) else {
+            continue;
+        };
+        let upper = trimmed.to_ascii_uppercase();
+        let xy = parse_axis(&upper, b'X').is_some() || parse_axis(&upper, b'Y').is_some();
+        if let Some(prev) = last_e {
+            let delta = e - prev;
+            if xy && delta > 0.0 && current == feature {
+                sum += delta;
+            }
+        }
+        last_e = Some(e);
+    }
+    sum
 }
 
 fn last_extrude_xy(gcode: &str) -> Option<(f64, f64)> {

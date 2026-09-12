@@ -841,6 +841,10 @@ pub struct SliceSettings {
     pub filament_diameter_mm: f64,
     /// C++ `filament_flow_ratio`. Generic PLA @ H2C 0.4 is 0.99.
     pub flow_ratio: f64,
+    /// C++ `top_solid_infill_flow_ratio` (first nozzle). Applied in G-code only.
+    pub top_solid_infill_flow_ratio: f64,
+    /// C++ `initial_layer_flow_ratio`. Applied in G-code only; top solid wins.
+    pub initial_layer_flow_ratio: f64,
     /// C++ `nozzle_temperature` (later layers).
     pub temperature_c: u16,
     /// C++ `nozzle_temperature_initial_layer`.
@@ -1295,6 +1299,8 @@ impl Default for SliceSettings {
             nozzle_diameters_mm: vec![0.4],
             filament_diameter_mm: 1.75,
             flow_ratio: 1.0,
+            top_solid_infill_flow_ratio: 1.0,
+            initial_layer_flow_ratio: 1.0,
             temperature_c: 220,
             temperature_initial_layer_c: 220,
             bed_temperature_c: 60,
@@ -1563,6 +1569,18 @@ impl SliceSettings {
             specific
         } else {
             self.line_width_mm
+        }
+    }
+
+    /// C++ `GCode::_extrude`: top solid uses `top_solid_infill_flow_ratio`;
+    /// other first-layer paths use `initial_layer_flow_ratio`.
+    pub fn gcode_path_flow_factor(&self, role: FlowRole, first_layer: bool) -> f64 {
+        if role == FlowRole::TopSolidInfill {
+            self.top_solid_infill_flow_ratio.max(0.0)
+        } else if first_layer {
+            self.initial_layer_flow_ratio.max(0.0)
+        } else {
+            1.0
         }
     }
 

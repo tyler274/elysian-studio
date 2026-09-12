@@ -56,6 +56,8 @@ fn vertical_shell_region_keys() {
     pairs.insert("infill_direction".into(), "30".into());
     pairs.insert("infill_wall_overlap".into(), "25%".into());
     pairs.insert("bridge_flow".into(), "0.95".into());
+    pairs.insert("top_solid_infill_flow_ratio".into(), "0.92".into());
+    pairs.insert("initial_layer_flow_ratio".into(), "1.05".into());
     pairs.insert("top_surface_density".into(), "40%".into());
     pairs.insert("bottom_surface_density".into(), "60".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -69,6 +71,8 @@ fn vertical_shell_region_keys() {
     assert!((s.infill_direction_deg - 30.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.25).abs() < 1e-9);
     assert!((s.bridge_flow - 0.95).abs() < 1e-9);
+    assert!((s.top_solid_infill_flow_ratio - 0.92).abs() < 1e-9);
+    assert!((s.initial_layer_flow_ratio - 1.05).abs() < 1e-9);
     assert!((s.top_surface_density - 0.40).abs() < 1e-9);
     assert!((s.bottom_surface_density - 0.60).abs() < 1e-9);
     pairs.insert("seam_gap".into(), "20%".into());
@@ -197,6 +201,8 @@ fn upstream_fdm_process_0_20() {
     assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
     assert!((s.infill_wall_overlap - 0.15).abs() < 1e-9);
     assert!((s.bridge_flow - 1.0).abs() < 1e-9);
+    assert!((s.top_solid_infill_flow_ratio - 1.0).abs() < 1e-9);
+    assert!((s.initial_layer_flow_ratio - 1.0).abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.alternate_extra_wall);
     assert!(s.enable_arc_fitting);
@@ -322,6 +328,21 @@ fn line_width_for_matches_cpp_print_region_flow() {
     assert!((baked.arc_fit_tolerance_mm(crate::FlowRole::SparseInfill) - 0.04).abs() < 1e-9);
     assert!((baked.arc_fit_tolerance_mm(crate::FlowRole::SupportMaterial) - 0.0375).abs() < 1e-9);
     assert!((baked.arc_fit_tolerance_mm(crate::FlowRole::ExternalPerimeter) - 0.012).abs() < 1e-9);
+}
+
+#[test]
+fn gcode_path_flow_factor_matches_cpp_extrude() {
+    let mut s = SliceSettings::default();
+    s.top_solid_infill_flow_ratio = 0.8;
+    s.initial_layer_flow_ratio = 1.2;
+    assert!(
+        (s.gcode_path_flow_factor(crate::FlowRole::TopSolidInfill, true) - 0.8).abs() < 1e-9,
+        "top solid wins over the first-layer factor"
+    );
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::TopSolidInfill, false) - 0.8).abs() < 1e-9);
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, true) - 1.2).abs() < 1e-9);
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::SolidInfill, true) - 1.2).abs() < 1e-9);
+    assert!((s.gcode_path_flow_factor(crate::FlowRole::Perimeter, false) - 1.0).abs() < 1e-9);
 }
 
 #[test]
@@ -711,6 +732,8 @@ fn project_settings_json_roundtrip() {
     src.seam_placement_away_from_overhangs = true;
     src.internal_solid_infill_pattern = crate::SurfacePattern::Concentric;
     src.initial_layer_infill_line_width_mm = 0.8;
+    src.top_solid_infill_flow_ratio = 0.9;
+    src.initial_layer_flow_ratio = 1.1;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -766,6 +789,8 @@ fn project_settings_json_roundtrip() {
         crate::SurfacePattern::Concentric
     );
     assert!((loaded.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
+    assert!((loaded.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
+    assert!((loaded.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -875,6 +900,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
     pairs.insert("internal_solid_infill_pattern".into(), "concentric".into());
     pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
+    pairs.insert("top_solid_infill_flow_ratio".into(), "0.9".into());
+    pairs.insert("initial_layer_flow_ratio".into(), "1.1".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -914,6 +941,8 @@ fn region_overrides_skip_object_keys() {
         crate::SurfacePattern::Concentric
     );
     assert!(s.initial_layer_infill_line_width_mm.abs() < 1e-9);
+    assert!((s.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
+    assert!((s.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
