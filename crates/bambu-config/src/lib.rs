@@ -1082,6 +1082,10 @@ pub struct SliceSettings {
     /// C++ `sub_top_surface_pattern`. Solid under a visible top (`stSubTop`).
     /// C++ default is monotonic; BBL omits the key.
     pub sub_top_surface_pattern: SurfacePattern,
+    /// C++ `monotonic_travel_into_wall` as a fraction of line width. Extends
+    /// MonotonicLine travel into the walls. Default 0; BBL common `"0.0"`, dual
+    /// `"45.0"`.
+    pub monotonic_travel_into_wall: f64,
     /// C++ `top_surface_density` as a 0–1 fraction (PrintConfig default 100%).
     pub top_surface_density: f64,
     /// C++ `bottom_surface_density` as a 0–1 fraction (PrintConfig default 100%).
@@ -1469,6 +1473,7 @@ impl Default for SliceSettings {
             bottom_surface_pattern: SurfacePattern::Rectilinear,
             internal_solid_infill_pattern: SurfacePattern::Rectilinear,
             sub_top_surface_pattern: SurfacePattern::Monotonic,
+            monotonic_travel_into_wall: 0.0,
             top_surface_density: 1.0,
             bottom_surface_density: 1.0,
             detect_narrow_internal_solid_infill: true,

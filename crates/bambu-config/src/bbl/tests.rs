@@ -60,6 +60,7 @@ fn vertical_shell_region_keys() {
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.92".into());
     pairs.insert("initial_layer_flow_ratio".into(), "1.05".into());
     pairs.insert("print_flow_ratio".into(), "1.1".into());
+    pairs.insert("monotonic_travel_into_wall".into(), "45.0".into());
     pairs.insert("top_surface_density".into(), "40%".into());
     pairs.insert("bottom_surface_density".into(), "60".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -77,6 +78,7 @@ fn vertical_shell_region_keys() {
     assert!((s.top_solid_infill_flow_ratio - 0.92).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.05).abs() < 1e-9);
     assert!((s.print_flow_ratio - 1.1).abs() < 1e-9);
+    assert!((s.monotonic_travel_into_wall - 0.45).abs() < 1e-9);
     assert!((s.top_surface_density - 0.40).abs() < 1e-9);
     assert!((s.bottom_surface_density - 0.60).abs() < 1e-9);
     pairs.insert("seam_gap".into(), "20%".into());
@@ -260,6 +262,7 @@ fn upstream_fdm_process_0_20() {
         crate::SurfacePattern::Rectilinear
     );
     assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Monotonic);
+    assert!(s.monotonic_travel_into_wall.abs() < 1e-9);
     assert!((s.top_surface_density - 1.0).abs() < 1e-9);
     assert!((s.bottom_surface_density - 1.0).abs() < 1e-9);
     assert_eq!(s.raft_layers, 0);
@@ -460,6 +463,17 @@ fn sub_top_surface_pattern_match_cpp() {
 }
 
 #[test]
+fn monotonic_travel_into_wall_match_cpp() {
+    let s = SliceSettings::default();
+    assert!(s.monotonic_travel_into_wall.abs() < 1e-9);
+    let baked = SliceSettings::bbl_0_20();
+    assert!(
+        baked.monotonic_travel_into_wall.abs() < 1e-9,
+        "do not bake H2C dual 45% into bbl_0_20"
+    );
+}
+
+#[test]
 fn support_interface_bottom_layers_and_spacing_match_cpp() {
     let mut s = SliceSettings::default();
     assert_eq!(s.support_interface_bottom_layers, 0);
@@ -564,6 +578,10 @@ fn flatten_standard_0_20_merges_inherits() {
     let s = load_bbl_process(&paths.process).unwrap();
     assert!((s.infill_density - 0.15).abs() < 1e-9);
     assert_eq!(s.infill_pattern, InfillPattern::Grid);
+    assert!(
+        (s.monotonic_travel_into_wall - 0.45).abs() < 1e-9,
+        "H2C dual_common sets 45%"
+    );
     assert!((s.minimum_sparse_infill_area_mm2 - 15.0).abs() < 1e-9);
     assert_eq!(s.top_shell_layers, 5);
     assert_eq!(s.skirt_loops, 0);
@@ -874,6 +892,7 @@ fn project_settings_json_roundtrip() {
     src.seam_placement_away_from_overhangs = true;
     src.internal_solid_infill_pattern = crate::SurfacePattern::Concentric;
     src.sub_top_surface_pattern = crate::SurfacePattern::Concentric;
+    src.monotonic_travel_into_wall = 0.45;
     src.initial_layer_infill_line_width_mm = 0.8;
     src.top_solid_infill_flow_ratio = 0.9;
     src.initial_layer_flow_ratio = 1.1;
@@ -947,6 +966,7 @@ fn project_settings_json_roundtrip() {
         loaded.sub_top_surface_pattern,
         crate::SurfacePattern::Concentric
     );
+    assert!((loaded.monotonic_travel_into_wall - 0.45).abs() < 1e-9);
     assert!((loaded.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!((loaded.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
     assert!((loaded.initial_layer_flow_ratio - 1.1).abs() < 1e-9);
@@ -1071,6 +1091,7 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("seam_placement_away_from_overhangs".into(), "1".into());
     pairs.insert("internal_solid_infill_pattern".into(), "concentric".into());
     pairs.insert("sub_top_surface_pattern".into(), "concentric".into());
+    pairs.insert("monotonic_travel_into_wall".into(), "45.0".into());
     pairs.insert("initial_layer_infill_line_width".into(), "0.8".into());
     pairs.insert("top_solid_infill_flow_ratio".into(), "0.9".into());
     pairs.insert("initial_layer_flow_ratio".into(), "1.1".into());
@@ -1125,6 +1146,7 @@ fn region_overrides_skip_object_keys() {
         crate::SurfacePattern::Concentric
     );
     assert_eq!(s.sub_top_surface_pattern, crate::SurfacePattern::Concentric);
+    assert!((s.monotonic_travel_into_wall - 0.45).abs() < 1e-9);
     assert!(s.initial_layer_infill_line_width_mm.abs() < 1e-9);
     assert!((s.top_solid_infill_flow_ratio - 0.9).abs() < 1e-9);
     assert!((s.initial_layer_flow_ratio - 1.1).abs() < 1e-9);

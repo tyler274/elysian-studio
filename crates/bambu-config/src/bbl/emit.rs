@@ -425,6 +425,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "monotonic_travel_into_wall",
+        pct_str(settings.monotonic_travel_into_wall),
+    );
+    insert(
+        &mut map,
         "top_surface_density",
         pct_str(settings.top_surface_density),
     );

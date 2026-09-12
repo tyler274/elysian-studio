@@ -2933,6 +2933,48 @@ mod tests {
     }
 
     #[test]
+    fn monotonic_travel_into_wall_extends_line_ends() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut none = SliceSettings::default();
+        none.top_surface_pattern = SurfacePattern::MonotonicLine;
+        none.monotonic_travel_into_wall = 0.0;
+        let mut into_wall = none.clone();
+        into_wall.monotonic_travel_into_wall = 0.45;
+        let a = slice_mesh(&mesh, &none).unwrap();
+        let b = slice_mesh(&mesh, &into_wall).unwrap();
+        let top_a = &a.layers.last().unwrap().top_surface;
+        let top_b = &b.layers.last().unwrap().top_surface;
+        assert!(
+            top_b.len() > top_a.len(),
+            "45% wall travel should insert wipes between scanlines: 0%={} 45%={}",
+            top_a.len(),
+            top_b.len()
+        );
+        let la = polyline_len_mm(top_a);
+        let lb = polyline_len_mm(top_b);
+        assert!(
+            lb > la,
+            "wall wipes should add extruded length: 0%={la} 45%={lb}"
+        );
+        let scan_signs = |paths: &[Polyline]| -> Vec<i32> {
+            paths
+                .iter()
+                .filter(|pl| pl.len() == 2)
+                .map(|pl| {
+                    let dx = pl[pl.len() - 1].x - pl[0].x;
+                    dx.signum() as i32
+                })
+                .filter(|s| *s != 0)
+                .collect()
+        };
+        let mono = scan_signs(top_b);
+        assert!(
+            !mono.is_empty() && mono.iter().all(|s| *s == mono[0]),
+            "scanlines stay one direction; wipes are 4-point: {mono:?}"
+        );
+    }
+
+    #[test]
     fn top_surface_density_spaces_scanlines() {
         let mesh = TriangleMesh::cube(20.0);
         let mut full = SliceSettings::default();

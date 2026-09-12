@@ -254,6 +254,80 @@ pub fn solid_surface(
     }
 }
 
+/// C++ `extrusion_entities_append_paths_with_wipe` for `ipMonotonicLine`.
+/// Inserts a 4-point wall overshoot when successive ends are within `3 * width`.
+/// Ratio 0 keeps separate scanlines (G-code travel) instead of C++'s straight
+/// extruded connect, so Default / `bbl_0_20` cube hatch stays put.
+pub(crate) fn connect_monotonic_line_wipes(
+    lines: Vec<Polyline>,
+    pattern: SurfacePattern,
+    width_mm: f64,
+    ratio: f64,
+) -> Vec<Polyline> {
+    if pattern != SurfacePattern::MonotonicLine
+        || !ratio.is_finite()
+        || ratio <= 1e-9
+        || !width_mm.is_finite()
+        || width_mm <= 0.0
+    {
+        return lines;
+    }
+    let max_gap_mm = 3.0 * width_mm;
+    let overshoot_mm = width_mm * ratio;
+    let mut out = Vec::with_capacity(lines.len().saturating_mul(2));
+    let mut prev_ends: Option<(Point, Point)> = None;
+    for line in lines {
+        if line.len() < 2 {
+            continue;
+        }
+        let first = line[0];
+        let last = line[line.len() - 1];
+        if let Some((prev_first, prev_last)) = prev_ends {
+            if let Some(wipe) =
+                monotonic_wall_wipe(prev_first, prev_last, first, last, max_gap_mm, overshoot_mm)
+            {
+                out.push(wipe);
+            }
+        }
+        prev_ends = Some((first, last));
+        out.push(line);
+    }
+    out
+}
+
+fn monotonic_wall_wipe(
+    prev_first: Point,
+    prev_last: Point,
+    curr_first: Point,
+    curr_last: Point,
+    max_gap_mm: f64,
+    overshoot_mm: f64,
+) -> Option<Polyline> {
+    if prev_last.distance_mm(curr_first) > max_gap_mm {
+        return None;
+    }
+    let last_dir = unit_offset(prev_first, prev_last, overshoot_mm)?;
+    let curr_dir = unit_offset(curr_last, curr_first, overshoot_mm)?;
+    Some(vec![
+        prev_last,
+        prev_last + last_dir,
+        curr_first + curr_dir,
+        curr_first,
+    ])
+}
+
+fn unit_offset(from: Point, to: Point, length_mm: f64) -> Option<Point> {
+    let (fx, fy) = from.to_mm();
+    let (tx, ty) = to.to_mm();
+    let dx = tx - fx;
+    let dy = ty - fy;
+    let n = (dx * dx + dy * dy).sqrt();
+    if n < 1e-9 {
+        return None;
+    }
+    Some(Point::from_mm(dx / n * length_mm, dy / n * length_mm))
+}
+
 fn vertical(
     polygons: &[Polygon],
     spacing_mm: f64,
@@ -519,6 +593,65 @@ mod tests {
     use super::*;
     use bambu_config::{InfillPattern, SliceSettings};
     use bambu_geom::scale;
+
+    #[test]
+    fn monotonic_line_wipes_overshoot_into_walls() {
+        let a = vec![Point::from_mm(0.0, 0.0), Point::from_mm(10.0, 0.0)];
+        let toward = vec![Point::from_mm(10.0, 0.4), Point::from_mm(0.0, 0.4)];
+        let none = connect_monotonic_line_wipes(
+            vec![a.clone(), toward.clone()],
+            SurfacePattern::MonotonicLine,
+            0.4,
+            0.0,
+        );
+        assert_eq!(none.len(), 2);
+        let same_monotonic = connect_monotonic_line_wipes(
+            vec![a.clone(), toward.clone()],
+            SurfacePattern::Monotonic,
+            0.4,
+            0.45,
+        );
+        assert_eq!(
+            same_monotonic.len(),
+            2,
+            "C++ only applies wall travel to ipMonotonicLine"
+        );
+        let same_dir = vec![Point::from_mm(0.0, 0.4), Point::from_mm(10.0, 0.4)];
+        let skipped = connect_monotonic_line_wipes(
+            vec![a.clone(), same_dir],
+            SurfacePattern::MonotonicLine,
+            0.4,
+            0.45,
+        );
+        assert_eq!(
+            skipped.len(),
+            2,
+            "C++ skips the wipe when end-to-start is above 3×width"
+        );
+        let wipes = connect_monotonic_line_wipes(
+            vec![a.clone(), toward],
+            SurfacePattern::MonotonicLine,
+            0.4,
+            0.45,
+        );
+        assert_eq!(wipes.len(), 3);
+        let wipe = &wipes[1];
+        assert_eq!(wipe.len(), 4);
+        let (x_last, y_last) = wipe[1].to_mm();
+        let (x_curr, y_curr) = wipe[2].to_mm();
+        assert!(
+            (x_last - 10.18).abs() < 0.01 && y_last.abs() < 0.01,
+            "overshoot last ({x_last}, {y_last})"
+        );
+        assert!(
+            (x_curr - 10.18).abs() < 0.01 && (y_curr - 0.4).abs() < 0.01,
+            "overshoot curr ({x_curr}, {y_curr})"
+        );
+        let far_b = vec![Point::from_mm(10.0, 2.0), Point::from_mm(0.0, 2.0)];
+        let far =
+            connect_monotonic_line_wipes(vec![a, far_b], SurfacePattern::MonotonicLine, 0.4, 0.45);
+        assert_eq!(far.len(), 2, "gap above 3×width skips the wipe");
+    }
 
     #[test]
     fn simd_scanline_cull_matches_scalar() {

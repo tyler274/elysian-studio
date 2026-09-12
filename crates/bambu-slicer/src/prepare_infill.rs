@@ -434,13 +434,18 @@ fn emit_shells(
             SliceSettings::surface_fill_spacing_mm(top_w, settings.top_surface_density)
                 .map(|spacing| {
                     infill::with_symmetric_y(&shells.top[i], axis, |region| {
-                        infill::solid_surface(
-                            region,
-                            spacing,
-                            i,
+                        infill::connect_monotonic_line_wipes(
+                            infill::solid_surface(
+                                region,
+                                spacing,
+                                i,
+                                settings.top_surface_pattern,
+                                settings.infill_direction_deg,
+                                settings.nozzle_diameter_mm,
+                            ),
                             settings.top_surface_pattern,
-                            settings.infill_direction_deg,
-                            settings.nozzle_diameter_mm,
+                            spacing,
+                            settings.monotonic_travel_into_wall,
                         )
                     })
                 })
@@ -465,35 +470,50 @@ fn emit_shells(
         let bottom_paths = SliceSettings::surface_fill_spacing_mm(bottom_w, bottom_density)
             .map(|spacing| {
                 infill::with_symmetric_y(&shells.bottom[i], axis, |region| {
-                    infill::solid_surface(
-                        region,
-                        spacing,
-                        i.wrapping_add(1),
+                    infill::connect_monotonic_line_wipes(
+                        infill::solid_surface(
+                            region,
+                            spacing,
+                            i.wrapping_add(1),
+                            settings.bottom_surface_pattern,
+                            settings.bridge_fill_angle_deg(i > 0),
+                            settings.nozzle_diameter_mm,
+                        ),
                         settings.bottom_surface_pattern,
-                        settings.bridge_fill_angle_deg(i > 0),
-                        settings.nozzle_diameter_mm,
+                        spacing,
+                        settings.monotonic_travel_into_wall,
                     )
                 })
             })
             .unwrap_or_default();
         let mut solid_infill = infill::with_symmetric_y(&wide, axis, |region| {
-            infill::solid_surface(
-                region,
-                solid_w,
-                i,
+            infill::connect_monotonic_line_wipes(
+                infill::solid_surface(
+                    region,
+                    solid_w,
+                    i,
+                    settings.internal_solid_infill_pattern,
+                    settings.infill_direction_deg,
+                    settings.nozzle_diameter_mm,
+                ),
                 settings.internal_solid_infill_pattern,
-                settings.infill_direction_deg,
-                settings.nozzle_diameter_mm,
+                solid_w,
+                settings.monotonic_travel_into_wall,
             )
         });
         solid_infill.extend(infill::with_symmetric_y(&sub_top, axis, |region| {
-            infill::solid_surface(
-                region,
-                solid_w,
-                i,
+            infill::connect_monotonic_line_wipes(
+                infill::solid_surface(
+                    region,
+                    solid_w,
+                    i,
+                    settings.sub_top_surface_pattern,
+                    settings.infill_direction_deg,
+                    settings.nozzle_diameter_mm,
+                ),
                 settings.sub_top_surface_pattern,
-                settings.infill_direction_deg,
-                settings.nozzle_diameter_mm,
+                solid_w,
+                settings.monotonic_travel_into_wall,
             )
         }));
         solid_infill.extend(infill::with_symmetric_y(&narrow, axis, |region| {

@@ -57,6 +57,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "bottom_surface_pattern"
             | "internal_solid_infill_pattern"
             | "sub_top_surface_pattern"
+            | "monotonic_travel_into_wall"
             | "top_surface_density"
             | "bottom_surface_density"
             | "outer_wall_speed"
@@ -494,6 +495,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
         if let Some(p) = SurfacePattern::from_name(&name) {
             s.sub_top_surface_pattern = p;
         }
+    }
+    if let Some(v) = percent(map, "monotonic_travel_into_wall") {
+        s.monotonic_travel_into_wall = v.clamp(0.0, 2.0);
     }
     if let Some(v) = percent(map, "top_surface_density") {
         s.top_surface_density = v.clamp(0.0, 1.0);
