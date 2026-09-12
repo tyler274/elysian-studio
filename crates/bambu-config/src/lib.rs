@@ -359,6 +359,52 @@ impl SupportBasePattern {
             other => other,
         }
     }
+
+    /// C++ tree remap: `smpDefault` / lightning → hollow (`smpNone`).
+    pub fn tree_fill(self) -> Self {
+        match self {
+            Self::Default | Self::Lightning => Self::None,
+            other => other,
+        }
+    }
+}
+
+/// C++ `SupportMaterialInterfacePattern` (`support_interface_pattern`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SupportInterfacePattern {
+    /// BBL `"auto"`: rectilinear hatch (rewrite keeps 0° so defaults do not move).
+    #[default]
+    Auto,
+    Rectilinear,
+    Concentric,
+    /// Alternate ±45° around C++ `interface_angle` (90° when `support_angle` is 0).
+    RectilinearInterlaced,
+    Grid,
+}
+
+impl SupportInterfacePattern {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "auto" | "default" => Self::Auto,
+            "rectilinear" | "line" => Self::Rectilinear,
+            "concentric" => Self::Concentric,
+            "rectilinear_interlaced" | "rectilinear-interlaced" | "interlaced" => {
+                Self::RectilinearInterlaced
+            }
+            "grid" => Self::Grid,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Rectilinear => "rectilinear",
+            Self::Concentric => "concentric",
+            Self::RectilinearInterlaced => "rectilinear_interlaced",
+            Self::Grid => "grid",
+        }
+    }
 }
 
 /// C++ `TopOneWallType` (`top_one_wall_type`, legacy `only_one_wall_top`).
@@ -764,6 +810,10 @@ pub struct SliceSettings {
     pub wall_generator: WallGenerator,
     /// C++ `wall_sequence`. BBL `wall_infill_order` remaps onto this.
     pub wall_sequence: WallSequence,
+    /// C++ `precise_outer_wall`. BBL / PrintConfig default is false. Classic
+    /// walls already inset by width (the InnerOuter ON path); this stores the
+    /// key without flipping default gaps onto `Flow::spacing`.
+    pub precise_outer_wall: bool,
     /// C++ `is_infill_first`. Print infill before walls except on G-code layer 0.
     pub is_infill_first: bool,
     /// C++ `min_feature_size` as a fraction of nozzle diameter (default 25%).
@@ -890,6 +940,12 @@ pub struct SliceSettings {
     pub support_interface_loop_pattern: bool,
     /// C++ `support_base_pattern`. BBL `"default"` → classic rectilinear.
     pub support_base_pattern: SupportBasePattern,
+    /// C++ `support_base_pattern_spacing` (mm). BBL `"2.5"`. Default hatch
+    /// still uses [`Self::support_density`]; a non-default value uses the C++
+    /// `spacing + flow.spacing()` formula.
+    pub support_base_pattern_spacing_mm: f64,
+    /// C++ `support_interface_pattern`. BBL `"auto"` stays 0° rectilinear hatch.
+    pub support_interface_pattern: SupportInterfacePattern,
     /// C++ `support_expansion` (mm). Grow (+) or shrink (−) the contact
     /// footprint. BBL `"0"`.
     pub support_expansion_mm: f64,
@@ -897,6 +953,12 @@ pub struct SliceSettings {
     pub tree_branch_angle_deg: f64,
     /// Disk diameter at each tree node (`tree_support_branch_diameter`).
     pub tree_branch_diameter_mm: f64,
+    /// C++ `tree_support_wall_count` in `[-1, 2]`. BBL `"-1"` auto keeps the
+    /// current disk outlines; `1`/`2` add sheath loops; `0` is infill-only.
+    pub tree_support_wall_count: i32,
+    /// C++ `interface_shells`. When on, top/bottom shells form against the
+    /// same region instead of every material on the neighboring layer. BBL `"0"`.
+    pub interface_shells: bool,
     /// Solid layers at the bottom of the part (0 disables).
     pub bottom_shell_layers: u32,
     /// Solid layers at the top of the part (0 disables).
@@ -1191,6 +1253,7 @@ impl Default for SliceSettings {
             seam_gap: 0.15,
             wall_generator: WallGenerator::Classic,
             wall_sequence: WallSequence::InnerOuter,
+            precise_outer_wall: false,
             is_infill_first: false,
             min_feature_size: 0.25,
             min_bead_width: 0.85,
@@ -1256,9 +1319,13 @@ impl Default for SliceSettings {
             support_interface_layers: 2,
             support_interface_loop_pattern: false,
             support_base_pattern: SupportBasePattern::Default,
+            support_base_pattern_spacing_mm: 2.5,
+            support_interface_pattern: SupportInterfacePattern::Auto,
             support_expansion_mm: 0.0,
             tree_branch_angle_deg: 45.0,
             tree_branch_diameter_mm: 2.0,
+            tree_support_wall_count: -1,
+            interface_shells: false,
             bottom_shell_layers: 3,
             top_shell_layers: 3,
             top_shell_thickness_mm: 0.0,
@@ -1553,10 +1620,14 @@ impl SliceSettings {
     }
 
     pub fn support_spacing_mm(&self) -> f64 {
-        if self.support_density <= 0.0 {
+        let w = self.line_width_for(FlowRole::SupportMaterial, false);
+        // C++ `support_spacing = support_base_pattern_spacing + flow.spacing()`.
+        // Keep density spacing at the BBL default 2.5 so existing hatch does not move.
+        if (self.support_base_pattern_spacing_mm - 2.5).abs() > 1e-9 {
+            (self.support_base_pattern_spacing_mm.max(0.0) + w).max(w)
+        } else if self.support_density <= 0.0 {
             f64::INFINITY
         } else {
-            let w = self.line_width_for(FlowRole::SupportMaterial, false);
             (w / self.support_density).max(w)
         }
     }

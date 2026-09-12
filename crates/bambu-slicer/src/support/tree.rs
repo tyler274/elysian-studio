@@ -5,8 +5,8 @@
 //! disk of `tree_support_branch_diameter`; roofs under overhangs get dense
 //! interface fill. This is not the full organic 3D solver.
 
-use bambu_config::SliceSettings;
-use bambu_geom::{offset_polygons, scale, union_polygons, Point, Polygon};
+use bambu_config::{SliceSettings, SupportBasePattern, LOOP_CLIPPING_OVER_NOZZLE};
+use bambu_geom::{offset_polygons, scale, union_polygons, Point, Polygon, Polyline};
 use rayon::prelude::*;
 
 use crate::clip::point_in_polygons;
@@ -140,7 +140,8 @@ fn draw(
         } else if is_roof {
             let fill = offset_polygons(&unioned, -inset);
             if !fill.is_empty() {
-                layer.support_interface = infill::rectilinear(&fill, interface_spacing, i, 0.0);
+                layer.support_interface =
+                    super::fill_support_interface(&fill, interface_spacing, i, settings, false);
             }
         } else if i == 0 {
             let pads = offset_polygons(&unioned, radius.max(0.4));
@@ -148,9 +149,61 @@ fn draw(
             layer.support = infill::rectilinear(&pads, pad_spacing, i, 0.0);
             layer.support_region = pads;
         } else {
-            layer.support = unioned.into_iter().filter(|p| p.len() >= 3).collect();
+            layer.support = tree_trunk_paths(&unioned, i, settings, support_w);
         }
     });
+}
+
+/// C++ tree `make_perimeter_and_infill` / disk outlines.
+///
+/// BBL `tree_support_wall_count` `-1` plus `support_base_pattern` `default`
+/// keeps one outline (hollow disks). Honeycomb / rectilinear / grid fill the
+/// trunk. `0` is infill-only; `1`/`2` add sheath loops.
+fn tree_trunk_paths(
+    region: &[Polygon],
+    layer_idx: usize,
+    settings: &SliceSettings,
+    support_w: f64,
+) -> Vec<Polyline> {
+    let wall_count = settings.tree_support_wall_count;
+    let pattern = settings.support_base_pattern.tree_fill();
+    let sheath = if wall_count < 0 {
+        1_usize
+    } else {
+        wall_count.max(0) as usize
+    };
+    let mut out = Vec::new();
+    if sheath == 1 {
+        out.extend(region.iter().filter(|p| p.len() >= 3).cloned());
+    } else if sheath >= 2 {
+        out.extend(region.iter().filter(|p| p.len() >= 3).cloned());
+        let clip = settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE;
+        out.extend(
+            infill::concentric(region, support_w.max(MIN_MM), clip)
+                .into_iter()
+                .take(sheath - 1),
+        );
+    }
+    let want_fill = pattern != SupportBasePattern::None || wall_count == 0;
+    if want_fill {
+        let inset = if sheath > 0 {
+            let inner = offset_polygons(region, -support_w * sheath as f64);
+            if inner.is_empty() {
+                region.to_vec()
+            } else {
+                inner
+            }
+        } else {
+            region.to_vec()
+        };
+        out.extend(super::fill_support_base(
+            &inset,
+            settings.support_spacing_mm(),
+            layer_idx,
+            settings,
+        ));
+    }
+    out
 }
 
 fn regular_ngon(center: Point, radius_mm: f64) -> Polygon {

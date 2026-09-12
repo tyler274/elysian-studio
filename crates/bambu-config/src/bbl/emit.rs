@@ -147,6 +147,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     insert(&mut map, "seam_gap", pct_str(settings.seam_gap));
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());
+    insert_bool(&mut map, "precise_outer_wall", settings.precise_outer_wall);
     insert_bool(&mut map, "is_infill_first", settings.is_infill_first);
     insert(
         &mut map,
@@ -241,6 +242,12 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "tree_support_wall_count",
+        settings.tree_support_wall_count.to_string(),
+    );
+    insert_bool(&mut map, "interface_shells", settings.interface_shells);
+    insert(
+        &mut map,
         "support_threshold_angle",
         num_str(settings.support_threshold_angle_deg),
     );
@@ -268,6 +275,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "support_base_pattern",
         settings.support_base_pattern.as_str(),
+    );
+    insert(
+        &mut map,
+        "support_base_pattern_spacing",
+        num_str(settings.support_base_pattern_spacing_mm),
+    );
+    insert(
+        &mut map,
+        "support_interface_pattern",
+        settings.support_interface_pattern.as_str(),
     );
     insert(
         &mut map,

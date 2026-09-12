@@ -12,6 +12,8 @@
 //! (`infill_combination`) intersects sparse across layers that fit under the
 //! nozzle and prints the overlap on the uppermost layer at the stacked height.
 //! Parameter modifiers fill each `LayerRegion` with its own settings (C++).
+//! `interface_shells` treats same-region neighbors as the cover so stacked
+//! materials get top/bottom skins at the joint (BBL `"0"` keeps all-region cover).
 
 use bambu_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
 use bambu_geom::{
@@ -69,7 +71,12 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings, mesh: Option<&Trian
             .iter()
             .find_map(|layer| layer.region_settings.get(r).cloned())
             .unwrap_or_else(|| settings.clone());
-        shells.push(detect_shells(&regions, &zs, &contours, &cfg));
+        let neighbors = if cfg.interface_shells {
+            &regions
+        } else {
+            &union_infill
+        };
+        shells.push(detect_shells(&regions, neighbors, &zs, &contours, &cfg));
         cfgs.push((cfg, regions));
     }
     let mut shared_sparse = vec![Vec::new(); n];
@@ -99,7 +106,7 @@ fn fill_into(
     let regions: Vec<Vec<Polygon>> = layers.iter().map(|l| l.infill_region.clone()).collect();
     let zs: Vec<f64> = layers.iter().map(|l| l.print_z_mm).collect();
     let contours: Vec<Vec<Polygon>> = layers.iter().map(|l| l.contours.clone()).collect();
-    let shells = detect_shells(&regions, &zs, &contours, settings);
+    let shells = detect_shells(&regions, &regions, &zs, &contours, settings);
     emit_shells(layers, settings, mesh, &shells, append, shared_sparse);
 }
 
@@ -112,6 +119,7 @@ struct ShellMap {
 
 fn detect_shells(
     regions: &[Vec<Polygon>],
+    neighbors: &[Vec<Polygon>],
     zs: &[f64],
     contours: &[Vec<Polygon>],
     settings: &SliceSettings,
@@ -126,14 +134,14 @@ fn detect_shells(
     let mut bottom = vec![Vec::new(); n];
     if top_n > 0 {
         top.par_iter_mut().enumerate().for_each(|(i, slot)| {
-            let above = regions.get(i + 1).map_or(&[][..], Vec::as_slice);
+            let above = neighbors.get(i + 1).map_or(&[][..], Vec::as_slice);
             *slot = difference_polygons(&regions[i], &cover(above));
         });
     }
     if bottom_n > 0 {
         bottom.par_iter_mut().enumerate().for_each(|(i, slot)| {
             let below = if i > 0 {
-                regions[i - 1].as_slice()
+                neighbors[i - 1].as_slice()
             } else {
                 &[]
             };

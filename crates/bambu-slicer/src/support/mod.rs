@@ -9,11 +9,16 @@
 //! Dust-sized overhangs can be dropped (`support_remove_small_overhang`).
 //! Contacts can grow or shrink in XY (`support_expansion`).
 //! Tree auto can keep only cantilevers (`support_critical_regions_only`).
-//! Top contact can use loops (`support_interface_loop_pattern`).
+//! Top contact can use loops (`support_interface_loop_pattern`) or a chosen
+//! hatch (`support_interface_pattern`; BBL `auto` stays 0° rectilinear).
+//! Tree trunks honor `support_base_pattern` (honeycomb / grid fill the disks;
+//! BBL `default` stays hollow) and `tree_support_wall_count` (`-1` auto outlines).
 
 mod tree;
 
-use bambu_config::{FlowRole, SliceSettings, SupportBasePattern, SupportType};
+use bambu_config::{
+    FlowRole, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
+};
 use bambu_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
 };
@@ -228,7 +233,7 @@ fn is_short_bridge(poly: &Polygon, grown_lower: &[Polygon], max_len_mm: f64) -> 
 }
 
 /// C++ `SupportParameters::base_fill_pattern` on classic columns.
-fn fill_support_base(
+pub(super) fn fill_support_base(
     region: &[Polygon],
     spacing: f64,
     layer_idx: usize,
@@ -260,7 +265,8 @@ fn fill_support_base(
 
 /// C++ `LoopInterfaceProcessor` with `n_contact_loops = 1`: loops on the top
 /// contact instead of hatch. Studio notches circles into a contour; concentric
-/// rings cover the same contact island.
+/// rings cover the same contact island. Hatch follows
+/// `support_interface_pattern` (`auto` / `rectilinear` stay 0° scanlines).
 pub(super) fn fill_support_interface(
     region: &[Polygon],
     spacing: f64,
@@ -268,12 +274,24 @@ pub(super) fn fill_support_interface(
     settings: &SliceSettings,
     loops: bool,
 ) -> Vec<bambu_geom::Polyline> {
-    if loops {
+    if loops || settings.support_interface_pattern == SupportInterfacePattern::Concentric {
         infill::concentric(
             region,
             spacing,
             settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
         )
+    } else if settings.support_interface_pattern == SupportInterfacePattern::Grid {
+        let mut lines = infill::rectilinear(region, spacing, layer_idx, 0.0);
+        lines.extend(infill::rectilinear(region, spacing, layer_idx, 90.0));
+        lines
+    } else if settings.support_interface_pattern == SupportInterfacePattern::RectilinearInterlaced {
+        // C++ `support_interface_angle`: 90° ± 45° when `support_angle` is 0.
+        let angle = if layer_idx.is_multiple_of(2) {
+            135.0
+        } else {
+            45.0
+        };
+        infill::rectilinear(region, spacing, layer_idx, angle)
     } else {
         infill::rectilinear(region, spacing, layer_idx, 0.0)
     }
@@ -403,7 +421,7 @@ mod tests {
     #[test]
     fn interface_loops_span_both_axes() {
         let region = vec![rect(0.0, 0.0, 20.0, 20.0)];
-        let settings = SliceSettings::default();
+        let mut settings = SliceSettings::default();
         let loops = fill_support_interface(&region, 0.5, 0, &settings, true);
         assert!(
             loops.iter().any(|path| path.len() >= 4),
@@ -414,6 +432,31 @@ mod tests {
         assert!(
             hatch.iter().any(|path| path.len() == 2),
             "default hatch should be scanline segments"
+        );
+        assert!(
+            !path_spans_both_axes(&hatch),
+            "BBL auto interface should stay scanlines"
+        );
+        settings.support_interface_pattern = SupportInterfacePattern::Grid;
+        let grid = fill_support_interface(&region, 0.5, 0, &settings, false);
+        assert!(
+            grid.len() > hatch.len(),
+            "C++ grid interface should add the cross hatch: grid={} auto={}",
+            grid.len(),
+            hatch.len()
+        );
+        settings.support_interface_pattern = SupportInterfacePattern::Concentric;
+        let rings = fill_support_interface(&region, 0.5, 0, &settings, false);
+        assert!(
+            rings.iter().any(|path| path.len() >= 4),
+            "C++ concentric interface should emit a ring"
+        );
+        settings.support_interface_pattern = SupportInterfacePattern::RectilinearInterlaced;
+        let even = fill_support_interface(&region, 0.5, 0, &settings, false);
+        let odd = fill_support_interface(&region, 0.5, 1, &settings, false);
+        assert_ne!(
+            even, odd,
+            "C++ rectilinear interlaced should rotate 90° between layers"
         );
     }
 

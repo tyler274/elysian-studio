@@ -207,9 +207,16 @@ fn upstream_fdm_process_0_20() {
     assert!(!s.support_critical_regions_only);
     assert!(!s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Default);
+    assert!((s.support_base_pattern_spacing_mm - 2.5).abs() < 1e-9);
+    assert_eq!(
+        s.support_interface_pattern,
+        crate::SupportInterfacePattern::Auto
+    );
     assert!(s.support_expansion_mm.abs() < 1e-9);
     assert!(!s.enable_wrapping_detection);
     assert_eq!(s.support_type, crate::SupportType::Tree);
+    assert_eq!(s.tree_support_wall_count, -1);
+    assert!(!s.interface_shells);
     assert_eq!(s.ironing_type, crate::IroningType::NoIroning);
     assert_eq!(
         s.reduce_infill_retraction_mode,
@@ -228,6 +235,7 @@ fn upstream_fdm_process_0_20() {
     assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
     assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
     assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
+    assert!(!s.precise_outer_wall);
     assert!(!s.is_infill_first);
     assert!((s.seam_gap - 0.15).abs() < 1e-9);
     assert!((s.seam_gap_mm() - 0.06).abs() < 1e-9);
@@ -664,7 +672,12 @@ fn project_settings_json_roundtrip() {
     src.support_critical_regions_only = true;
     src.support_interface_loop_pattern = true;
     src.support_base_pattern = crate::SupportBasePattern::Honeycomb;
+    src.support_base_pattern_spacing_mm = 1.0;
+    src.support_interface_pattern = crate::SupportInterfacePattern::Concentric;
     src.support_expansion_mm = 2.0;
+    src.tree_support_wall_count = 2;
+    src.interface_shells = true;
+    src.precise_outer_wall = true;
     src.thick_bridges = true;
     src.support_type = crate::SupportType::Tree;
     src.ironing_type = crate::IroningType::TopSurfaces;
@@ -701,7 +714,15 @@ fn project_settings_json_roundtrip() {
         loaded.support_base_pattern,
         crate::SupportBasePattern::Honeycomb
     );
+    assert!((loaded.support_base_pattern_spacing_mm - 1.0).abs() < 1e-9);
+    assert_eq!(
+        loaded.support_interface_pattern,
+        crate::SupportInterfacePattern::Concentric
+    );
     assert!((loaded.support_expansion_mm - 2.0).abs() < 1e-9);
+    assert_eq!(loaded.tree_support_wall_count, 2);
+    assert!(loaded.interface_shells);
+    assert!(loaded.precise_outer_wall);
     assert!(loaded.thick_bridges);
     assert_eq!(loaded.support_type, crate::SupportType::Tree);
     assert_eq!(loaded.ironing_type, crate::IroningType::TopSurfaces);
@@ -798,7 +819,12 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("support_critical_regions_only".into(), "1".into());
     pairs.insert("support_interface_loop_pattern".into(), "1".into());
     pairs.insert("support_base_pattern".into(), "honeycomb".into());
+    pairs.insert("support_base_pattern_spacing".into(), "1".into());
+    pairs.insert("support_interface_pattern".into(), "concentric".into());
     pairs.insert("support_expansion".into(), "2".into());
+    pairs.insert("tree_support_wall_count".into(), "2".into());
+    pairs.insert("interface_shells".into(), "1".into());
+    pairs.insert("precise_outer_wall".into(), "1".into());
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
@@ -819,7 +845,15 @@ fn region_overrides_skip_object_keys() {
     assert!(!s.support_critical_regions_only);
     assert!(!s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Default);
+    assert!((s.support_base_pattern_spacing_mm - 2.5).abs() < 1e-9);
+    assert_eq!(
+        s.support_interface_pattern,
+        crate::SupportInterfacePattern::Auto
+    );
     assert!(s.support_expansion_mm.abs() < 1e-9);
+    assert_eq!(s.tree_support_wall_count, -1);
+    assert!(!s.interface_shells);
+    assert!(s.precise_outer_wall);
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     apply_config_pairs(&mut s, &pairs, false);
@@ -832,7 +866,15 @@ fn region_overrides_skip_object_keys() {
     assert!(s.support_critical_regions_only);
     assert!(s.support_interface_loop_pattern);
     assert_eq!(s.support_base_pattern, crate::SupportBasePattern::Honeycomb);
+    assert!((s.support_base_pattern_spacing_mm - 1.0).abs() < 1e-9);
+    assert_eq!(
+        s.support_interface_pattern,
+        crate::SupportInterfacePattern::Concentric
+    );
     assert!((s.support_expansion_mm - 2.0).abs() < 1e-9);
+    assert_eq!(s.tree_support_wall_count, 2);
+    assert!(s.interface_shells);
+    assert!(s.precise_outer_wall);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
 }

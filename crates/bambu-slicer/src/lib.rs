@@ -803,8 +803,8 @@ mod tests {
     use super::*;
     use bambu_config::{
         DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern, SeamPosition,
-        SliceSettings, SupportBasePattern, SupportType, SurfacePattern, TopOneWallType,
-        WallGenerator,
+        SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType, SurfacePattern,
+        TopOneWallType, WallGenerator,
     };
     use bambu_geom::TriangleMesh;
 
@@ -1450,6 +1450,58 @@ mod tests {
     }
 
     #[test]
+    fn support_interface_pattern_concentric_and_grid() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        for ty in [SupportType::Classic, SupportType::Tree] {
+            let mut auto = support_beam_settings();
+            auto.support_type = ty;
+            let mut concentric = auto.clone();
+            concentric.support_interface_pattern = SupportInterfacePattern::Concentric;
+            let mut grid = auto.clone();
+            grid.support_interface_pattern = SupportInterfacePattern::Grid;
+            let a = slice_mesh(&mesh, &auto).unwrap();
+            let c = slice_mesh(&mesh, &concentric).unwrap();
+            let g = slice_mesh(&mesh, &grid).unwrap();
+            let auto_if: Vec<_> = a
+                .layers
+                .iter()
+                .flat_map(|l| l.support_interface.iter())
+                .cloned()
+                .collect();
+            let conc_if: Vec<_> = c
+                .layers
+                .iter()
+                .flat_map(|l| l.support_interface.iter())
+                .cloned()
+                .collect();
+            let grid_if: Vec<_> = g
+                .layers
+                .iter()
+                .flat_map(|l| l.support_interface.iter())
+                .cloned()
+                .collect();
+            assert!(
+                !auto_if.is_empty() && !conc_if.is_empty() && !grid_if.is_empty(),
+                "{ty:?}: expected interface under the slab"
+            );
+            assert!(
+                !interface_has_ring(&auto_if),
+                "{ty:?}: BBL auto interface should stay scanlines"
+            );
+            assert!(
+                interface_has_ring(&conc_if),
+                "{ty:?}: C++ concentric interface should cover contact with loops"
+            );
+            let grid_n = grid_if.len();
+            let auto_n = auto_if.len();
+            assert!(
+                grid_n > auto_n,
+                "{ty:?}: grid should add the cross hatch: grid={grid_n} auto={auto_n}"
+            );
+        }
+    }
+
+    #[test]
     fn support_base_honeycomb_spans_columns() {
         let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
         let mut hatch = support_beam_settings();
@@ -1514,6 +1566,112 @@ mod tests {
             if_n(&b.layers) >= 1,
             "hollow still prints the interface under the slab, got {}",
             if_n(&b.layers)
+        );
+    }
+
+    #[test]
+    fn tree_support_base_honeycomb_fills_trunks() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut hollow = support_beam_settings();
+        hollow.support_type = SupportType::Tree;
+        hollow.support_base_pattern = SupportBasePattern::Default;
+        let mut hex = hollow.clone();
+        hex.support_base_pattern = SupportBasePattern::Honeycomb;
+        let trunk = |result: &SliceResult| -> Vec<Polyline> {
+            result
+                .layers
+                .iter()
+                .skip(1)
+                .flat_map(|l| l.support.iter())
+                .cloned()
+                .collect()
+        };
+        let a = trunk(&slice_mesh(&mesh, &hollow).unwrap());
+        let b = trunk(&slice_mesh(&mesh, &hex).unwrap());
+        assert!(
+            !a.is_empty() && !b.is_empty(),
+            "expected tree trunks under the slab"
+        );
+        assert!(
+            b.len() > a.len(),
+            "C++ honeycomb tree trunks should fill inside the disks: default={} hex={}",
+            a.len(),
+            b.len()
+        );
+    }
+
+    #[test]
+    fn tree_support_wall_count_sheath_and_infill_only() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut auto = support_beam_settings();
+        auto.support_type = SupportType::Tree;
+        auto.tree_support_wall_count = -1;
+        let mut two = auto.clone();
+        two.tree_support_wall_count = 2;
+        let mut infill_only = auto.clone();
+        infill_only.tree_support_wall_count = 0;
+        infill_only.support_base_pattern_spacing_mm = 0.4;
+        let trunk_n = |settings: &SliceSettings| {
+            slice_mesh(&mesh, settings)
+                .unwrap()
+                .layers
+                .iter()
+                .skip(1)
+                .map(|l| l.support.len())
+                .sum::<usize>()
+        };
+        let auto_n = trunk_n(&auto);
+        let two_n = trunk_n(&two);
+        let zero_n = trunk_n(&infill_only);
+        assert!(auto_n > 0, "auto tree should keep disk outlines");
+        assert!(
+            two_n > auto_n,
+            "C++ tree_support_wall_count 2 should add an inner sheath: auto={auto_n} two={two_n}"
+        );
+        assert!(
+            zero_n > 0,
+            "wall_count 0 should still fill thick enough trunks, got {zero_n}"
+        );
+    }
+
+    #[test]
+    fn support_base_pattern_spacing_densifies_hatch() {
+        let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
+        let mut settings = support_beam_settings();
+        let default_n = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support.len())
+            .sum::<usize>();
+        settings.support_base_pattern_spacing_mm = 2.5;
+        let same_n = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support.len())
+            .sum::<usize>();
+        assert_eq!(
+            default_n, same_n,
+            "BBL 2.5 mm spacing should keep density hatch"
+        );
+        settings.support_base_pattern_spacing_mm = 5.0;
+        let coarse = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support.len())
+            .sum::<usize>();
+        settings.support_base_pattern_spacing_mm = 0.8;
+        let fine = slice_mesh(&mesh, &settings)
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.support.len())
+            .sum::<usize>();
+        assert!(
+            fine > coarse,
+            "tighter support_base_pattern_spacing should add hatch: coarse={coarse} fine={fine}"
         );
     }
 
@@ -2608,6 +2766,39 @@ mod tests {
         assert!(
             !mid.region_infill[0].is_empty() && !mid.region_infill[1].is_empty(),
             "both filaments should occupy the mid layer"
+        );
+    }
+
+    #[test]
+    fn interface_shells_add_contact_skins() {
+        let lower = TriangleMesh::cube(20.0);
+        let mut upper = TriangleMesh::cube(20.0);
+        upper.translate(glam::Vec3::new(0.0, 0.0, 10.0));
+        let mut a = bambu_model::ModelVolume::model_part("lower", lower, 1);
+        a.config.insert("extruder".into(), "1".into());
+        let mut b = bambu_model::ModelVolume::model_part("upper", upper, 2);
+        b.config.insert("extruder".into(), "2".into());
+        let mut settings = SliceSettings::default();
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        settings.interface_shells = false;
+        let off = slice_volumes(&[a.clone(), b.clone()], &settings).unwrap();
+        settings.interface_shells = true;
+        let on = slice_volumes(&[a, b], &settings).unwrap();
+        let skin = |layers: &[Layer]| {
+            layers
+                .iter()
+                .map(|l| {
+                    polyline_len_mm(&l.solid_infill)
+                        + polyline_len_mm(&l.top_surface)
+                        + polyline_len_mm(&l.bottom_surface)
+                })
+                .sum::<f64>()
+        };
+        let a_len = skin(&off.layers);
+        let b_len = skin(&on.layers);
+        assert!(
+            b_len > a_len * 1.05,
+            "C++ interface_shells should add skins at the material joint: off={a_len} on={b_len}"
         );
     }
 

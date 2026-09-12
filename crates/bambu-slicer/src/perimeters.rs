@@ -41,6 +41,9 @@ impl WallSpacing {
     }
 
     fn loop_offset(self, i: u32) -> f64 {
+        // Width stack matches C++ `precise_outer_wall` ON + InnerOuter.
+        // `precise_outer_wall` false uses `Flow::spacing`; that is a no-op
+        // while spacing equals width, so BBL default gaps stay here.
         if i == 0 {
             self.outer * 0.5
         } else {

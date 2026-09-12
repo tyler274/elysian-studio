@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::{
     EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
     IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
-    SliceSettings, SupportBasePattern, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
-    WallSequence, ZHopType,
+    SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType, SurfacePattern,
+    TopOneWallType, WallGenerator, WallSequence, ZHopType,
 };
 
 /// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
@@ -39,6 +39,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "wall_generator"
             | "wall_sequence"
             | "wall_infill_order"
+            | "precise_outer_wall"
             | "min_feature_size"
             | "min_bead_width"
             | "fuzzy_skin"
@@ -258,6 +259,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
             s.wall_sequence = seq;
         }
     }
+    if let Some(v) = bool_val(map, "precise_outer_wall") {
+        s.precise_outer_wall = v;
+    }
     if let Some(v) = bool_val(map, "is_infill_first") {
         s.is_infill_first = v;
     }
@@ -348,6 +352,12 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "tree_support_branch_diameter") {
         s.tree_branch_diameter_mm = v.max(0.0);
     }
+    if let Some(v) = i32_val(map, "tree_support_wall_count") {
+        s.tree_support_wall_count = v.clamp(-1, 2);
+    }
+    if let Some(v) = bool_val(map, "interface_shells") {
+        s.interface_shells = v;
+    }
     if let Some(v) = num(map, "support_threshold_angle") {
         s.support_threshold_angle_deg = v;
     }
@@ -366,6 +376,14 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(name) = text(map, "support_base_pattern") {
         if let Some(p) = SupportBasePattern::from_name(&name) {
             s.support_base_pattern = p;
+        }
+    }
+    if let Some(v) = num(map, "support_base_pattern_spacing") {
+        s.support_base_pattern_spacing_mm = v.max(0.0);
+    }
+    if let Some(name) = text(map, "support_interface_pattern") {
+        if let Some(p) = SupportInterfacePattern::from_name(&name) {
+            s.support_interface_pattern = p;
         }
     }
     if let Some(v) = num(map, "support_expansion") {
