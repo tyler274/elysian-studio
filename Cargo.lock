@@ -453,7 +453,9 @@ version = "0.1.0"
 dependencies = [
  "bambu-config",
  "bambu-geom",
+ "bambu-model",
  "bambu-slicer",
+ "glam 0.29.3",
  "thiserror 2.0.20",
 ]
 

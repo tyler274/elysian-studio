@@ -124,7 +124,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
             e(
                 &layer.prime_tower,
                 false,
-                feeds.support,
+                feeds.prime_tower,
                 FlowRole::SupportMaterial,
                 first,
             ),
@@ -185,17 +185,24 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         let infill_first = settings.is_infill_first && !first;
         for walls_now in [!infill_first, infill_first] {
             if walls_now {
-                let emit_outer = |w: &mut Writer<'_>| {
+                let emit_outer = |w: &mut Writer<'_>, paths: &[Polyline]| {
                     w.set_print_role(PrintAccel::OuterWall);
+                    let flow =
+                        Flow::for_role(settings, FlowRole::ExternalPerimeter, flow_h, object_first);
+                    let factor =
+                        settings.gcode_path_flow_factor(FlowRole::ExternalPerimeter, first);
                     w.emit_wall_paths(
                         "Outer wall",
-                        e(
-                            &layer.outer_walls,
-                            true,
-                            feeds.wall,
-                            FlowRole::ExternalPerimeter,
-                            object_first,
-                        ),
+                        Extrude {
+                            paths,
+                            closed: true,
+                            e_per_mm: flow.e_per_mm() * factor,
+                            print_f: feeds.wall,
+                            mm3_per_mm: flow.mm3_per_mm() * factor,
+                            width_mm: flow.width_mm,
+                            arc_tolerance_mm: settings
+                                .arc_fit_tolerance_mm(FlowRole::ExternalPerimeter),
+                        },
                         support_polys.as_deref(),
                         settings.enable_overhang_speed,
                         !first,
@@ -221,37 +228,72 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                         !first,
                     )
                 };
-                match settings.wall_sequence {
-                    WallSequence::OuterInner => {
-                        emit_outer(&mut w)?;
-                        emit_inner(&mut w, &layer.inner_walls)?;
+                let emit_sequence = |w: &mut Writer<'_>,
+                                     outer: &[Polyline],
+                                     inner: &[Polyline],
+                                     gap: &[Polyline]|
+                 -> Result<(), GcodeError> {
+                    match settings.wall_sequence {
+                        WallSequence::OuterInner => {
+                            emit_outer(w, outer)?;
+                            emit_inner(w, inner)?;
+                        }
+                        WallSequence::InnerOuter => {
+                            emit_inner(w, inner)?;
+                            emit_outer(w, outer)?;
+                        }
+                        WallSequence::InnerOuterInner => {
+                            // C++ classic: children-first remaining inners, outer,
+                            // then depth-1 (`elrSecondPerimeter`).
+                            let n = inner.len().min(outer.len());
+                            let (first_inner, remaining) = inner.split_at(n);
+                            let remaining: Vec<_> = remaining.iter().rev().cloned().collect();
+                            emit_inner(w, &remaining)?;
+                            emit_outer(w, outer)?;
+                            emit_inner(w, first_inner)?;
+                        }
                     }
-                    WallSequence::InnerOuter => {
-                        emit_inner(&mut w, &layer.inner_walls)?;
-                        emit_outer(&mut w)?;
+                    w.emit_role("Gap infill", PrintAccel::Default, {
+                        let flow =
+                            Flow::for_role(settings, FlowRole::Perimeter, flow_h, object_first);
+                        let factor = settings.gcode_path_flow_factor(FlowRole::Perimeter, first);
+                        Extrude {
+                            paths: gap,
+                            closed: false,
+                            e_per_mm: flow.e_per_mm() * factor,
+                            print_f: feeds.gap,
+                            mm3_per_mm: flow.mm3_per_mm() * factor,
+                            width_mm: flow.width_mm,
+                            arc_tolerance_mm: settings.arc_fit_tolerance_mm(FlowRole::Perimeter),
+                        }
+                    })
+                };
+                let per_region = layer.region_settings.len() > 1
+                    && layer.region_outer_walls.len() == layer.region_settings.len()
+                    && layer.region_inner_walls.len() == layer.region_settings.len();
+                if per_region {
+                    for (r, cfg) in layer.region_settings.iter().enumerate() {
+                        let outer = &layer.region_outer_walls[r];
+                        let inner = &layer.region_inner_walls[r];
+                        let gap = layer
+                            .region_gap_infill
+                            .get(r)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]);
+                        if outer.is_empty() && inner.is_empty() && gap.is_empty() {
+                            continue;
+                        }
+                        w.emit_region_toolchange(cfg.wall_filament)?;
+                        emit_sequence(&mut w, outer, inner, gap)?;
                     }
-                    WallSequence::InnerOuterInner => {
-                        // C++ classic: children-first remaining inners, outer,
-                        // then depth-1 (`elrSecondPerimeter`).
-                        let n = layer.inner_walls.len().min(layer.outer_walls.len());
-                        let (first_inner, remaining) = layer.inner_walls.split_at(n);
-                        let remaining: Vec<_> = remaining.iter().rev().cloned().collect();
-                        emit_inner(&mut w, &remaining)?;
-                        emit_outer(&mut w)?;
-                        emit_inner(&mut w, first_inner)?;
-                    }
-                }
-                w.emit_role(
-                    "Gap infill",
-                    PrintAccel::Default,
-                    e(
+                } else {
+                    emit_sequence(
+                        &mut w,
+                        &layer.outer_walls,
+                        &layer.inner_walls,
                         &layer.gap_infill,
-                        false,
-                        feeds.gap,
-                        FlowRole::Perimeter,
-                        object_first,
-                    ),
-                )?;
+                    )?;
+                }
             } else {
                 w.emit_role(
                     "Sparse infill",
@@ -432,6 +474,19 @@ impl Writer<'_> {
         self.state.current_tool = Some(t);
         Ok(())
     }
+
+    /// Skip the first `T` when it matches the implicit start nozzle.
+    fn emit_region_toolchange(&mut self, filament_1based: i32) -> Result<(), GcodeError> {
+        let filament = filament_1based.max(1);
+        let t = self.settings.tool_command_for_filament(filament);
+        let implicit = self
+            .settings
+            .tool_command_for_filament(self.settings.wall_filament.max(1));
+        if self.state.current_tool.is_none() && t == implicit {
+            return Ok(());
+        }
+        self.emit_toolchange(filament)
+    }
 }
 
 struct LayerFeeds {
@@ -443,6 +498,7 @@ struct LayerFeeds {
     vertical_shell: f64,
     support: f64,
     support_interface: f64,
+    prime_tower: f64,
     bridge: f64,
     top: f64,
 }
@@ -490,6 +546,11 @@ impl LayerFeeds {
                 first_f
             } else {
                 settings.support_interface_speed_mm_s * 60.0
+            },
+            prime_tower: if first {
+                first_f
+            } else {
+                settings.prime_tower_max_speed_mm_s * 60.0
             },
             bridge: if first {
                 first_f

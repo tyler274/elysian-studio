@@ -290,6 +290,7 @@ fn upstream_fdm_process_0_20() {
     assert!(s.enable_prime_tower);
     assert!((s.prime_tower_width_mm - 35.0).abs() < 1e-9);
     assert!((s.prime_tower_brim_width_mm - 3.0).abs() < 1e-9);
+    assert!((s.prime_tower_max_speed_mm_s - 90.0).abs() < 1e-9);
     assert!(
         !s.has_wipe_tower(),
         "single-filament 0.20 has no wipe tower"
@@ -944,6 +945,7 @@ fn project_settings_json_roundtrip() {
     src.wipe_tower_y_mm = 194.264;
     src.prime_tower_width_mm = 35.0;
     src.prime_tower_brim_width_mm = 3.0;
+    src.prime_tower_max_speed_mm_s = 80.0;
     let json = crate::project_settings_json(&src).unwrap();
     assert!(json.contains("\"from\": \"project\""));
     let loaded = crate::settings_from_json(&json).unwrap();
@@ -1029,6 +1031,7 @@ fn project_settings_json_roundtrip() {
     assert_eq!(loaded.enable_prime_tower, src.enable_prime_tower);
     assert!((loaded.wipe_tower_x_mm - src.wipe_tower_x_mm).abs() < 1e-9);
     assert!((loaded.prime_tower_width_mm - src.prime_tower_width_mm).abs() < 1e-9);
+    assert!((loaded.prime_tower_max_speed_mm_s - 80.0).abs() < 1e-9);
     assert_eq!(loaded.filament_count, src.filament_count);
     assert!(!loaded.enable_arc_fitting);
     src.enable_arc_fitting = true;

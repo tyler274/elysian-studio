@@ -1028,6 +1028,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "prime_tower_max_speed",
+        num_str(settings.prime_tower_max_speed_mm_s),
+    );
+    insert(
+        &mut map,
         "filament_diameter",
         (0..settings.filament_count.max(1))
             .map(|_| num_str(settings.filament_diameter_mm))

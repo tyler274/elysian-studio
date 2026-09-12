@@ -901,6 +901,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "prime_tower_brim_width") {
         s.prime_tower_brim_width_mm = v;
     }
+    if let Some(v) = num(map, "prime_tower_max_speed") {
+        s.prime_tower_max_speed_mm_s = v.max(10.0);
+    }
     if let Some(v) = nums(map, "filament_diameter") {
         s.filament_count = v.len().max(1);
         if let Some(&d) = v.first() {

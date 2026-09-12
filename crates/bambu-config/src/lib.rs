@@ -1339,6 +1339,8 @@ pub struct SliceSettings {
     pub prime_tower_width_mm: f64,
     /// C++ `prime_tower_brim_width` (mm). Negative means auto; keep-out treats it as 0.
     pub prime_tower_brim_width_mm: f64,
+    /// C++ `prime_tower_max_speed` (mm/s). Default 90; BBL `"90"`.
+    pub prime_tower_max_speed_mm_s: f64,
     /// C++ `filament_diameter.values.size()`.
     pub filament_count: usize,
 }
@@ -1612,6 +1614,7 @@ impl Default for SliceSettings {
             wipe_tower_y_mm: 220.0,
             prime_tower_width_mm: 35.0,
             prime_tower_brim_width_mm: 3.0,
+            prime_tower_max_speed_mm_s: 90.0,
             filament_count: 1,
         }
     }

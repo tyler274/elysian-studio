@@ -102,6 +102,12 @@ pub struct Layer {
     pub region_infill: Vec<Vec<Polygon>>,
     /// Settings for [`Self::region_infill`] slots (same length).
     pub region_settings: Vec<SliceSettings>,
+    /// Per-region outer walls (same length as [`Self::region_settings`]).
+    pub region_outer_walls: Vec<Vec<Polyline>>,
+    /// Per-region inner walls (same length as [`Self::region_settings`]).
+    pub region_inner_walls: Vec<Vec<Polyline>>,
+    /// Per-region gap infill (same length as [`Self::region_settings`]).
+    pub region_gap_infill: Vec<Vec<Polyline>>,
     /// C++ `Layer::loverhangs` for Auto Z-hop.
     pub lift_overhangs: Vec<Polygon>,
 }
@@ -578,6 +584,9 @@ fn slice_prepared(
                 infill_region: peri.infill_region,
                 region_infill: Vec::new(),
                 region_settings: Vec::new(),
+                region_outer_walls: Vec::new(),
+                region_inner_walls: Vec::new(),
+                region_gap_infill: Vec::new(),
                 seam_hint: peri.seam_hint,
             }
         };
@@ -614,6 +623,9 @@ fn slice_prepared(
             support_blocker: prepared[i].blockers.clone(),
             region_infill: paths.region_infill,
             region_settings: paths.region_settings,
+            region_outer_walls: paths.region_outer_walls,
+            region_inner_walls: paths.region_inner_walls,
+            region_gap_infill: paths.region_gap_infill,
             lift_overhangs: Vec::new(),
         });
     }
@@ -654,6 +666,9 @@ struct LayerToolpaths {
     infill_region: Vec<Polygon>,
     region_infill: Vec<Vec<Polygon>>,
     region_settings: Vec<SliceSettings>,
+    region_outer_walls: Vec<Vec<Polyline>>,
+    region_inner_walls: Vec<Vec<Polyline>>,
+    region_gap_infill: Vec<Vec<Polyline>>,
     seam_hint: Option<Point>,
 }
 
@@ -669,11 +684,17 @@ fn layer_region_perimeters(
     let mut gap_infill = Vec::new();
     let mut infill_acc = Vec::new();
     let mut region_infill = Vec::with_capacity(n);
+    let mut region_outer_walls = Vec::with_capacity(n);
+    let mut region_inner_walls = Vec::with_capacity(n);
+    let mut region_gap_infill = Vec::with_capacity(n);
     for r in 0..n {
         let polys = &prepared[i].regions[r];
         let cfg = &prepared[i].region_settings[r];
         if polys.is_empty() {
             region_infill.push(Vec::new());
+            region_outer_walls.push(Vec::new());
+            region_inner_walls.push(Vec::new());
+            region_gap_infill.push(Vec::new());
             continue;
         }
         let upper = prepared
@@ -694,11 +715,14 @@ fn layer_region_perimeters(
             spec.index,
             spec.slice_z_mm,
         );
-        outer_walls.extend(outer);
-        inner_walls.extend(inner);
-        gap_infill.extend(peri.gap_infill);
+        outer_walls.extend(outer.iter().cloned());
+        inner_walls.extend(inner.iter().cloned());
+        gap_infill.extend(peri.gap_infill.iter().cloned());
         infill_acc.extend(peri.infill_region.iter().cloned());
         region_infill.push(peri.infill_region);
+        region_outer_walls.push(outer);
+        region_inner_walls.push(inner);
+        region_gap_infill.push(peri.gap_infill);
     }
     LayerToolpaths {
         outer_walls,
@@ -707,6 +731,9 @@ fn layer_region_perimeters(
         infill_region: union_polygons(&infill_acc),
         region_infill,
         region_settings: prepared[i].region_settings.clone(),
+        region_outer_walls,
+        region_inner_walls,
+        region_gap_infill,
         seam_hint,
     }
 }
@@ -3173,6 +3200,8 @@ mod tests {
             assert_eq!(a.ironing, b.ironing);
             assert_eq!(a.support_ironing, b.support_ironing);
             assert_eq!(a.prime_tower, b.prime_tower);
+            assert_eq!(a.region_outer_walls, b.region_outer_walls);
+            assert_eq!(a.region_inner_walls, b.region_inner_walls);
             assert_eq!(a.lift_overhangs, b.lift_overhangs);
         }
     }
@@ -3471,9 +3500,14 @@ mod tests {
         let sliced = slice_volumes(&[a, b], &settings).unwrap();
         let mid = &sliced.layers[sliced.layers.len() / 2];
         assert_eq!(mid.region_infill.len(), 2);
+        assert_eq!(mid.region_outer_walls.len(), 2);
         assert!(
             !mid.region_infill[0].is_empty() && !mid.region_infill[1].is_empty(),
             "both filaments should occupy the mid layer"
+        );
+        assert!(
+            !mid.region_outer_walls[0].is_empty() && !mid.region_outer_walls[1].is_empty(),
+            "both filaments should keep their own outer walls"
         );
     }
 

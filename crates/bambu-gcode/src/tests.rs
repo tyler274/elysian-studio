@@ -5,7 +5,7 @@ use bambu_config::{
     WallSequence,
 };
 use bambu_geom::TriangleMesh;
-use bambu_slicer::slice_mesh;
+use bambu_slicer::{slice_mesh, slice_volumes};
 
 #[test]
 fn cube_gcode_has_layers() {
@@ -443,6 +443,41 @@ fn table_gcode_switches_to_support_filament() {
     assert!(
         gcode[support_at..].contains("\nT1\n") || gcode[support_at..].contains("\nT1 "),
         "walls should return to filament 1 after support"
+    );
+}
+
+#[test]
+fn two_extruders_emit_wall_toolchange() {
+    let left = TriangleMesh::cube(20.0);
+    let mut right = TriangleMesh::cube(20.0);
+    right.translate(glam::Vec3::new(25.0, 0.0, 0.0));
+    let mut a = bambu_model::ModelVolume::model_part("left", left, 1);
+    a.config.insert("extruder".into(), "1".into());
+    let mut b = bambu_model::ModelVolume::model_part("right", right, 2);
+    b.config.insert("extruder".into(), "2".into());
+    let mut settings = SliceSettings::default();
+    settings.filament_count = 2;
+    settings.filament_map = vec![1, 2];
+    settings.infill_pattern = InfillPattern::Rectilinear;
+    let sliced = slice_volumes(&[a, b], &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Outer wall"));
+    assert!(
+        gcode.contains("\nT2\n") || gcode.contains("\nT2 "),
+        "C++ per-volume extruder 2 emits T2"
+    );
+}
+
+#[test]
+fn cube_gcode_skips_wall_toolchange() {
+    let mesh = TriangleMesh::cube(20.0);
+    let settings = SliceSettings::default();
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let body = executable_block(&gcode);
+    assert!(
+        !body.lines().any(|l| l == "T2" || l.starts_with("T2 ")),
+        "single-filament cube should not emit T2"
     );
 }
 
@@ -1183,6 +1218,9 @@ fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
         support_blocker: Vec::new(),
         region_infill: Vec::new(),
         region_settings: Vec::new(),
+        region_outer_walls: Vec::new(),
+        region_inner_walls: Vec::new(),
+        region_gap_infill: Vec::new(),
         lift_overhangs: Vec::new(),
     }
 }

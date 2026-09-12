@@ -1,9 +1,8 @@
 //! Multifilament test tower: rewrite G-code vs upstream C++ Bambu Studio CLI.
 //!
 //! The project 3MF embeds P1P 0.28 mm Extra Draft settings, tree supports, a
-//! prime tower, and eight filament-mapped parts. The rewrite still emits
-//! single-filament G-code, so this compares layer/Z geometry and object FEATURE
-//! roles rather than toolchanges or wipe-tower paths.
+//! prime tower, and eight filament-mapped parts. Compare layer/Z geometry and
+//! object FEATURE roles; flush volumes and wipe-tower TCR stay C++-only.
 
 mod common;
 

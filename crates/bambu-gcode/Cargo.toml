@@ -14,3 +14,7 @@ bambu-config.workspace = true
 bambu-geom.workspace = true
 bambu-slicer.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+bambu-model.workspace = true
+glam.workspace = true
