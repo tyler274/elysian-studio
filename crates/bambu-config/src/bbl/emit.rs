@@ -610,6 +610,25 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "reduce_infill_retraction_mode",
         settings.reduce_infill_retraction_mode.as_str(),
     );
+    insert_bool(
+        &mut map,
+        "reduce_crossing_wall",
+        settings.reduce_crossing_wall,
+    );
+    insert(
+        &mut map,
+        "max_travel_detour_distance",
+        if settings.max_travel_detour_is_percent {
+            format!("{}%", num_str(settings.max_travel_detour_distance))
+        } else {
+            num_str(settings.max_travel_detour_distance)
+        },
+    );
+    insert_bool(
+        &mut map,
+        "avoid_crossing_wall_includes_support",
+        settings.avoid_crossing_wall_includes_support,
+    );
     insert(
         &mut map,
         "ironing_pattern",

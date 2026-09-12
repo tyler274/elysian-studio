@@ -620,6 +620,16 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
             s.reduce_infill_retraction_mode = m;
         }
     }
+    if let Some(v) = bool_val(map, "reduce_crossing_wall") {
+        s.reduce_crossing_wall = v;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "max_travel_detour_distance") {
+        s.max_travel_detour_distance = v.max(0.0);
+        s.max_travel_detour_is_percent = is_percent;
+    }
+    if let Some(v) = bool_val(map, "avoid_crossing_wall_includes_support") {
+        s.avoid_crossing_wall_includes_support = v;
+    }
     if let Some(name) = text(map, "ironing_pattern") {
         if let Some(p) = IroningPattern::from_name(&name) {
             s.ironing_pattern = p;

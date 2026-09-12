@@ -1214,6 +1214,13 @@ pub struct SliceSettings {
     pub retraction_minimum_travel_mm: f64,
     /// C++ `reduce_infill_retraction_mode`.
     pub reduce_infill_retraction_mode: ReduceInfillRetractionMode,
+    /// C++ `reduce_crossing_wall`. Detour travels that would cross walls. BBL `"0"`.
+    pub reduce_crossing_wall: bool,
+    /// C++ `max_travel_detour_distance` (mm or percent). 0 disables the cap.
+    pub max_travel_detour_distance: f64,
+    pub max_travel_detour_is_percent: bool,
+    /// C++ `avoid_crossing_wall_includes_support`. BBL `"0"`.
+    pub avoid_crossing_wall_includes_support: bool,
     /// C++ `filament_metal_stickiness`. Auto mode treats None like Low.
     pub filament_metal_stickiness: FilamentMetalStickiness,
     /// C++ `retract_when_changing_layer`.
@@ -1555,6 +1562,10 @@ impl Default for SliceSettings {
             deretraction_speed_mm_s: 0.0,
             retraction_minimum_travel_mm: 2.0,
             reduce_infill_retraction_mode: ReduceInfillRetractionMode::Auto,
+            reduce_crossing_wall: false,
+            max_travel_detour_distance: 0.0,
+            max_travel_detour_is_percent: false,
+            avoid_crossing_wall_includes_support: false,
             filament_metal_stickiness: FilamentMetalStickiness::None,
             retract_when_changing_layer: false,
             wipe: false,
@@ -1858,6 +1869,17 @@ impl SliceSettings {
             ReduceInfillRetractionMode::Auto => {
                 self.filament_metal_stickiness.is_low_for_infill_retract()
             }
+        }
+    }
+
+    /// C++ `max_travel_detour_distance`: 0 disables the cap; percent is of the direct hop.
+    pub fn max_travel_detour_limit_mm(&self, direct_mm: f64) -> f64 {
+        if self.max_travel_detour_distance <= 0.0 {
+            f64::INFINITY
+        } else if self.max_travel_detour_is_percent {
+            direct_mm * self.max_travel_detour_distance / 100.0
+        } else {
+            self.max_travel_detour_distance
         }
     }
 

@@ -36,6 +36,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         w.state.lift_overhangs = lift_overhangs_in_window(&sliced.layers, layer.print_z_mm);
         w.state.internal_islands = layer.infill_region.clone();
         w.state.support_islands = layer.support_region.clone();
+        w.state.layer_contours = layer.contours.clone();
         w.state.wall_paths = layer
             .outer_walls
             .iter()

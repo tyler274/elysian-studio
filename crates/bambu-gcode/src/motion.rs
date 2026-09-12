@@ -2,10 +2,10 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::{PrintAccel, SliceSettings, ZHopType};
+use bambu_config::{FlowRole, PrintAccel, SliceSettings, ZHopType};
 use bambu_geom::{
-    clip_end, douglas_peucker, fit_arcs_and_simplify, intersect_polygons, unscale, ArcDir, PathFit,
-    PathFitKind, Point, Polygon, Polyline,
+    clip_end, douglas_peucker, fit_arcs_and_simplify, intersect_polygons, offset_polygons, unscale,
+    ArcDir, PathFit, PathFitKind, Point, Polygon, Polyline,
 };
 use bambu_slicer::{point_in_polygons, Layer};
 
@@ -62,6 +62,8 @@ pub(crate) struct WriterState {
     pub(crate) internal_islands: Vec<Polygon>,
     /// Current-layer wall polylines for `travel_cross_perimeters`.
     pub(crate) wall_paths: Vec<Polyline>,
+    /// C++ `Layer::lslices` stand-in for `reduce_crossing_wall` detours.
+    pub(crate) layer_contours: Vec<Polygon>,
     /// C++ `SupportLayer::support_islands` for support-island travel.
     pub(crate) support_islands: Vec<Polygon>,
 }
@@ -332,23 +334,48 @@ impl<'a> Writer<'a> {
     }
 
     pub(crate) fn travel_to(&mut self, dest: (f64, f64)) -> Result<(), GcodeError> {
-        if let Some(prev) = self.state.last {
-            let dist = xy_dist(prev, dest);
-            if dist < TRAVEL_EPS_MM {
-                return Ok(());
-            }
-            if dist + 1e-9 >= self.settings.retraction_minimum_travel_mm
-                && !self.skip_retract(prev, dest)
-            {
-                self.retract()?;
-            }
-            self.emit_accel(self.settings.travel_acceleration_for_move(
-                self.state.first_layer,
-                self.state.short_travel_role,
-                dist,
-            ))?;
-            self.apply_lazy_lift(dest)?;
+        let Some(mut from) = self.state.last else {
+            self.emit_xy_travel(dest)?;
+            self.state.last = Some(dest);
+            return Ok(());
+        };
+        let dist = xy_dist(from, dest);
+        if dist < TRAVEL_EPS_MM {
+            return Ok(());
         }
+        let mut hops = self.avoid_crossing_hops(from, dest);
+        let path_len = hops_length(from, &hops);
+        if path_len + 1e-9 >= self.settings.retraction_minimum_travel_mm
+            && !self.skip_retract(from, dest)
+        {
+            self.retract()?;
+            if let Some(now) = self.state.last {
+                if xy_dist(now, from) > TRAVEL_EPS_MM {
+                    from = now;
+                    hops = self.avoid_crossing_hops(from, dest);
+                }
+            }
+        }
+        self.emit_accel(self.settings.travel_acceleration_for_move(
+            self.state.first_layer,
+            self.state.short_travel_role,
+            hops_length(from, &hops),
+        ))?;
+        self.apply_lazy_lift(dest)?;
+        for hop in hops {
+            if let Some(prev) = self.state.last {
+                if xy_dist(prev, hop) < TRAVEL_EPS_MM {
+                    continue;
+                }
+            }
+            self.emit_xy_travel(hop)?;
+            self.state.last = Some(hop);
+        }
+        self.state.last = Some(dest);
+        Ok(())
+    }
+
+    fn emit_xy_travel(&mut self, dest: (f64, f64)) -> Result<(), GcodeError> {
         if self.state.lifted > 1e-9 {
             writeln!(
                 self.out,
@@ -362,8 +389,46 @@ impl<'a> Writer<'a> {
                 dest.0, dest.1, self.travel_f
             )?;
         }
-        self.state.last = Some(dest);
         Ok(())
+    }
+
+    /// C++ `AvoidCrossingPerimeters::travel_to` stand-in: walk the shorter contour arc.
+    fn avoid_crossing_hops(&self, from: (f64, f64), dest: (f64, f64)) -> Vec<(f64, f64)> {
+        if !self.settings.reduce_crossing_wall
+            || xy_dist(from, dest) + 1e-9 < self.settings.retraction_minimum_travel_mm
+        {
+            return vec![dest];
+        }
+        let mut boundaries = self.state.layer_contours.clone();
+        if self.settings.avoid_crossing_wall_includes_support {
+            boundaries.extend(self.state.support_islands.iter().cloned());
+        }
+        if boundaries.is_empty() {
+            return vec![dest];
+        }
+        let spacing = self
+            .settings
+            .line_width_for(FlowRole::ExternalPerimeter, self.state.first_layer)
+            .max(0.2);
+        let grown = offset_polygons(&boundaries, spacing);
+        let rings = if grown.is_empty() {
+            &boundaries
+        } else {
+            &grown
+        };
+        let Some(mut hops) = contour_detour(from, dest, rings) else {
+            return vec![dest];
+        };
+        hops.push(dest);
+        let extra = hops_length(from, &hops) - xy_dist(from, dest);
+        if extra
+            > self
+                .settings
+                .max_travel_detour_limit_mm(xy_dist(from, dest))
+        {
+            return vec![dest];
+        }
+        hops
     }
 
     /// C++ `GCode::needs_retraction` after the minimum-travel check.
@@ -701,6 +766,143 @@ fn xy(p: Point) -> (f64, f64) {
     (unscale(p.x), unscale(p.y))
 }
 
+fn hops_length(start: (f64, f64), hops: &[(f64, f64)]) -> f64 {
+    let mut prev = start;
+    let mut len = 0.0;
+    for &p in hops {
+        len += xy_dist(prev, p);
+        prev = p;
+    }
+    len
+}
+
+fn closed_vertex_count(poly: &Polygon) -> usize {
+    let n = poly.len();
+    if n >= 2 && poly[0] == poly[n - 1] {
+        n - 1
+    } else {
+        n
+    }
+}
+
+fn path_length(pts: &[(f64, f64)]) -> f64 {
+    pts.windows(2).map(|w| xy_dist(w[0], w[1])).sum()
+}
+
+/// Walk the shorter contour arc between the first and last chord intersections.
+fn contour_detour(
+    from: (f64, f64),
+    dest: (f64, f64),
+    rings: &[Polygon],
+) -> Option<Vec<(f64, f64)>> {
+    struct Hit {
+        t: f64,
+        poly: usize,
+        edge: usize,
+        pt: (f64, f64),
+    }
+    let mut hits = Vec::new();
+    for (pi, poly) in rings.iter().enumerate() {
+        let n = closed_vertex_count(poly);
+        if n < 3 {
+            continue;
+        }
+        for i in 0..n {
+            let a = xy(poly[i]);
+            let b = xy(poly[(i + 1) % n]);
+            if let Some((t, pt)) = segment_intersection_t(from, dest, a, b) {
+                hits.push(Hit {
+                    t,
+                    poly: pi,
+                    edge: i,
+                    pt,
+                });
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.t.total_cmp(&b.t));
+    if hits.len() < 2 {
+        return None;
+    }
+    let first = hits.first()?;
+    let last = hits.last()?;
+    if first.poly != last.poly {
+        return None;
+    }
+    let poly = &rings[first.poly];
+    let fwd = walk_contour(poly, first.edge, first.pt, last.edge, last.pt, true);
+    let back = walk_contour(poly, first.edge, first.pt, last.edge, last.pt, false);
+    let walk = if path_length(&fwd) <= path_length(&back) {
+        fwd
+    } else {
+        back
+    };
+    if walk.len() < 2 {
+        return None;
+    }
+    Some(walk.into_iter().skip(1).collect())
+}
+
+fn walk_contour(
+    poly: &Polygon,
+    from_edge: usize,
+    from_pt: (f64, f64),
+    to_edge: usize,
+    to_pt: (f64, f64),
+    forward: bool,
+) -> Vec<(f64, f64)> {
+    let n = closed_vertex_count(poly);
+    let mut pts = vec![from_pt];
+    if from_edge == to_edge || n < 3 {
+        pts.push(to_pt);
+        return pts;
+    }
+    if forward {
+        let mut i = (from_edge + 1) % n;
+        loop {
+            pts.push(xy(poly[i]));
+            if i == to_edge {
+                break;
+            }
+            i = (i + 1) % n;
+        }
+    } else {
+        let stop = (to_edge + 1) % n;
+        let mut i = from_edge;
+        loop {
+            pts.push(xy(poly[i]));
+            if i == stop {
+                break;
+            }
+            i = (i + n - 1) % n;
+        }
+    }
+    pts.push(to_pt);
+    pts
+}
+
+fn segment_intersection_t(
+    a0: (f64, f64),
+    a1: (f64, f64),
+    b0: (f64, f64),
+    b1: (f64, f64),
+) -> Option<(f64, (f64, f64))> {
+    let dx = a1.0 - a0.0;
+    let dy = a1.1 - a0.1;
+    let ex = b1.0 - b0.0;
+    let ey = b1.1 - b0.1;
+    let denom = dx * ey - dy * ex;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let t = ((b0.0 - a0.0) * ey - (b0.1 - a0.1) * ex) / denom;
+    let u = ((b0.0 - a0.0) * dy - (b0.1 - a0.1) * dx) / denom;
+    if t <= 1e-6 || t >= 1.0 - 1e-6 || u <= 1e-6 || u >= 1.0 - 1e-6 {
+        return None;
+    }
+    Some((t, (a0.0 + t * dx, a0.1 + t * dy)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,5 +992,86 @@ mod tests {
         w.state.internal_islands.clear();
         w.state.last_leave_forces_retract = false;
         assert!(!w.skip_retract((1.0, 1.0), (8.0, 8.0)));
+    }
+
+    fn xy_travel_count(gcode: &str) -> usize {
+        gcode
+            .lines()
+            .filter(|l| {
+                l.trim().starts_with("G1 X")
+                    && !l.split_whitespace().any(|tok| tok.starts_with('E'))
+            })
+            .count()
+    }
+
+    #[test]
+    fn reduce_crossing_wall_walks_around_square() {
+        let from = (-1.0, 5.0);
+        let dest = (11.0, 5.0);
+        let hops = contour_detour(from, dest, &island_square()).expect("two intersections");
+        assert!(hops.len() >= 2, "should walk a corner, got {hops:?}");
+        assert!(
+            hops.iter()
+                .any(|p| p.0.abs() < 1e-6 || (p.0 - 10.0).abs() < 1e-6),
+            "detour should hug a vertical side: {hops:?}"
+        );
+    }
+
+    #[test]
+    fn reduce_crossing_wall_emits_multi_hop_travel() {
+        let mut settings = SliceSettings::default();
+        settings.reduce_crossing_wall = true;
+        settings.retraction_minimum_travel_mm = 1.0;
+        settings.wipe = false;
+        let mut w = Writer::new(&settings);
+        w.state.last = Some((-1.0, 5.0));
+        w.state.layer_contours = island_square();
+        w.travel_to((11.0, 5.0)).unwrap();
+        let n = xy_travel_count(&w.out);
+        assert!(n >= 3, "expected contour hops, got {n} in {}", w.out);
+
+        settings.max_travel_detour_distance = 0.1;
+        let mut capped = Writer::new(&settings);
+        capped.state.last = Some((-1.0, 5.0));
+        capped.state.layer_contours = island_square();
+        capped.travel_to((11.0, 5.0)).unwrap();
+        assert_eq!(
+            xy_travel_count(&capped.out),
+            1,
+            "tiny max detour keeps the straight hop"
+        );
+
+        settings.max_travel_detour_distance = 0.0;
+        settings.reduce_crossing_wall = false;
+        let mut off = Writer::new(&settings);
+        off.state.last = Some((-1.0, 5.0));
+        off.state.layer_contours = island_square();
+        off.travel_to((11.0, 5.0)).unwrap();
+        assert_eq!(xy_travel_count(&off.out), 1);
+    }
+
+    #[test]
+    fn avoid_crossing_wall_includes_support_islands() {
+        let mut settings = SliceSettings::default();
+        settings.reduce_crossing_wall = true;
+        settings.retraction_minimum_travel_mm = 1.0;
+        settings.wipe = false;
+        let mut without = Writer::new(&settings);
+        without.state.last = Some((-1.0, 5.0));
+        without.state.support_islands = island_square();
+        without.travel_to((11.0, 5.0)).unwrap();
+        assert_eq!(xy_travel_count(&without.out), 1);
+
+        settings.avoid_crossing_wall_includes_support = true;
+        let mut with = Writer::new(&settings);
+        with.state.last = Some((-1.0, 5.0));
+        with.state.support_islands = island_square();
+        with.travel_to((11.0, 5.0)).unwrap();
+        let n = xy_travel_count(&with.out);
+        assert!(
+            n >= 3,
+            "support island should detour, got {n} in {}",
+            with.out
+        );
     }
 }

@@ -503,6 +503,23 @@ fn cube_gcode_skips_wall_toolchange() {
 }
 
 #[test]
+fn reduce_crossing_wall_cube_stays_single_tool() {
+    let mesh = TriangleMesh::cube(20.0);
+    let mut settings = SliceSettings::default();
+    settings.reduce_crossing_wall = true;
+    settings.avoid_crossing_wall_includes_support = true;
+    settings.max_travel_detour_distance = 0.0;
+    let sliced = slice_mesh(&mesh, &settings).unwrap();
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(gcode.contains("; FEATURE: Outer wall"));
+    let body = executable_block(&gcode);
+    assert!(
+        !body.lines().any(|l| l == "T2" || l.starts_with("T2 ")),
+        "avoid-crossing should not invent a toolchange"
+    );
+}
+
+#[test]
 fn support_island_travel_skips_some_retracts() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();

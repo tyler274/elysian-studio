@@ -256,6 +256,10 @@ fn upstream_fdm_process_0_20() {
         s.reduce_infill_retraction_mode,
         crate::ReduceInfillRetractionMode::Auto
     );
+    assert!(!s.reduce_crossing_wall);
+    assert!(s.max_travel_detour_distance.abs() < 1e-9);
+    assert!(!s.max_travel_detour_is_percent);
+    assert!(!s.avoid_crossing_wall_includes_support);
     assert!((s.ironing_flow - 0.10).abs() < 1e-9);
     assert!((s.elephant_foot_mm - 0.15).abs() < 1e-9);
     assert!(!s.precise_z_height);
@@ -584,6 +588,18 @@ fn flatten_standard_0_20_merges_inherits() {
     assert_eq!(
         value_text(obj.get("reduce_infill_retraction_mode").unwrap()).as_deref(),
         Some("Auto")
+    );
+    assert_eq!(
+        value_text(obj.get("reduce_crossing_wall").unwrap()).as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        value_text(obj.get("max_travel_detour_distance").unwrap()).as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        value_text(obj.get("avoid_crossing_wall_includes_support").unwrap()).as_deref(),
+        Some("0")
     );
     assert_eq!(
         value_text(obj.get("wall_infill_order").unwrap()).as_deref(),
@@ -950,6 +966,10 @@ fn project_settings_json_roundtrip() {
     src.prime_tower_max_speed_mm_s = 80.0;
     src.wipe_tower_no_sparse_layers = true;
     src.detect_thin_wall = true;
+    src.reduce_crossing_wall = true;
+    src.max_travel_detour_distance = 50.0;
+    src.max_travel_detour_is_percent = true;
+    src.avoid_crossing_wall_includes_support = true;
     let json = crate::project_settings_json(&src).unwrap();
     assert!(json.contains("\"from\": \"project\""));
     let loaded = crate::settings_from_json(&json).unwrap();
@@ -1038,6 +1058,10 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.prime_tower_max_speed_mm_s - 80.0).abs() < 1e-9);
     assert!(loaded.wipe_tower_no_sparse_layers);
     assert!(loaded.detect_thin_wall);
+    assert!(loaded.reduce_crossing_wall);
+    assert!(loaded.max_travel_detour_is_percent);
+    assert!((loaded.max_travel_detour_distance - 50.0).abs() < 1e-9);
+    assert!(loaded.avoid_crossing_wall_includes_support);
     assert_eq!(loaded.filament_count, src.filament_count);
     assert!(!loaded.enable_arc_fitting);
     src.enable_arc_fitting = true;
@@ -1150,6 +1174,9 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("ironing_direction".into(), "0".into());
     pairs.insert("detect_thin_wall".into(), "1".into());
     pairs.insert("wipe_tower_no_sparse_layers".into(), "1".into());
+    pairs.insert("reduce_crossing_wall".into(), "1".into());
+    pairs.insert("max_travel_detour_distance".into(), "50%".into());
+    pairs.insert("avoid_crossing_wall_includes_support".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
     assert!((s.infill_density - 1.0).abs() < 1e-9);
     assert_eq!(s.fill_multiline, 4);
@@ -1211,6 +1238,9 @@ fn region_overrides_skip_object_keys() {
     assert!(s.ironing_direction_deg.abs() < 1e-9);
     assert!(s.detect_thin_wall);
     assert!(!s.wipe_tower_no_sparse_layers);
+    assert!(!s.reduce_crossing_wall);
+    assert!(s.max_travel_detour_distance.abs() < 1e-9);
+    assert!(!s.avoid_crossing_wall_includes_support);
     apply_config_pairs(&mut s, &pairs, false);
     assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
     assert!(s.enable_support);
@@ -1259,6 +1289,10 @@ fn region_overrides_skip_object_keys() {
     assert!(s.ooze_prevention);
     assert!(s.detect_thin_wall);
     assert!(s.wipe_tower_no_sparse_layers);
+    assert!(s.reduce_crossing_wall);
+    assert!(s.max_travel_detour_is_percent);
+    assert!((s.max_travel_detour_distance - 50.0).abs() < 1e-9);
+    assert!(s.avoid_crossing_wall_includes_support);
 }
 
 #[test]
@@ -1329,4 +1363,18 @@ fn wall_loops_for_layer_matches_cpp() {
     assert_eq!(s.wall_loops_for_layer(2), 2);
     s.spiral_mode = true;
     assert_eq!(s.wall_loops_for_layer(1), 2);
+}
+
+#[test]
+fn max_travel_detour_limit_matches_cpp() {
+    let mut s = SliceSettings::default();
+    assert!(
+        s.max_travel_detour_limit_mm(10.0).is_infinite(),
+        "0 disables the C++ cap"
+    );
+    s.max_travel_detour_distance = 5.0;
+    assert!((s.max_travel_detour_limit_mm(10.0) - 5.0).abs() < 1e-9);
+    s.max_travel_detour_is_percent = true;
+    s.max_travel_detour_distance = 50.0;
+    assert!((s.max_travel_detour_limit_mm(10.0) - 5.0).abs() < 1e-9);
 }
