@@ -274,6 +274,7 @@ fn upstream_fdm_process_0_20() {
     assert!(!s.only_one_wall_first_layer);
     assert_eq!(s.fuzzy_skin, crate::FuzzySkinType::None);
     assert_eq!(s.wall_generator, crate::WallGenerator::Classic);
+    assert!(!s.detect_thin_wall);
     assert_eq!(s.wall_sequence, crate::WallSequence::InnerOuter);
     assert!(!s.precise_outer_wall);
     assert!(!s.is_infill_first);
@@ -291,6 +292,7 @@ fn upstream_fdm_process_0_20() {
     assert!((s.prime_tower_width_mm - 35.0).abs() < 1e-9);
     assert!((s.prime_tower_brim_width_mm - 3.0).abs() < 1e-9);
     assert!((s.prime_tower_max_speed_mm_s - 90.0).abs() < 1e-9);
+    assert!(!s.wipe_tower_no_sparse_layers);
     assert!(
         !s.has_wipe_tower(),
         "single-filament 0.20 has no wipe tower"
@@ -946,6 +948,8 @@ fn project_settings_json_roundtrip() {
     src.prime_tower_width_mm = 35.0;
     src.prime_tower_brim_width_mm = 3.0;
     src.prime_tower_max_speed_mm_s = 80.0;
+    src.wipe_tower_no_sparse_layers = true;
+    src.detect_thin_wall = true;
     let json = crate::project_settings_json(&src).unwrap();
     assert!(json.contains("\"from\": \"project\""));
     let loaded = crate::settings_from_json(&json).unwrap();
@@ -1032,6 +1036,8 @@ fn project_settings_json_roundtrip() {
     assert!((loaded.wipe_tower_x_mm - src.wipe_tower_x_mm).abs() < 1e-9);
     assert!((loaded.prime_tower_width_mm - src.prime_tower_width_mm).abs() < 1e-9);
     assert!((loaded.prime_tower_max_speed_mm_s - 80.0).abs() < 1e-9);
+    assert!(loaded.wipe_tower_no_sparse_layers);
+    assert!(loaded.detect_thin_wall);
     assert_eq!(loaded.filament_count, src.filament_count);
     assert!(!loaded.enable_arc_fitting);
     src.enable_arc_fitting = true;
@@ -1142,6 +1148,8 @@ fn region_overrides_skip_object_keys() {
     pairs.insert("thick_bridges".into(), "1".into());
     pairs.insert("ooze_prevention".into(), "1".into());
     pairs.insert("ironing_direction".into(), "0".into());
+    pairs.insert("detect_thin_wall".into(), "1".into());
+    pairs.insert("wipe_tower_no_sparse_layers".into(), "1".into());
     apply_config_pairs(&mut s, &pairs, true);
     assert!((s.infill_density - 1.0).abs() < 1e-9);
     assert_eq!(s.fill_multiline, 4);
@@ -1201,6 +1209,8 @@ fn region_overrides_skip_object_keys() {
     assert!(!s.thick_bridges);
     assert!(!s.ooze_prevention);
     assert!(s.ironing_direction_deg.abs() < 1e-9);
+    assert!(s.detect_thin_wall);
+    assert!(!s.wipe_tower_no_sparse_layers);
     apply_config_pairs(&mut s, &pairs, false);
     assert!((s.layer_height_mm - 0.08).abs() < 1e-9);
     assert!(s.enable_support);
@@ -1247,6 +1257,8 @@ fn region_overrides_skip_object_keys() {
     assert!((s.initial_layer_infill_line_width_mm - 0.8).abs() < 1e-9);
     assert!(s.thick_bridges);
     assert!(s.ooze_prevention);
+    assert!(s.detect_thin_wall);
+    assert!(s.wipe_tower_no_sparse_layers);
 }
 
 #[test]
@@ -1264,6 +1276,24 @@ fn has_wipe_tower_matches_cpp() {
     assert!(s.has_wipe_tower(), "smooth timelapse keeps the tower");
     s.enable_prime_tower = false;
     assert!(!s.has_wipe_tower());
+}
+
+#[test]
+fn wipe_tower_skips_sparse_layers_matches_cpp() {
+    let mut s = SliceSettings::default();
+    s.wipe_tower_no_sparse_layers = true;
+    assert!(s.wipe_tower_skips_sparse_layers());
+    s.timelapse_type = 1;
+    assert!(
+        !s.wipe_tower_skips_sparse_layers(),
+        "smooth timelapse keeps sparse layers"
+    );
+    s.timelapse_type = 0;
+    s.enable_wrapping_detection = true;
+    assert!(
+        !s.wipe_tower_skips_sparse_layers(),
+        "wrapping detection keeps sparse layers"
+    );
 }
 
 #[test]

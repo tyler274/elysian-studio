@@ -863,6 +863,9 @@ pub struct SliceSettings {
     /// C++ `seam_gap` as a fraction of nozzle diameter (default 15%).
     pub seam_gap: f64,
     pub wall_generator: WallGenerator,
+    /// C++ `detect_thin_wall`. Open centerlines for islands that cannot hold
+    /// two line widths. BBL `"0"`.
+    pub detect_thin_wall: bool,
     /// C++ `wall_sequence`. BBL `wall_infill_order` remaps onto this.
     pub wall_sequence: WallSequence,
     /// C++ `precise_outer_wall`. BBL / PrintConfig default is false. Classic
@@ -1341,6 +1344,9 @@ pub struct SliceSettings {
     pub prime_tower_brim_width_mm: f64,
     /// C++ `prime_tower_max_speed` (mm/s). Default 90; BBL `"90"`.
     pub prime_tower_max_speed_mm_s: f64,
+    /// C++ `wipe_tower_no_sparse_layers`. Skip the tower on layers with no
+    /// toolchange (not smooth timelapse / wrapping). BBL `"0"`.
+    pub wipe_tower_no_sparse_layers: bool,
     /// C++ `filament_diameter.values.size()`.
     pub filament_count: usize,
 }
@@ -1382,6 +1388,7 @@ impl Default for SliceSettings {
             seam_placement_away_from_overhangs: false,
             seam_gap: 0.15,
             wall_generator: WallGenerator::Classic,
+            detect_thin_wall: false,
             wall_sequence: WallSequence::InnerOuter,
             precise_outer_wall: false,
             is_infill_first: false,
@@ -1615,6 +1622,7 @@ impl Default for SliceSettings {
             prime_tower_width_mm: 35.0,
             prime_tower_brim_width_mm: 3.0,
             prime_tower_max_speed_mm_s: 90.0,
+            wipe_tower_no_sparse_layers: false,
             filament_count: 1,
         }
     }
@@ -2160,6 +2168,13 @@ impl SliceSettings {
             return true;
         }
         !self.spiral_mode && self.filament_count > 1
+    }
+
+    /// C++ `wipe_tower_sparse_layers_skipped`.
+    pub fn wipe_tower_skips_sparse_layers(&self) -> bool {
+        self.wipe_tower_no_sparse_layers
+            && self.timelapse_type != 1
+            && !self.enable_wrapping_detection
     }
 
     /// C++ `wipe_tower_data().bbx` stand-in: width square plus brim, local to the tower.

@@ -116,6 +116,42 @@ impl Layer {
     pub fn perimeters(&self) -> impl Iterator<Item = &Polyline> {
         self.outer_walls.iter().chain(self.inner_walls.iter())
     }
+
+    /// Distinct 1-based filaments that extrude on this layer (writer `T` stand-in).
+    pub fn has_toolchange(&self, settings: &SliceSettings) -> bool {
+        use std::collections::BTreeSet;
+        let mut ids = BTreeSet::new();
+        if self.region_settings.len() > 1
+            && self.region_outer_walls.len() == self.region_settings.len()
+        {
+            for (i, cfg) in self.region_settings.iter().enumerate() {
+                let used = self
+                    .region_outer_walls
+                    .get(i)
+                    .is_some_and(|p| !p.is_empty())
+                    || self
+                        .region_inner_walls
+                        .get(i)
+                        .is_some_and(|p| !p.is_empty())
+                    || self.region_gap_infill.get(i).is_some_and(|p| !p.is_empty());
+                if used {
+                    ids.insert(cfg.wall_filament.max(1));
+                }
+            }
+        } else if !self.outer_walls.is_empty()
+            || !self.inner_walls.is_empty()
+            || !self.gap_infill.is_empty()
+        {
+            ids.insert(settings.wall_filament.max(1));
+        }
+        if !self.support.is_empty() && settings.support_filament > 0 {
+            ids.insert(settings.support_filament);
+        }
+        if !self.support_interface.is_empty() && settings.support_interface_filament > 0 {
+            ids.insert(settings.support_interface_filament);
+        }
+        ids.len() > 1
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -894,6 +930,37 @@ mod tests {
         let cube = TriangleMesh::cube(20.0);
         let thick_a = slice_mesh(&cube, &classic).unwrap();
         let thick_b = slice_mesh(&cube, &arachne).unwrap();
+        let t_a = &thick_a.layers[thick_a.layers.len() / 2];
+        let t_b = &thick_b.layers[thick_b.layers.len() / 2];
+        assert_eq!(t_a.outer_walls.len(), t_b.outer_walls.len());
+        assert_eq!(t_a.inner_walls.len(), t_b.inner_walls.len());
+    }
+
+    #[test]
+    fn detect_thin_wall_extracts_narrow_island() {
+        let mesh = TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(0.7, 20.0, 10.0));
+        let mut off = SliceSettings::default();
+        off.infill_pattern = InfillPattern::Rectilinear;
+        off.wall_loops = 2;
+        off.wall_generator = WallGenerator::Classic;
+        let mut on = off.clone();
+        on.detect_thin_wall = true;
+        let a = slice_mesh(&mesh, &off).unwrap();
+        let b = slice_mesh(&mesh, &on).unwrap();
+        let mid_a = &a.layers[a.layers.len() / 2];
+        let mid_b = &b.layers[b.layers.len() / 2];
+        assert_eq!(mid_a.outer_walls.len(), 1);
+        assert!(
+            !mid_b.outer_walls.is_empty(),
+            "C++ detect_thin_wall emits external-perimeter centerlines"
+        );
+        assert!(
+            mid_b.inner_walls.is_empty(),
+            "offset2 drops a 0.7 mm island that cannot hold two line widths"
+        );
+        let cube = TriangleMesh::cube(20.0);
+        let thick_a = slice_mesh(&cube, &off).unwrap();
+        let thick_b = slice_mesh(&cube, &on).unwrap();
         let t_a = &thick_a.layers[thick_a.layers.len() / 2];
         let t_b = &thick_b.layers[thick_b.layers.len() / 2];
         assert_eq!(t_a.outer_walls.len(), t_b.outer_walls.len());
@@ -3297,6 +3364,30 @@ mod tests {
         assert!(
             layer0.prime_tower.len() > sliced.layers[1].prime_tower.len(),
             "first layer should add brim rings around the tower"
+        );
+    }
+
+    #[test]
+    fn wipe_tower_no_sparse_skips_layers_without_toolchange() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_prime_tower = true;
+        settings.filament_count = 2;
+        settings.wipe_tower_no_sparse_layers = true;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            !sliced.layers[0].prime_tower.is_empty(),
+            "layer 0 still prints the tower brim"
+        );
+        assert!(
+            sliced.layers[1..].iter().all(|l| l.prime_tower.is_empty()),
+            "C++ wipe_tower_no_sparse_layers skips layers with no toolchange"
+        );
+        settings.timelapse_type = 1;
+        let smooth = slice_mesh(&mesh, &settings).unwrap();
+        assert!(
+            !smooth.layers[1].prime_tower.is_empty(),
+            "smooth timelapse keeps sparse tower layers"
         );
     }
 

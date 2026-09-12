@@ -162,6 +162,7 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(&mut map, "seam_gap", pct_str(settings.seam_gap));
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
+    insert_bool(&mut map, "detect_thin_wall", settings.detect_thin_wall);
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());
     insert_bool(&mut map, "precise_outer_wall", settings.precise_outer_wall);
     insert_bool(&mut map, "is_infill_first", settings.is_infill_first);
@@ -1030,6 +1031,11 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         &mut map,
         "prime_tower_max_speed",
         num_str(settings.prime_tower_max_speed_mm_s),
+    );
+    insert_bool(
+        &mut map,
+        "wipe_tower_no_sparse_layers",
+        settings.wipe_tower_no_sparse_layers,
     );
     insert(
         &mut map,

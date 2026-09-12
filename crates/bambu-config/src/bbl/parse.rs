@@ -39,6 +39,7 @@ pub fn is_region_key(key: &str) -> bool {
             | "seam_position"
             | "seam_gap"
             | "wall_generator"
+            | "detect_thin_wall"
             | "wall_sequence"
             | "wall_infill_order"
             | "precise_outer_wall"
@@ -264,6 +265,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
         if let Some(g) = WallGenerator::from_name(&name) {
             s.wall_generator = g;
         }
+    }
+    if let Some(v) = bool_val(map, "detect_thin_wall") {
+        s.detect_thin_wall = v;
     }
     // C++ `handle_legacy`: `wall_infill_order` remaps to `wall_sequence`.
     // Config.cpp also sets `is_infill_first` when the legacy value starts with infill.
@@ -903,6 +907,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = num(map, "prime_tower_max_speed") {
         s.prime_tower_max_speed_mm_s = v.max(10.0);
+    }
+    if let Some(v) = bool_val(map, "wipe_tower_no_sparse_layers") {
+        s.wipe_tower_no_sparse_layers = v;
     }
     if let Some(v) = nums(map, "filament_diameter") {
         s.filament_count = v.len().max(1);

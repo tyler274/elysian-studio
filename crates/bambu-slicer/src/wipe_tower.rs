@@ -1,9 +1,11 @@
 //! Prime tower (`PrintStep::WipeTower`).
 //!
 //! C++ `WipeTower` purges into a `prime_tower_width` square at `wipe_tower_x/y`
-//! on tool changes. This first cut fills that square on every object layer when
+//! on tool changes. This first cut fills that square on object layers when
 //! [`SliceSettings::has_wipe_tower`] (prime tower on, more than one filament,
 //! not spiral). Sparse hatch plus an outline; layer 0 adds brim.
+//! [`SliceSettings::wipe_tower_skips_sparse_layers`] skips fill on layers with
+//! no toolchange, matching `wipe_tower_no_sparse_layers`.
 
 use bambu_config::{FlowRole, SliceSettings, LOOP_CLIPPING_OVER_NOZZLE};
 use bambu_geom::{clip_end, offset_polygons, Point, Polygon};
@@ -41,7 +43,12 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     } else {
         0
     };
+    let skip_sparse = settings.wipe_tower_skips_sparse_layers();
     layers.par_iter_mut().enumerate().for_each(|(i, layer)| {
+        if skip_sparse && i > 0 && !layer.has_toolchange(settings) {
+            layer.prime_tower = Vec::new();
+            return;
+        }
         let mut paths = Vec::new();
         for mut ring in fill.iter().cloned() {
             if let (Some(&first), Some(&last)) = (ring.first(), ring.last()) {

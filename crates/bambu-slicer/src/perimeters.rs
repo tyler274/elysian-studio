@@ -120,7 +120,7 @@ fn classic_perimeters(
     let one_wall_layer = use_single_wall(settings, loops, upper.is_none(), first_layer);
 
     let mut hint = seam_hint;
-    let (outer, mut inner) = if one_wall_layer {
+    let (classic_outer, mut inner) = if one_wall_layer {
         let (outer, hint_out) = onion_rings(contours, 1, walls.outer, settings, hint);
         hint = hint_out;
         (outer, Vec::new())
@@ -129,7 +129,26 @@ fn classic_perimeters(
     };
 
     let wall_n = if one_wall_layer { 1 } else { loops };
-    let mut infill_region = offset_polygons(contours, -walls.stack_inset(wall_n));
+    let mut thin_walls = Vec::new();
+    let mut thin_core: Option<Vec<Polygon>> = None;
+    let mut outer = classic_outer;
+    if settings.detect_thin_wall {
+        let (core, thin) = peel_thin_walls(contours, walls.outer, settings.nozzle_diameter_mm);
+        thin_walls = thin;
+        if core.is_empty() {
+            outer = Vec::new();
+            inner.clear();
+        } else {
+            outer = seam_rings(core.clone(), settings, &mut hint);
+        }
+        thin_core = Some(core);
+    }
+
+    let mut infill_region = if thin_core.as_ref().is_some_and(|c| c.is_empty()) {
+        Vec::new()
+    } else {
+        offset_polygons(contours, -walls.stack_inset(wall_n))
+    };
     let mut gap_infill = Vec::new();
 
     if !one_wall_layer && loops > 1 && settings.top_one_wall == TopOneWallType::AllTop {
@@ -149,12 +168,26 @@ fn classic_perimeters(
     }
 
     if settings.gap_infill_speed_mm_s > 0.0 {
-        let areas = collect_gap_areas(contours, wall_n, walls.inner);
+        let (gap_src, gap_loops): (&[Polygon], u32) = match thin_core.as_deref() {
+            Some([]) => (&[], 0),
+            Some(core) => (core, wall_n.saturating_sub(1)),
+            None => (contours, wall_n),
+        };
+        let areas = if gap_loops == 0 {
+            Vec::new()
+        } else {
+            collect_gap_areas(gap_src, gap_loops, walls.inner)
+        };
         gap_infill = centerline_gaps(&areas, walls.inner, settings, &mut hint);
         if !areas.is_empty() && !infill_region.is_empty() {
             let covered = offset_polygons(&areas, walls.inner * 0.5);
             infill_region = difference_polygons(&infill_region, &covered);
         }
+    }
+
+    if !thin_walls.is_empty() {
+        thin_walls.append(&mut outer);
+        outer = thin_walls;
     }
 
     PerimeterResult {
@@ -405,6 +438,28 @@ fn offset_keep(contours: &[Polygon], inset_mm: f64) -> Option<Vec<Polygon>> {
 
 /// C++ `INSET_OVERLAP_TOLERANCE` in `libslic3r.h`.
 const INSET_OVERLAP_TOLERANCE: f64 = 0.4;
+
+/// C++ `detect_thin_wall` first loop: `offset2_ex` drops islands that cannot
+/// hold two line widths, then a medial-axis stand-in of the leftover.
+fn peel_thin_walls(
+    contours: &[Polygon],
+    outer_w: f64,
+    nozzle_mm: f64,
+) -> (Vec<Polygon>, Vec<Polyline>) {
+    let core = offset_polygons(&offset_polygons(contours, -outer_w), outer_w * 0.5);
+    let grown = offset_polygons(&core, outer_w * 0.5);
+    let leftover = difference_polygons(contours, &grown);
+    let min_w = (nozzle_mm / 3.0).max(1e-4);
+    // C++ `opening_ex` then `medial_axis` — do not subtract too-wide (gap-fill).
+    let opened = offset_polygons(&offset_polygons(&leftover, -min_w * 0.5), min_w * 0.5);
+    let mut paths = Vec::new();
+    for poly in opened {
+        if let Some(path) = crate::gap_fill::open_centerline(&poly) {
+            paths.push(path);
+        }
+    }
+    (core, paths)
+}
 
 /// Collapsed leftover between successive onions (`PerimeterGenerator` `gaps`).
 fn collect_gap_areas(contours: &[Polygon], loops: u32, w: f64) -> Vec<Polygon> {
