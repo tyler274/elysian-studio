@@ -65,7 +65,7 @@ impl RtGpu {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: wgpu::TextureFormat::Rgba16Float,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -84,8 +84,8 @@ impl RtGpu {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bambu-gpu-rt-pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bambu-gpu-rt-pipeline"),
@@ -143,8 +143,8 @@ impl RtGpu {
         });
         let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bambu-gpu-blit-pl"),
-            bind_group_layouts: &[&blit_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blit_bgl)],
+            immediate_size: 0,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bambu-gpu-blit-pipeline"),
@@ -168,8 +168,8 @@ impl RtGpu {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -178,7 +178,7 @@ impl RtGpu {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -371,8 +371,6 @@ impl RtGpu {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         instances: &[RtInstance],
-        width: u32,
-        height: u32,
     ) {
         if self.blases.is_empty() || instances.is_empty() {
             return;
@@ -414,6 +412,7 @@ impl RtGpu {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, bg, &[]);
+        let (width, height) = self.size;
         pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
     }
 
@@ -490,7 +489,7 @@ fn make_radiance(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_SRC,
@@ -508,14 +507,15 @@ mod tests {
     use bambu_geom::TriangleMesh;
 
     fn rt_device() -> Result<(wgpu::Device, wgpu::Queue), GpuError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
         if bambu_wgpu_exp::ray_query_features(&adapter).is_empty() {
@@ -585,8 +585,6 @@ mod tests {
                 first_index: 0,
                 index_count: idx.len() as u32,
             }],
-            8,
-            8,
         );
         queue.submit(std::iter::once(encoder.finish()));
         let _ = device.poll(wgpu::PollType::Wait {

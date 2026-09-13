@@ -1,6 +1,6 @@
 //! Opt-in token for wgpu `EXPERIMENTAL_*` features (ray query).
 //!
-//! wgpu 27 requires [`wgpu::ExperimentalFeatures::enabled`] to request
+//! wgpu 30 requires [`wgpu::ExperimentalFeatures::enabled`] to request
 //! [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`]. That constructor is `unsafe`
 //! because the API is still experimental ([wgpu#1040](https://github.com/gfx-rs/wgpu/issues/1040)).
 //! First-party crates stay `forbid(unsafe_code)`; this crate owns the token.

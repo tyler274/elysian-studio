@@ -101,14 +101,15 @@ pub struct VulkanSliceAccel {
 
 impl VulkanSliceAccel {
     pub fn new() -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
+            apply_limit_buckets: false,
         }))
         .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
 
@@ -593,8 +594,8 @@ fn make_slice_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::B
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("slice-pl"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("slice-plane-pipeline"),
@@ -623,8 +624,8 @@ fn make_occ_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::Bin
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("occ-pl"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("occupancy-pipeline"),
@@ -651,8 +652,8 @@ fn make_gyro_pipeline(device: &wgpu::Device) -> (wgpu::ComputePipeline, wgpu::Bi
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("gyro-pl"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("gyroid-pipeline"),
@@ -681,7 +682,9 @@ fn buffer_entry(binding: u32, ty: wgpu::BufferBindingType) -> wgpu::BindGroupLay
 fn map_u32(device: &wgpu::Device, buf: &wgpu::Buffer) -> Result<u32, GpuError> {
     let slice = buf.slice(0..4);
     wait_mapped(device, slice)?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| GpuError::Request(e.to_string()))?;
     let bytes: [u8; 4] = data[..4]
         .try_into()
         .map_err(|_| GpuError::Request("count readback truncated".into()))?;
@@ -698,7 +701,9 @@ fn map_u32s(device: &wgpu::Device, buf: &wgpu::Buffer, n: usize) -> Result<Vec<u
     let bytes = n * 4;
     let slice = buf.slice(0..bytes as u64);
     wait_mapped(device, slice)?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| GpuError::Request(e.to_string()))?;
     let out: Vec<u32> = bytemuck::cast_slice(&data[..bytes]).to_vec();
     drop(data);
     buf.unmap();
@@ -712,7 +717,9 @@ fn map_f32s(device: &wgpu::Device, buf: &wgpu::Buffer, n: usize) -> Result<Vec<f
     let bytes = n * 4;
     let slice = buf.slice(0..bytes as u64);
     wait_mapped(device, slice)?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| GpuError::Request(e.to_string()))?;
     let out: Vec<f32> = bytemuck::cast_slice(&data[..bytes]).to_vec();
     drop(data);
     buf.unmap();
@@ -730,7 +737,9 @@ fn map_layer_segs(
     let bytes = n * std::mem::size_of::<GpuLayerSeg>();
     let slice = buf.slice(0..bytes as u64);
     wait_mapped(device, slice)?;
-    let data = slice.get_mapped_range();
+    let data = slice
+        .get_mapped_range()
+        .map_err(|e| GpuError::Request(e.to_string()))?;
     let segs: Vec<GpuLayerSeg> = bytemuck::cast_slice(&data[..bytes]).to_vec();
     drop(data);
     buf.unmap();

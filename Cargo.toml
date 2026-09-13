@@ -54,7 +54,12 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wgpu = "27"
+wgpu = "30.0.1"
 x509-parser = "0.16"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 ab_glyph = "0.2"
+
+[patch.crates-io]
+# iced 0.14 compositor + cryoglyph, ported to wgpu 30.0.1.
+iced_wgpu = { path = "vendor/iced_wgpu" }
+cryoglyph = { path = "vendor/cryoglyph" }

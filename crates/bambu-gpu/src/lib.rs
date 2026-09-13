@@ -41,14 +41,15 @@ pub struct AdapterReport {
 /// Enumerate a Vulkan adapter. On Linux this is required before the iced
 /// compositor starts (`WGPU_BACKEND=vulkan`).
 pub fn probe_vulkan() -> Result<AdapterReport, GpuError> {
-    let instance = wgpu::Instance::new(&InstanceDescriptor {
+    let instance = wgpu::Instance::new(InstanceDescriptor {
         backends: Backends::VULKAN,
-        ..Default::default()
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,
         compatible_surface: None,
+        apply_limit_buckets: false,
     }))
     .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
 

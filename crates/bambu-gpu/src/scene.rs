@@ -225,7 +225,7 @@ impl ViewportScene {
             tool: PlaterTool::Orbit,
             gizmo: None,
             solids: vec![SceneSolid::from_mesh(TriangleMesh::cube(20.0))],
-            realistic: false,
+            realistic: true,
             gpu: Mutex::new(None),
         }
     }
@@ -834,8 +834,8 @@ impl ScenePipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bambu-gpu-pl"),
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
         });
 
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -860,6 +860,8 @@ impl ScenePipeline {
             ],
         };
 
+        let vertex_buffers = [Some(vertex_layout)];
+
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bambu-gpu-solid-pipeline"),
             layout: Some(&pipeline_layout),
@@ -867,7 +869,7 @@ impl ScenePipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_layout),
+                buffers: &vertex_buffers,
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -886,13 +888,13 @@ impl ScenePipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: msaa_state(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -903,7 +905,7 @@ impl ScenePipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: std::slice::from_ref(&vertex_layout),
+                buffers: &vertex_buffers,
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -922,13 +924,13 @@ impl ScenePipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: msaa_state(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -939,7 +941,7 @@ impl ScenePipeline {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[vertex_layout],
+                buffers: &vertex_buffers,
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -958,13 +960,13 @@ impl ScenePipeline {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: msaa_state(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -1162,7 +1164,7 @@ impl shader::Primitive for ScenePrimitive {
         let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
         if self.realistic {
             if let Some(gpu) = rt.as_mut() {
-                gpu.build_and_trace(encoder, &self.rt_instances, pane_w, pane_h);
+                gpu.build_and_trace(encoder, &self.rt_instances);
             }
         }
         let do_rt = self.realistic && rt.as_ref().is_some_and(|gpu| gpu.is_ready());
@@ -1193,6 +1195,7 @@ impl shader::Primitive for ScenePrimitive {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         // iced's `draw()` path already sets this; our depth pass does not.
@@ -1430,8 +1433,8 @@ fn label_gpu(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("bambu-gpu-label-pl"),
-        bind_group_layouts: &[&layout],
-        push_constant_ranges: &[],
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
     });
     let vertex_layout = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<crate::label::LabelVertex>() as wgpu::BufferAddress,
@@ -1461,7 +1464,7 @@ fn label_gpu(
             module: &shader,
             entry_point: Some("vs_main"),
             compilation_options: Default::default(),
-            buffers: std::slice::from_ref(&vertex_layout),
+            buffers: &[Some(vertex_layout)],
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -1480,13 +1483,13 @@ fn label_gpu(
         },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: msaa_state(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     (
