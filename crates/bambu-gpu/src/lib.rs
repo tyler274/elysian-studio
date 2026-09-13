@@ -9,7 +9,7 @@ mod slice_accel;
 
 pub use bambu_preview::{ExtrusionRole, ToolpathBuffer};
 pub use compute::VulkanSliceAccel;
-pub use scene::{OrbitCamera, ViewportEvent, ViewportScene, BED_MM};
+pub use scene::{paint_overlay_color, OrbitCamera, ViewportEvent, ViewportScene, BED_MM};
 pub use slice_accel::{
     slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,
 };

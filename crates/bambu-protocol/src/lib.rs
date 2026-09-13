@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
 mod camera;
+mod cloud;
 mod credentials;
 mod extract;
 mod ftps;
+mod hms;
 mod lan_mqtt;
 mod mqtt;
 mod pack;
@@ -20,6 +22,9 @@ pub use camera::{
     auth_packet, capture_chamber, describe_rtsps, jpeg_to_frame, probe_rtsps, rtsps_url,
     snapshot_jpeg, ChamberCapture, RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
+pub use cloud::{
+    cloud_mqtt_host, load_cloud_session, load_cloud_session_default, CloudBackend, CloudSession,
+};
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
     load_from_dir, save_device_cert, write_to_dir, CredentialError, SlicerCredentials,
@@ -28,10 +33,14 @@ pub use extract::{
     extract_pems_from_bytes, extract_to_config_dir, find_stock_plugin, ExtractReport,
 };
 pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
+pub use hms::{
+    catalog_cache_path, describe_hms, fetch_catalog, load_cached_catalog, lookup_hms_intro,
+    refresh_catalog, save_cached_catalog, HMS_HOST,
+};
 pub use mqtt::{
-    app_cert_install, gcode_line, next_sequence_id, parse_ams, parse_printer_cert,
-    parse_push_status, project_file, project_file_with_ams, pushall, report_topic, request_topic,
-    LAN_MQTT_PORT, LAN_MQTT_USER,
+    app_cert_install, chamber_light, gcode_line, next_sequence_id, parse_ams, parse_hms_items,
+    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_with_ams,
+    pushall, report_topic, request_topic, resume, stop, LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
@@ -60,6 +69,8 @@ pub enum ProtocolError {
     Mqtt(#[from] lan_mqtt::MqttSessionError),
     #[error(transparent)]
     Camera(#[from] camera::CameraError),
+    #[error(transparent)]
+    Hms(#[from] hms::HmsError),
 }
 
 /// LAN MQTT/FTPS backend (OpenBambuAPI + open-bamboo-networking).
@@ -145,6 +156,34 @@ impl LanBackend {
         })
         .await
         .map_err(Self::map_err)
+    }
+
+    async fn command(&self, payload: String) -> Result<(), DeviceError> {
+        let (state, _) = lan_mqtt::fetch_status(
+            &self.host,
+            &self.access_code,
+            &self.serial,
+            Duration::from_secs(8),
+        )
+        .await
+        .map_err(Self::map_err)?;
+        let device_cert = self.device_cert_pem();
+        let report = self
+            .publish(
+                &payload,
+                device_cert.as_deref(),
+                !state.developer_mode,
+                Duration::from_secs(5),
+            )
+            .await?;
+        if let Some(body) = report {
+            if body.contains("print_error") || body.contains("\"result\":\"fail\"") {
+                return Err(DeviceError::Message(format!(
+                    "printer rejected command: {body}"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -241,6 +280,26 @@ impl PrinterBackend for LanBackend {
 
     async fn camera_frame(&self) -> Result<Frame, DeviceError> {
         camera::snapshot_frame(&self.host, &self.access_code).map_err(Self::map_err)
+    }
+
+    async fn pause(&self) -> Result<(), DeviceError> {
+        self.command(pause(next_sequence_id())).await
+    }
+
+    async fn resume(&self) -> Result<(), DeviceError> {
+        self.command(resume(next_sequence_id())).await
+    }
+
+    async fn stop(&self) -> Result<(), DeviceError> {
+        self.command(stop(next_sequence_id())).await
+    }
+
+    async fn set_print_speed(&self, level: u8) -> Result<(), DeviceError> {
+        self.command(print_speed(next_sequence_id(), level)).await
+    }
+
+    async fn set_chamber_light(&self, on: bool) -> Result<(), DeviceError> {
+        self.command(chamber_light(next_sequence_id(), on)).await
     }
 }
 

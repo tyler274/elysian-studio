@@ -22,6 +22,27 @@ pub enum ExtrusionRole {
     Ironing,
 }
 
+impl ExtrusionRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OuterWall => "Outer wall",
+            Self::InnerWall => "Inner wall",
+            Self::Infill => "Infill",
+            Self::SolidInfill => "Solid infill",
+            Self::FloatingVerticalShell => "Floating shell",
+            Self::TopSurface => "Top",
+            Self::BottomSurface => "Bottom",
+            Self::Bridge => "Bridge",
+            Self::Skirt => "Skirt",
+            Self::Brim => "Brim",
+            Self::PrimeTower => "Prime tower",
+            Self::Support => "Support",
+            Self::SupportInterface => "Support interface",
+            Self::Ironing => "Ironing",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolpathVertex {
     pub position: Vec3,
@@ -154,6 +175,21 @@ impl ToolpathBuffer {
 
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
+    }
+
+    pub fn layer_index_for_vertices(&self, vertices: usize) -> usize {
+        self.layer_vertex_ends
+            .iter()
+            .position(|&end| vertices <= end)
+            .unwrap_or_else(|| self.layer_zs.len().saturating_sub(1))
+    }
+
+    pub fn vertices_for_layer(&self, layer: usize) -> usize {
+        self.layer_vertex_ends
+            .get(layer)
+            .copied()
+            .or_else(|| self.layer_vertex_ends.last().copied())
+            .unwrap_or(self.vertices.len())
     }
 
     pub fn visible(

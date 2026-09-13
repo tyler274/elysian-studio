@@ -1,23 +1,31 @@
 #![forbid(unsafe_code)]
 
 use bambu_alloc as _;
+use std::path::PathBuf;
 use std::process::Command;
 
-use bambu_config::{load_bbl_process, overlay_bbl_profile, SliceSettings};
-use bambu_device::{PrintJob, PrinterBackend};
-use bambu_gcode::{write_gcode, write_gcode_for_objects};
+use bambu_config::{
+    list_bbl_profiles, load_bbl_process, overlay_bbl_profile, BblProfileEntry, BblProfileKind,
+    SliceSettings,
+};
+use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
+use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
-    force_vulkan_env, probe_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu,
-    ExtrusionRole, ToolpathBuffer, ViewportEvent, ViewportScene,
+    force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
+    slice_with_gpu_or_cpu, ExtrusionRole, ToolpathBuffer, ViewportEvent, ViewportScene,
 };
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
-use bambu_protocol::{capture_chamber, ChamberCapture, LanBackend};
+use bambu_protocol::{
+    capture_chamber, describe_hms, load_cached_catalog, refresh_catalog, ChamberCapture,
+    CloudBackend, LanBackend,
+};
 use bambu_slicer::check_print_path_conflicts;
 use iced::widget::{
-    button, checkbox, column, container, row, scrollable, shader, slider, text, text_input,
+    button, checkbox, column, container, pick_list, row, scrollable, shader, slider, text,
+    text_input,
 };
-use iced::{Color, Element, Fill, Task, Theme};
+use iced::{Color, Element, Fill, Subscription, Task, Theme};
 
 fn main() -> iced::Result {
     reexec_with_vulkan_if_needed();
@@ -47,6 +55,7 @@ fn main() -> iced::Result {
 
     let adapter = format!("{} / {}", report.backend, report.name);
     iced::application(move || App::new(adapter.clone()), App::update, App::view)
+        .subscription(App::subscription)
         .title("Bambu Studio")
         .theme(Theme::Dark)
         .antialiasing(true)
@@ -85,13 +94,28 @@ struct App {
     access_code: String,
     serial: String,
     last_gcode: Option<String>,
+    estimated_seconds: Option<f64>,
     settings: SliceSettings,
     model: Option<Model>,
     plate: usize,
     by_object: bool,
     paint_kind: Option<PaintKind>,
+    paint_blocker: bool,
+    brush_mm: f32,
     mqtt_status: String,
-    ams_status: String,
+    process_profiles: Vec<BblProfileEntry>,
+    filament_profiles: Vec<BblProfileEntry>,
+    machine_profiles: Vec<BblProfileEntry>,
+    process_name: Option<String>,
+    filament_name: Option<String>,
+    machine_name: Option<String>,
+    selected_object: usize,
+    selected_volume: usize,
+    machine: MachineState,
+    ams: AmsState,
+    hms_lines: Vec<String>,
+    live_monitor: bool,
+    use_cloud: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,10 +147,28 @@ enum Message {
     PaintSeam,
     PaintFuzzy,
     PaintClear,
+    PaintBlocker(bool),
+    BrushRadius(f32),
     PreviewMove(u32),
     EnableSupport(bool),
     RefreshStatus,
-    Status(Result<String, String>),
+    Status(Result<Box<MonitorSnapshot>, String>),
+    Pause,
+    Resume,
+    Stop,
+    PrintControl(Result<String, String>),
+    LiveMonitor(bool),
+    UseCloud(bool),
+    ProcessProfile(String),
+    FilamentProfile(String),
+    MachineProfile(String),
+    SelectObject(usize),
+    SelectVolume(usize),
+    HideVolume(bool),
+    CycleAmsMap(usize),
+    RefreshHms,
+    HmsCatalog(Result<String, String>),
+    Calibration,
 }
 
 impl From<ViewportEvent> for Message {
@@ -135,23 +177,57 @@ impl From<ViewportEvent> for Message {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MonitorSnapshot {
+    line: String,
+    machine: MachineState,
+    ams: AmsState,
+    hms_lines: Vec<String>,
+}
+
 impl App {
     fn new(adapter: String) -> Self {
+        let settings = default_slice_settings();
+        let bed = settings.bed_size_mm();
+        let scene = ViewportScene::with_cube_on_bed(adapter.clone(), bed);
         Self {
-            adapter: adapter.clone(),
-            scene: ViewportScene::with_cube(adapter),
-            status: "20mm cube on 256mm bed".into(),
+            adapter,
+            scene,
+            status: format!("20mm cube on {bed:.0}mm bed"),
             host: String::new(),
             access_code: String::new(),
             serial: String::new(),
             last_gcode: None,
-            settings: default_slice_settings(),
+            estimated_seconds: None,
+            settings,
             model: None,
             plate: 0,
             by_object: false,
             paint_kind: None,
+            paint_blocker: false,
+            brush_mm: 2.0,
             mqtt_status: String::new(),
-            ams_status: String::new(),
+            process_profiles: list_bbl_profiles(BblProfileKind::Process),
+            filament_profiles: list_bbl_profiles(BblProfileKind::Filament),
+            machine_profiles: list_bbl_profiles(BblProfileKind::Machine),
+            process_name: None,
+            filament_name: None,
+            machine_name: None,
+            selected_object: 0,
+            selected_volume: 0,
+            machine: MachineState::default(),
+            ams: AmsState::default(),
+            hms_lines: Vec::new(),
+            live_monitor: false,
+            use_cloud: false,
+        }
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        if self.live_monitor {
+            iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::RefreshStatus)
+        } else {
+            Subscription::none()
         }
     }
 
@@ -219,7 +295,7 @@ impl App {
             }
             Message::Slice => return self.slice_current(),
             Message::ResetCamera => {
-                self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(bambu_gpu::BED_MM);
+                self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(self.scene.bed_mm);
             }
             Message::ExtractKeys => match bambu_protocol::extract_to_config_dir(None, None) {
                 Ok(report) => {
@@ -373,79 +449,164 @@ impl App {
             Message::PreviewLayer(i) => {
                 let max = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as u32;
                 self.scene.preview_layer = i.min(max);
+                self.scene.preview_vertices = self
+                    .scene
+                    .toolpaths
+                    .vertices_for_layer(self.scene.preview_layer as usize)
+                    as u32;
             }
             Message::HideInfill(v) => self.scene.hide_infill = v,
             Message::HideSupport(v) => self.scene.hide_support = v,
             Message::ByObject(v) => self.by_object = v,
             Message::PaintSupport => {
                 self.paint_kind = Some(PaintKind::Support);
+                self.scene.keep_solid = true;
                 self.status = "click a triangle to paint support".into();
             }
             Message::PaintSeam => {
                 self.paint_kind = Some(PaintKind::Seam);
+                self.scene.keep_solid = true;
                 self.status = "click a triangle to paint seam".into();
             }
             Message::PaintFuzzy => {
                 self.paint_kind = Some(PaintKind::Fuzzy);
+                self.scene.keep_solid = true;
                 self.status = "click a triangle to paint fuzzy".into();
             }
             Message::PaintClear => {
                 self.paint_kind = None;
+                self.scene.keep_solid = false;
                 self.status = "paint mode off".into();
             }
+            Message::PaintBlocker(v) => self.paint_blocker = v,
+            Message::BrushRadius(v) => self.brush_mm = v.clamp(0.5, 12.0),
             Message::PreviewMove(i) => {
                 self.scene.preview_vertices = i;
+                self.scene.preview_layer =
+                    self.scene.toolpaths.layer_index_for_vertices(i as usize) as u32;
             }
             Message::EnableSupport(v) => self.settings.enable_support = v,
-            Message::RefreshStatus => {
-                if self.host.is_empty() || self.access_code.is_empty() {
-                    self.status = "printer IP and LAN access code required".into();
-                    return Task::none();
-                }
-                let host = self.host.clone();
-                let code = self.access_code.clone();
-                let serial = self.serial.clone();
-                self.status = format!("MQTT status {host}…");
-                return Task::perform(
-                    async move {
-                        let creds =
-                            bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
-                                .unwrap_or_else(|_| Default::default());
-                        let backend = LanBackend::new(host, code)
-                            .with_serial(serial)
-                            .with_credentials(creds);
-                        let st = backend.status().await.map_err(|e| e.to_string())?;
-                        let ams = backend.ams().await.unwrap_or_default();
-                        let trays = if ams.trays.is_empty() {
-                            format!("{} slots", ams.slot_count)
-                        } else {
-                            ams.trays
-                                .iter()
-                                .map(|t| {
-                                    format!(
-                                        "T{} {} {}",
-                                        t.id,
-                                        t.filament_type,
-                                        if t.color.is_empty() { "—" } else { &t.color }
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" · ")
-                        };
-                        Ok(format!(
-                            "nozzle {:.0}°C bed {:.0}°C · AMS {trays} · tray {:?}",
-                            st.nozzle_temp_c, st.bed_temp_c, ams.active_slot
-                        ))
-                    },
-                    Message::Status,
-                );
-            }
-            Message::Status(Ok(msg)) => {
-                self.mqtt_status = msg.clone();
-                self.ams_status = msg.clone();
-                self.status = msg;
+            Message::RefreshStatus => return self.refresh_monitor(),
+            Message::Status(Ok(snap)) => {
+                self.machine = snap.machine.clone();
+                self.ams = snap.ams.clone();
+                self.hms_lines = snap.hms_lines.clone();
+                self.mqtt_status = snap.line.clone();
+                self.status = snap.line.clone();
             }
             Message::Status(Err(err)) => self.status = format!("status failed: {err}"),
+            Message::Pause => return self.run_print_cmd(PrintCmd::Pause),
+            Message::Resume => return self.run_print_cmd(PrintCmd::Resume),
+            Message::Stop => return self.run_print_cmd(PrintCmd::Stop),
+            Message::PrintControl(Ok(msg)) => {
+                self.status = msg;
+                return self.refresh_monitor();
+            }
+            Message::PrintControl(Err(err)) => self.status = format!("command failed: {err}"),
+            Message::LiveMonitor(v) => {
+                self.live_monitor = v;
+                if v {
+                    return self.refresh_monitor();
+                }
+            }
+            Message::UseCloud(v) => self.use_cloud = v,
+            Message::ProcessProfile(name) => {
+                if let Some(path) = self
+                    .process_profiles
+                    .iter()
+                    .find(|p| p.name == name)
+                    .map(|p| p.path.clone())
+                {
+                    match load_bbl_process(&path) {
+                        Ok(s) => {
+                            self.settings = s;
+                            self.process_name = Some(name);
+                            if let Some(fil) = self.filament_name.clone() {
+                                self.apply_named_profile(BblProfileKind::Filament, &fil);
+                            }
+                            if let Some(mac) = self.machine_name.clone() {
+                                self.apply_named_profile(BblProfileKind::Machine, &mac);
+                            }
+                            self.status = format!("process {path:?}");
+                        }
+                        Err(err) => self.status = format!("process profile: {err}"),
+                    }
+                }
+            }
+            Message::FilamentProfile(name) => {
+                self.apply_named_profile(BblProfileKind::Filament, &name);
+            }
+            Message::MachineProfile(name) => {
+                self.apply_named_profile(BblProfileKind::Machine, &name);
+            }
+            Message::SelectObject(i) => {
+                self.selected_object = i;
+                self.selected_volume = 0;
+            }
+            Message::SelectVolume(i) => self.selected_volume = i,
+            Message::HideVolume(hidden) => {
+                if let Some(vol) = self.selected_vol_mut() {
+                    vol.hidden = hidden;
+                    self.sync_scene_mesh();
+                }
+            }
+            Message::CycleAmsMap(i) => {
+                if self.settings.filament_map.is_empty() {
+                    self.settings.filament_map = vec![1];
+                }
+                if let Some(slot) = self.settings.filament_map.get_mut(i) {
+                    let max = self.ams.slot_count.max(4) as i32;
+                    *slot = if *slot >= max { 0 } else { *slot + 1 };
+                }
+            }
+            Message::RefreshHms => {
+                self.status = "HMS catalog e.bambulab.com…".into();
+                return Task::perform(
+                    async {
+                        std::thread::spawn(|| {
+                            refresh_catalog(bambu_protocol::default_config_dir(), "en")
+                                .map(|_| "HMS catalog cached".to_string())
+                                .map_err(|err| err.to_string())
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("HMS thread panicked".into()))
+                    },
+                    Message::HmsCatalog,
+                );
+            }
+            Message::HmsCatalog(Ok(msg)) => {
+                self.status = msg;
+                if !self.machine.hms.is_empty() {
+                    let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
+                    self.hms_lines = self
+                        .machine
+                        .hms
+                        .iter()
+                        .map(|h| describe_hms(catalog.as_ref(), *h, "en"))
+                        .collect();
+                }
+            }
+            Message::HmsCatalog(Err(err)) => self.status = format!("HMS catalog: {err}"),
+            Message::Calibration => {
+                if let Some(path) = calibration_block_path() {
+                    match load_model(&path) {
+                        Ok(model) => {
+                            self.plate = 0;
+                            if let Some(mesh) = model.mesh_for_plate(0) {
+                                self.scene.set_mesh(mesh);
+                            }
+                            self.status = format!(
+                                "calibration block ({} objects) — Slice with current settings",
+                                model.objects.len()
+                            );
+                            self.model = Some(model);
+                        }
+                        Err(err) => self.status = format!("calibration open failed: {err}"),
+                    }
+                } else {
+                    self.status = "tests/calibration_block not found".into();
+                }
+            }
         }
         Task::none()
     }
@@ -454,12 +615,56 @@ impl App {
         let max_layer = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as f64;
         let max_move = self.scene.toolpaths.vertices.len().saturating_sub(1) as f64;
         let plate_row = self.plate_buttons();
-        let object_list = self.object_labels();
+        let process_names: Vec<String> = self
+            .process_profiles
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let filament_names: Vec<String> = self
+            .filament_profiles
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let machine_names: Vec<String> = self
+            .machine_profiles
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let preview_z = self.scene.preview_z();
+        let layer_frac = if max_layer <= 0.0 {
+            1.0
+        } else {
+            f64::from(self.scene.preview_layer) / max_layer
+        };
+        let eta = self
+            .estimated_seconds
+            .map(|s| format_eta(s * layer_frac))
+            .unwrap_or_else(|| "—".into());
         let sidebar = scrollable(
             column![
                 text("Bambu Studio").size(22),
                 text("Rust rewrite · iced + wgpu").size(14),
                 text(format!("GPU: {}", self.adapter)).size(13),
+                text("Profiles").size(16),
+                pick_list(
+                    process_names,
+                    self.process_name.clone(),
+                    Message::ProcessProfile
+                )
+                .placeholder("process JSON"),
+                pick_list(
+                    filament_names,
+                    self.filament_name.clone(),
+                    Message::FilamentProfile
+                )
+                .placeholder("filament JSON"),
+                pick_list(
+                    machine_names,
+                    self.machine_name.clone(),
+                    Message::MachineProfile
+                )
+                .placeholder("machine JSON"),
+                text(format!("Bed {:.0} mm", self.scene.bed_mm)).size(12),
                 text("Process").size(16),
                 row![
                     button("-").on_press(Message::WallLoops(
@@ -514,8 +719,19 @@ impl App {
                     .on_toggle(Message::ByObject),
                 text("Plates").size(16),
                 plate_row,
-                text(object_list).size(12),
+                text("Objects").size(16),
+                self.object_panel(),
                 text("Preview / G-code scrubber").size(16),
+                text(format!(
+                    "Layer {}  Z {:.2} mm  ~{eta}",
+                    self.scene.preview_layer + 1,
+                    if preview_z.is_finite() {
+                        preview_z
+                    } else {
+                        0.0
+                    }
+                ))
+                .size(12),
                 slider(
                     0.0..=max_layer.max(1.0),
                     f64::from(self.scene.preview_layer),
@@ -536,11 +752,20 @@ impl App {
                     .label("Hide support")
                     .on_toggle(Message::HideSupport),
                 text("Paint (click triangle)").size(16),
+                checkbox(self.paint_blocker)
+                    .label("Blocker (else Enforcer)")
+                    .on_toggle(Message::PaintBlocker),
+                text(format!("Brush {:.1} mm", self.brush_mm)).size(12),
+                slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
+                    Message::BrushRadius(v as f32)
+                })
+                .step(0.5),
                 button("Paint support").on_press(Message::PaintSupport),
                 button("Paint seam").on_press(Message::PaintSeam),
                 button("Paint fuzzy").on_press(Message::PaintFuzzy),
                 button("Paint off").on_press(Message::PaintClear),
                 button("Open model").on_press(Message::OpenModel),
+                button("Calibration block").on_press(Message::Calibration),
                 button("Slice").on_press(Message::Slice),
                 button("Reset camera").on_press(Message::ResetCamera),
                 button("Extract keys").on_press(Message::ExtractKeys),
@@ -550,13 +775,29 @@ impl App {
                     .secure(true)
                     .on_input(Message::AccessCode),
                 text_input("serial (optional)", &self.serial).on_input(Message::Serial),
+                checkbox(self.use_cloud)
+                    .label("Cloud MQTT (token in config dir)")
+                    .on_toggle(Message::UseCloud),
+                checkbox(self.live_monitor)
+                    .label("Live monitor")
+                    .on_toggle(Message::LiveMonitor),
                 button("MQTT / AMS status").on_press(Message::RefreshStatus),
-                text(if self.mqtt_status.is_empty() {
-                    "AMS: —"
+                text(self.monitor_line()).size(12),
+                self.ams_chips(),
+                row![
+                    button("Pause").on_press(Message::Pause),
+                    button("Resume").on_press(Message::Resume),
+                    button("Stop").on_press(Message::Stop),
+                ]
+                .spacing(6),
+                text("HMS").size(16),
+                button("Refresh HMS catalog").on_press(Message::RefreshHms),
+                text(if self.hms_lines.is_empty() {
+                    "no HMS".into()
                 } else {
-                    self.mqtt_status.as_str()
+                    self.hms_lines.join("\n")
                 })
-                .size(12),
+                .size(11),
                 button("Send last slice").on_press(Message::Send),
                 button("Chamber / RTSPS live").on_press(Message::Chamber),
                 text(&self.status).size(13),
@@ -564,7 +805,7 @@ impl App {
             ]
             .spacing(8)
             .padding(16)
-            .width(300),
+            .width(320),
         )
         .height(Fill);
 
@@ -646,7 +887,10 @@ impl App {
         backend: &str,
     ) -> Task<Message> {
         match write_gcode(settings, &result) {
-            Ok(gcode) => self.last_gcode = Some(gcode),
+            Ok(gcode) => {
+                self.estimated_seconds = parse_gcode(&gcode).estimated_seconds;
+                self.last_gcode = Some(gcode);
+            }
             Err(err) => {
                 self.status = format!("gcode failed: {err}");
                 return Task::none();
@@ -675,7 +919,10 @@ impl App {
         results: Vec<bambu_slicer::SliceResult>,
     ) -> Task<Message> {
         match write_gcode_for_objects(settings, &results) {
-            Ok(gcode) => self.last_gcode = Some(gcode),
+            Ok(gcode) => {
+                self.estimated_seconds = parse_gcode(&gcode).estimated_seconds;
+                self.last_gcode = Some(gcode);
+            }
             Err(err) => {
                 self.status = format!("gcode failed: {err}");
                 return Task::none();
@@ -700,19 +947,49 @@ impl App {
             return;
         };
         let (origin, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
-        let Some(tri) = self.scene.mesh.pick_triangle(origin, dir) else {
+        let Some(hit) = self.scene.mesh.pick_triangle(origin, dir) else {
             self.status = "no triangle under cursor".into();
             return;
         };
         if self.model.is_none() {
             self.model = Some(Model::from_mesh("viewport", self.scene.mesh.clone()));
         }
-        let Some(model) = self.model.as_mut() else {
-            return;
+        let idx = self.scene.mesh.indices[hit];
+        let [a, b, c] = self.scene.mesh.triangle(idx);
+        let centroid = (a + b + c) / 3.0;
+        let tris = if self.brush_mm > 0.51 {
+            let mut near = self.scene.mesh.triangles_near(centroid, self.brush_mm);
+            if !near.contains(&hit) {
+                near.push(hit);
+            }
+            near
+        } else {
+            vec![hit]
         };
-        let paint = TrianglePaint::Enforcer;
+        let paint = if self.paint_blocker {
+            TrianglePaint::Blocker
+        } else {
+            TrianglePaint::Enforcer
+        };
+        let mut painted = 0usize;
+        for tri in tris {
+            if self.paint_one(kind, tri, paint) {
+                painted += 1;
+            }
+        }
+        self.refresh_paint_overlay();
+        self.status = if painted > 0 {
+            format!("painted {kind:?} x{painted} — Slice to apply")
+        } else {
+            format!("triangle {hit} not on a model volume")
+        };
+    }
+
+    fn paint_one(&mut self, kind: PaintKind, tri: usize, paint: TrianglePaint) -> bool {
+        let Some(model) = self.model.as_mut() else {
+            return false;
+        };
         let mut remaining = tri;
-        let mut painted = false;
         for obj in &mut model.objects {
             if obj.volumes.is_empty() {
                 obj.volumes = obj.volumes_or_mesh();
@@ -743,18 +1020,10 @@ impl App {
                         vol.triangle_fuzzy_skin[remaining] = paint;
                     }
                 }
-                painted = true;
-                break;
-            }
-            if painted {
-                break;
+                return true;
             }
         }
-        self.status = if painted {
-            format!("painted {kind:?} triangle {tri} — Slice to apply")
-        } else {
-            format!("triangle {tri} not on a model volume")
-        };
+        false
     }
 
     fn plate_buttons(&self) -> Element<'_, Message> {
@@ -777,25 +1046,196 @@ impl App {
         r.spacing(4).into()
     }
 
-    fn object_labels(&self) -> String {
+    fn object_panel(&self) -> Element<'_, Message> {
         let Some(model) = &self.model else {
-            return "Objects: cube".into();
+            return text("cube").size(12).into();
         };
         if model.objects.is_empty() {
-            return "Objects: —".into();
+            return text("—").size(12).into();
         }
-        let names: Vec<String> = model
-            .objects
-            .iter()
-            .map(|o| {
-                if o.name.is_empty() {
-                    "object".into()
-                } else {
-                    o.name.clone()
+        let mut col = column![];
+        for (i, obj) in model.objects.iter().enumerate() {
+            let name = if obj.name.is_empty() {
+                format!("object {}", i + 1)
+            } else {
+                obj.name.clone()
+            };
+            col = col.push(button(text(name).size(12)).on_press(Message::SelectObject(i)));
+        }
+        if let Some(obj) = model.objects.get(self.selected_object) {
+            for (i, vol) in obj.volumes.iter().enumerate() {
+                let extruder = vol
+                    .config
+                    .get("extruder")
+                    .cloned()
+                    .unwrap_or_else(|| "—".into());
+                let label = format!(
+                    "{} {} ext {extruder}{}",
+                    vol.volume_type.as_str(),
+                    if vol.name.is_empty() {
+                        format!("v{}", i + 1)
+                    } else {
+                        vol.name.clone()
+                    },
+                    if vol.hidden { " (hidden)" } else { "" }
+                );
+                col = col.push(button(text(label).size(11)).on_press(Message::SelectVolume(i)));
+            }
+            if let Some(vol) = obj.volumes.get(self.selected_volume) {
+                col = col.push(
+                    checkbox(vol.hidden)
+                        .label("Hide volume")
+                        .on_toggle(Message::HideVolume),
+                );
+            }
+        }
+        col.spacing(4).into()
+    }
+
+    fn ams_chips(&self) -> Element<'_, Message> {
+        let mut r = row![];
+        if self.settings.filament_map.is_empty() {
+            r = r.push(text("AMS map: —").size(11));
+        }
+        for (i, mapped) in self.settings.filament_map.iter().enumerate() {
+            r = r.push(
+                button(text(format!("F{}→T{mapped}", i + 1)).size(11))
+                    .on_press(Message::CycleAmsMap(i)),
+            );
+        }
+        r.spacing(4).into()
+    }
+
+    fn monitor_line(&self) -> String {
+        if self.mqtt_status.is_empty() {
+            return "AMS: —".into();
+        }
+        let humidity = self
+            .ams
+            .humidity
+            .map(|h| format!(" RH{h}"))
+            .unwrap_or_default();
+        format!(
+            "{} · {}% · L{}/{} · {}m · nozzle {:.0}°C{humidity}",
+            if self.machine.gcode_state.is_empty() {
+                "—"
+            } else {
+                self.machine.gcode_state.as_str()
+            },
+            self.machine.mc_percent,
+            self.machine.layer_num,
+            self.machine.total_layer_num,
+            self.machine.mc_remaining_time_min,
+            self.machine.nozzle_temp_c
+        )
+    }
+
+    fn apply_named_profile(&mut self, kind: BblProfileKind, name: &str) {
+        let list = match kind {
+            BblProfileKind::Process => &self.process_profiles,
+            BblProfileKind::Filament => &self.filament_profiles,
+            BblProfileKind::Machine => &self.machine_profiles,
+        };
+        let Some(path) = list.iter().find(|p| p.name == name).map(|p| p.path.clone()) else {
+            self.status = format!("no {name} profile");
+            return;
+        };
+        match overlay_bbl_profile(&mut self.settings, &path) {
+            Ok(()) => {
+                match kind {
+                    BblProfileKind::Process => self.process_name = Some(name.to_string()),
+                    BblProfileKind::Filament => self.filament_name = Some(name.to_string()),
+                    BblProfileKind::Machine => {
+                        self.machine_name = Some(name.to_string());
+                        self.scene.set_bed_mm(self.settings.bed_size_mm());
+                    }
                 }
-            })
-            .collect();
-        format!("Objects: {}", names.join(", "))
+                self.status = format!("overlay {}", path.display());
+            }
+            Err(err) => self.status = format!("profile: {err}"),
+        }
+    }
+
+    fn selected_vol_mut(&mut self) -> Option<&mut bambu_model::ModelVolume> {
+        let obj = self.model.as_mut()?.objects.get_mut(self.selected_object)?;
+        if obj.volumes.is_empty() {
+            obj.volumes = obj.volumes_or_mesh();
+        }
+        obj.volumes.get_mut(self.selected_volume)
+    }
+
+    fn sync_scene_mesh(&mut self) {
+        let Some(mesh) = self
+            .model
+            .as_ref()
+            .and_then(|m| m.mesh_for_plate(self.plate))
+        else {
+            return;
+        };
+        let keep = self.scene.keep_solid;
+        self.scene.set_mesh(mesh);
+        self.scene.keep_solid = keep;
+        self.refresh_paint_overlay();
+    }
+
+    fn refresh_paint_overlay(&mut self) {
+        self.scene.keep_solid = self.paint_kind.is_some() || !self.scene.paint_overlay.is_empty();
+        let mut overlay = Vec::new();
+        let Some(model) = &self.model else {
+            self.scene.paint_overlay = overlay;
+            return;
+        };
+        let mut offset = 0usize;
+        for obj in &model.objects {
+            for vol in &obj.volumes {
+                let n = vol.mesh.indices.len();
+                for field in [
+                    &vol.triangle_support,
+                    &vol.triangle_seam,
+                    &vol.triangle_fuzzy_skin,
+                ] {
+                    for (i, paint) in field.iter().enumerate() {
+                        let color = match paint {
+                            TrianglePaint::Enforcer => Some(paint_overlay_color(true)),
+                            TrianglePaint::Blocker => Some(paint_overlay_color(false)),
+                            TrianglePaint::None => None,
+                        };
+                        if let Some(c) = color {
+                            overlay.push((offset + i, c));
+                        }
+                    }
+                }
+                offset += n;
+            }
+        }
+        self.scene.keep_solid = self.paint_kind.is_some() || !overlay.is_empty();
+        self.scene.paint_overlay = overlay;
+    }
+
+    fn refresh_monitor(&self) -> Task<Message> {
+        let host = self.host.clone();
+        let code = self.access_code.clone();
+        let serial = self.serial.clone();
+        let use_cloud = self.use_cloud;
+        Task::perform(
+            async move {
+                fetch_monitor(use_cloud, host, code, serial)
+                    .await
+                    .map(Box::new)
+            },
+            Message::Status,
+        )
+    }
+
+    fn run_print_cmd(&self, cmd: PrintCmd) -> Task<Message> {
+        let host = self.host.clone();
+        let code = self.access_code.clone();
+        let serial = self.serial.clone();
+        let use_cloud = self.use_cloud;
+        Task::perform(
+            async move { run_cmd(use_cloud, host, code, serial, cmd).await },
+            Message::PrintControl,
+        )
     }
 }
 
@@ -806,15 +1246,138 @@ enum PaintKind {
     Fuzzy,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PrintCmd {
+    Pause,
+    Resume,
+    Stop,
+}
+
 fn role_legend() -> String {
     format!(
-        "Roles: {:?} {:?} {:?} {:?} {:?}",
-        ExtrusionRole::OuterWall,
-        ExtrusionRole::InnerWall,
-        ExtrusionRole::Infill,
-        ExtrusionRole::Support,
-        ExtrusionRole::PrimeTower
+        "{} · {} · {} · {} · {}",
+        ExtrusionRole::OuterWall.label(),
+        ExtrusionRole::InnerWall.label(),
+        ExtrusionRole::Infill.label(),
+        ExtrusionRole::Support.label(),
+        ExtrusionRole::PrimeTower.label()
     )
+}
+
+fn format_eta(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    let h = s / 3600;
+    let m = (s % 3600) / 60;
+    let sec = s % 60;
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m {sec}s")
+    }
+}
+
+fn calibration_block_path() -> Option<PathBuf> {
+    let rel = PathBuf::from("tests/calibration_block/3D+Printer+Test.3mf");
+    let mut candidates = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(&rel)];
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(&rel));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+fn lan_from(host: String, code: String, serial: String) -> LanBackend {
+    let creds = bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
+        .unwrap_or_else(|_| Default::default());
+    LanBackend::new(host, code)
+        .with_serial(serial)
+        .with_credentials(creds)
+}
+
+async fn snapshot_backend<B: PrinterBackend>(backend: B) -> Result<MonitorSnapshot, String> {
+    let st = backend.status().await.map_err(|e| e.to_string())?;
+    let ams = backend.ams().await.unwrap_or_default();
+    let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
+    let hms_lines = st
+        .hms
+        .iter()
+        .map(|h| describe_hms(catalog.as_ref(), *h, "en"))
+        .collect();
+    let trays = if ams.trays.is_empty() {
+        format!("{} slots", ams.slot_count)
+    } else {
+        ams.trays
+            .iter()
+            .map(|t| {
+                format!(
+                    "T{} {} {}",
+                    t.id,
+                    t.filament_type,
+                    if t.color.is_empty() { "—" } else { &t.color }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    Ok(MonitorSnapshot {
+        line: format!(
+            "{} {}% L{}/{} nozzle {:.0}°C · AMS {trays}",
+            st.gcode_state, st.mc_percent, st.layer_num, st.total_layer_num, st.nozzle_temp_c
+        ),
+        machine: st,
+        ams,
+        hms_lines,
+    })
+}
+
+async fn fetch_monitor(
+    use_cloud: bool,
+    host: String,
+    code: String,
+    serial: String,
+) -> Result<MonitorSnapshot, String> {
+    if use_cloud {
+        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
+            .map_err(|e| e.to_string())?;
+        return snapshot_backend(backend).await;
+    }
+    if host.is_empty() || code.is_empty() {
+        return Err("printer IP and LAN access code required".into());
+    }
+    snapshot_backend(lan_from(host, code, serial)).await
+}
+
+async fn run_cmd(
+    use_cloud: bool,
+    host: String,
+    code: String,
+    serial: String,
+    cmd: PrintCmd,
+) -> Result<String, String> {
+    async fn go<B: PrinterBackend>(backend: B, cmd: PrintCmd) -> Result<String, String> {
+        match cmd {
+            PrintCmd::Pause => backend.pause().await,
+            PrintCmd::Resume => backend.resume().await,
+            PrintCmd::Stop => backend.stop().await,
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(match cmd {
+            PrintCmd::Pause => "pause sent",
+            PrintCmd::Resume => "resume sent",
+            PrintCmd::Stop => "stop sent",
+        }
+        .into())
+    }
+    if use_cloud {
+        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
+            .map_err(|e| e.to_string())?;
+        return go(backend, cmd).await;
+    }
+    if host.is_empty() || code.is_empty() {
+        return Err("printer IP and LAN access code required".into());
+    }
+    go(lan_from(host, code, serial), cmd).await
 }
 
 fn default_slice_settings() -> SliceSettings {

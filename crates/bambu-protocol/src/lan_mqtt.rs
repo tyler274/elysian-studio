@@ -26,19 +26,24 @@ pub enum MqttSessionError {
     Signing(#[from] crate::signing::SigningError),
 }
 
+pub struct BrokerAuth<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub user: &'a str,
+    pub password: &'a str,
+    pub serial: &'a str,
+}
+
 fn mqtt_options(
-    host: &str,
-    access_code: &str,
+    auth: &BrokerAuth<'_>,
     config: Arc<ClientConfig>,
 ) -> Result<MqttOptions, MqttSessionError> {
-    if access_code.is_empty() {
-        return Err(MqttSessionError::Message(
-            "LAN access code is empty (printer settings → LAN)".into(),
-        ));
+    if auth.password.is_empty() {
+        return Err(MqttSessionError::Message("MQTT password is empty".into()));
     }
     let client_id = format!("bambu-rs-{}", std::process::id());
-    let mut opts = MqttOptions::new(client_id, host, LAN_MQTT_PORT);
-    opts.set_credentials(LAN_MQTT_USER, access_code);
+    let mut opts = MqttOptions::new(client_id, auth.host, auth.port);
+    opts.set_credentials(auth.user, auth.password);
     opts.set_keep_alive(Duration::from_secs(60));
     opts.set_clean_session(true);
     opts.set_max_packet_size(512 * 1024, 512 * 1024);
@@ -63,9 +68,36 @@ pub async fn fetch_status(
     serial: &str,
     timeout: Duration,
 ) -> Result<(MachineState, Option<AmsState>), MqttSessionError> {
+    if access_code.is_empty() {
+        return Err(MqttSessionError::Message(
+            "LAN access code is empty (printer settings → LAN)".into(),
+        ));
+    }
     let serial = resolve_serial(host, serial)?;
+    fetch_status_on(
+        BrokerAuth {
+            host,
+            port: LAN_MQTT_PORT,
+            user: LAN_MQTT_USER,
+            password: access_code,
+            serial: &serial,
+        },
+        timeout,
+    )
+    .await
+}
+
+pub async fn fetch_status_on(
+    auth: BrokerAuth<'_>,
+    timeout: Duration,
+) -> Result<(MachineState, Option<AmsState>), MqttSessionError> {
+    let serial = if auth.serial.is_empty() {
+        return Err(MqttSessionError::Message("MQTT serial is empty".into()));
+    } else {
+        auth.serial.to_string()
+    };
     let config = lan_client_config()?;
-    let opts = mqtt_options(host, access_code, config)?;
+    let opts = mqtt_options(&auth, config)?;
     let (client, mut eventloop) = AsyncClient::new(opts, 32);
     client
         .subscribe(report_topic(&serial), QoS::AtMostOnce)
@@ -114,7 +146,8 @@ pub async fn fetch_status(
     machine
         .ok_or_else(|| {
             MqttSessionError::Message(format!(
-                "no push_status from {host} serial {serial} within {timeout:?}"
+                "no push_status from {} serial {serial} within {timeout:?}",
+                auth.host
             ))
         })
         .map(|st| (st, ams))
@@ -132,10 +165,39 @@ pub struct PublishRequest<'a> {
 }
 
 pub async fn publish_signed(req: PublishRequest<'_>) -> Result<Option<String>, MqttSessionError> {
+    if req.access_code.is_empty() {
+        return Err(MqttSessionError::Message(
+            "LAN access code is empty (printer settings → LAN)".into(),
+        ));
+    }
     let serial = resolve_serial(req.host, req.serial)?;
     let signed = maybe_sign_ex(req.payload, req.creds, req.device_cert_pem, req.secured)?;
+    publish_raw(
+        BrokerAuth {
+            host: req.host,
+            port: LAN_MQTT_PORT,
+            user: LAN_MQTT_USER,
+            password: req.access_code,
+            serial: &serial,
+        },
+        signed.as_bytes(),
+        req.wait_report,
+    )
+    .await
+}
+
+pub async fn publish_raw(
+    auth: BrokerAuth<'_>,
+    payload: &[u8],
+    wait_report: Duration,
+) -> Result<Option<String>, MqttSessionError> {
+    let serial = if auth.serial.is_empty() {
+        return Err(MqttSessionError::Message("MQTT serial is empty".into()));
+    } else {
+        auth.serial.to_string()
+    };
     let config = lan_client_config()?;
-    let opts = mqtt_options(req.host, req.access_code, config)?;
+    let opts = mqtt_options(&auth, config)?;
     let (client, mut eventloop) = AsyncClient::new(opts, 32);
     client
         .subscribe(report_topic(&serial), QoS::AtMostOnce)
@@ -146,12 +208,12 @@ pub async fn publish_signed(req: PublishRequest<'_>) -> Result<Option<String>, M
             request_topic(&serial),
             QoS::AtMostOnce,
             false,
-            signed.as_bytes().to_vec(),
+            payload.to_vec(),
         )
         .await
         .map_err(|err| MqttSessionError::Message(err.to_string()))?;
 
-    let deadline = Instant::now() + req.wait_report;
+    let deadline = Instant::now() + wait_report;
     let mut last = None;
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -165,7 +227,7 @@ pub async fn publish_signed(req: PublishRequest<'_>) -> Result<Option<String>, M
                 }
             }
             Ok(Ok(Event::Incoming(Incoming::PubAck(_)))) => {
-                if req.wait_report.is_zero() {
+                if wait_report.is_zero() {
                     break;
                 }
             }

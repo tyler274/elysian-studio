@@ -11,6 +11,8 @@ use iced::{Event, Rectangle};
 
 pub const BED_MM: f32 = 256.0;
 const PLASTIC: [f32; 3] = [0.93, 0.42, 0.18];
+const PAINT_ENFORCER: [f32; 3] = [0.22, 0.86, 0.38];
+const PAINT_BLOCKER: [f32; 3] = [0.92, 0.22, 0.28];
 const BED: [f32; 3] = [0.16, 0.17, 0.20];
 const GRID: [f32; 3] = [0.28, 0.32, 0.38];
 const OUTER_WALL: [f32; 3] = [1.00, 0.86, 0.22];
@@ -38,6 +40,10 @@ pub struct ViewportScene {
     pub preview_vertices: u32,
     pub hide_infill: bool,
     pub hide_support: bool,
+    pub bed_mm: f32,
+    /// Keep the solid mesh visible (paint overlay / no toolpaths).
+    pub keep_solid: bool,
+    pub paint_overlay: Vec<(usize, [f32; 3])>,
 }
 
 impl Default for ViewportScene {
@@ -48,27 +54,42 @@ impl Default for ViewportScene {
 
 impl ViewportScene {
     pub fn with_cube(adapter_label: String) -> Self {
+        Self::with_cube_on_bed(adapter_label, BED_MM)
+    }
+
+    pub fn with_cube_on_bed(adapter_label: String, bed_mm: f32) -> Self {
+        let bed_mm = bed_mm.clamp(80.0, 512.0);
         let mut mesh = TriangleMesh::cube(20.0);
-        mesh.place_on_bed(BED_MM);
+        mesh.place_on_bed(bed_mm);
         Self {
             adapter_label,
-            camera: OrbitCamera::looking_at_bed(BED_MM),
+            camera: OrbitCamera::looking_at_bed(bed_mm),
             mesh,
             toolpaths: ToolpathBuffer::default(),
             preview_layer: 0,
             preview_vertices: 0,
             hide_infill: false,
             hide_support: false,
+            bed_mm,
+            keep_solid: false,
+            paint_overlay: Vec::new(),
         }
     }
 
+    pub fn set_bed_mm(&mut self, bed_mm: f32) {
+        let bed_mm = bed_mm.clamp(80.0, 512.0);
+        self.bed_mm = bed_mm;
+        self.camera = OrbitCamera::looking_at_bed(bed_mm);
+    }
+
     pub fn set_mesh(&mut self, mut mesh: TriangleMesh) {
-        mesh.place_on_bed(BED_MM);
+        mesh.place_on_bed(self.bed_mm);
         self.mesh = mesh;
         self.toolpaths = ToolpathBuffer::default();
         self.preview_layer = 0;
         self.preview_vertices = 0;
-        self.camera = OrbitCamera::looking_at_bed(BED_MM);
+        self.camera = OrbitCamera::looking_at_bed(self.bed_mm);
+        self.paint_overlay.clear();
     }
 
     pub fn preview_z(&self) -> f32 {
@@ -192,7 +213,7 @@ where
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
-        let mut lines = grid_vertices(BED_MM);
+        let mut lines = grid_vertices(self.bed_mm);
         lines.extend(toolpath_vertices(
             &self.toolpaths,
             self.preview_z(),
@@ -200,12 +221,11 @@ where
             self.hide_infill,
             self.hide_support,
         ));
-        let solid = if self.toolpaths.is_empty() {
-            solid_vertices(&self.mesh)
-        } else {
-            // Hide the solid mesh so inset walls/infill are not occluded.
-            bed_quad(BED_MM)
-        };
+        let mut solid = bed_quad(self.bed_mm);
+        if self.toolpaths.is_empty() || self.keep_solid {
+            solid.extend(mesh_vertices(&self.mesh, PLASTIC));
+            solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
+        }
         ScenePrimitive {
             aspect: (bounds.width / bounds.height.max(1.0)).max(0.1),
             camera: self.camera,
@@ -585,10 +605,34 @@ fn upload_vertices(
     queue.write_buffer(buffer, 0, bytemuck::cast_slice(verts));
 }
 
-fn solid_vertices(mesh: &TriangleMesh) -> Vec<Vertex> {
-    let mut out = bed_quad(BED_MM);
-    out.extend(mesh_vertices(mesh, PLASTIC));
+fn overlay_vertices(mesh: &TriangleMesh, paints: &[(usize, [f32; 3])]) -> Vec<Vertex> {
+    let mut out = Vec::new();
+    for &(i, color) in paints {
+        let Some(idx) = mesh.indices.get(i).copied() else {
+            continue;
+        };
+        let [a, b, c] = mesh.triangle(idx);
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        let lift = n * 0.08;
+        let n3 = [n.x, n.y, n.z];
+        for p in [a, b, c] {
+            let p = p + lift;
+            out.push(Vertex {
+                position: [p.x, p.y, p.z],
+                normal: n3,
+                color,
+            });
+        }
+    }
     out
+}
+
+pub fn paint_overlay_color(enforcer: bool) -> [f32; 3] {
+    if enforcer {
+        PAINT_ENFORCER
+    } else {
+        PAINT_BLOCKER
+    }
 }
 
 fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {

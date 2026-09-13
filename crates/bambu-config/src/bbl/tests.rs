@@ -806,6 +806,7 @@ fn h2c_machine_sets_retraction() {
     assert!(s.time_lapse_gcode.contains("SKIPTYPE: timelapse"));
     assert!((s.extruder_clearance_max_radius_mm - 96.0).abs() < 1e-9);
     assert!(s.printable_area.len() >= 4, "{:?}", s.printable_area);
+    assert!(s.bed_size_mm() > 256.0, "H2C bed {}", s.bed_size_mm());
     assert_eq!(s.extruder_printable_areas.len(), 2);
     assert!(s.farthest_point_timelapse);
     assert_eq!(s.timelapse_type, 0);
@@ -1489,4 +1490,22 @@ fn max_travel_detour_limit_matches_cpp() {
     s.max_travel_detour_is_percent = true;
     s.max_travel_detour_distance = 50.0;
     assert!((s.max_travel_detour_limit_mm(10.0) - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn lists_bbl_profile_trees() {
+    if bbl_resources_dir().is_none() {
+        return;
+    }
+    let process = list_bbl_profiles(BblProfileKind::Process);
+    let filament = list_bbl_profiles(BblProfileKind::Filament);
+    let machine = list_bbl_profiles(BblProfileKind::Machine);
+    assert!(
+        !process.is_empty() && !filament.is_empty() && !machine.is_empty(),
+        "process {} filament {} machine {}",
+        process.len(),
+        filament.len(),
+        machine.len()
+    );
+    assert!(process.iter().any(|p| p.name.contains("0.20mm")));
 }

@@ -15,7 +15,8 @@ use bambu_gpu::{
 };
 use bambu_io::load_model;
 use bambu_protocol::{
-    default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
+    default_config_dir, describe_hms, install_app_cert, load_cached_catalog, load_cloud_session,
+    load_from_dir, refresh_catalog, send_gcode_line, snapshot_jpeg, CloudBackend, LanBackend,
 };
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
@@ -184,7 +185,7 @@ enum KeysCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Show whether Option B PEMs are present.
+    /// Show whether Option B PEMs and optional cloud token files are present.
     Status {
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -221,7 +222,62 @@ enum DeviceCommand {
         /// Remote basename (default: input stem).
         #[arg(long)]
         name: Option<String>,
+        /// AMS tray mapping (comma-separated, 0-based). Printed and sent as `ams_mapping`.
+        #[arg(long)]
+        ams: Option<String>,
     },
+    /// MQTT `print.command` pause.
+    Pause {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// MQTT `print.command` resume.
+    Resume {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// MQTT `print.command` stop.
+    Stop {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// MQTT `print_speed` (1 silent … 4 ludicrous).
+    Speed {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        level: u8,
+    },
+    /// Print HMS codes from `push_status` (catalog text if cached).
+    Hms {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        /// Fetch `e.bambulab.com/query.php` into the config dir cache.
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Cloud MQTT `pushall` using `cloud_user` / `cloud_token` / `cloud_serial` in the config dir.
+    CloudStatus,
     /// MQTT `gcode_line` (Developer Mode or signed Option B).
     Gcode {
         #[arg(long)]
@@ -426,6 +482,10 @@ fn run() -> Result<(), CliError> {
                 for line in creds.status_lines() {
                     println!("{line}");
                 }
+                let cloud = load_cloud_session(&dir).unwrap_or_default();
+                for line in cloud.status_lines() {
+                    println!("{line}");
+                }
             }
         },
         Commands::Device { command } => match command {
@@ -447,14 +507,23 @@ fn run() -> Result<(), CliError> {
                 let backend = lan_backend(host, code, serial)?;
                 let st = block_on(backend.status())?;
                 println!(
-                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}  developer_mode={}",
+                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}  developer_mode={}  {}%  layer={}/{}  eta={}m  state={}  wifi={}",
                     st.serial,
                     st.name,
                     st.nozzle_temp_c,
                     st.bed_temp_c,
                     st.online,
-                    st.developer_mode
+                    st.developer_mode,
+                    st.mc_percent,
+                    st.layer_num,
+                    st.total_layer_num,
+                    st.mc_remaining_time_min,
+                    st.gcode_state,
+                    st.wifi_signal
                 );
+                for hms in &st.hms {
+                    println!("hms {}", hms.long_error_code());
+                }
             }
             DeviceCommand::Send {
                 file,
@@ -462,6 +531,7 @@ fn run() -> Result<(), CliError> {
                 code,
                 serial,
                 name,
+                ams,
             } => {
                 let gcode = std::fs::read_to_string(&file)?;
                 let filename = name.unwrap_or_else(|| {
@@ -470,9 +540,73 @@ fn run() -> Result<(), CliError> {
                         .unwrap_or("job.gcode")
                         .to_string()
                 });
-                let backend = lan_backend(host, code, serial)?;
+                let mapping = parse_ams_mapping(ams.as_deref())?;
+                println!("ams_mapping={mapping:?}");
+                let mut backend = lan_backend(host, code, serial)?;
+                backend = backend.with_ams_mapping(mapping);
                 block_on(backend.start_print(PrintJob { filename, gcode }))?;
                 println!("print command sent");
+            }
+            DeviceCommand::Pause { host, code, serial } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.pause())?;
+                println!("pause sent");
+            }
+            DeviceCommand::Resume { host, code, serial } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.resume())?;
+                println!("resume sent");
+            }
+            DeviceCommand::Stop { host, code, serial } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.stop())?;
+                println!("stop sent");
+            }
+            DeviceCommand::Speed {
+                host,
+                code,
+                serial,
+                level,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.set_print_speed(level))?;
+                println!("print_speed {level} sent");
+            }
+            DeviceCommand::Hms {
+                host,
+                code,
+                serial,
+                refresh,
+            } => {
+                let dir = default_config_dir();
+                if refresh {
+                    refresh_catalog(&dir, "en")
+                        .map_err(|err| CliError::Message(err.to_string()))?;
+                    println!("HMS catalog cached under {}/hms/", dir.display());
+                }
+                let backend = lan_backend(host, code, serial)?;
+                let st = block_on(backend.status())?;
+                let catalog = load_cached_catalog(&dir, "en");
+                if st.hms.is_empty() {
+                    println!("no HMS items");
+                }
+                for hms in &st.hms {
+                    println!("{}", describe_hms(catalog.as_ref(), *hms, "en"));
+                }
+            }
+            DeviceCommand::CloudStatus => {
+                let backend = CloudBackend::from_config_dir(default_config_dir())
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                let st = block_on(backend.status())?;
+                println!(
+                    "cloud {}  {}  {}%  state={}  layer={}/{}",
+                    st.serial,
+                    st.name,
+                    st.mc_percent,
+                    st.gcode_state,
+                    st.layer_num,
+                    st.total_layer_num
+                );
             }
             DeviceCommand::Gcode {
                 host,
@@ -573,6 +707,19 @@ pub fn slice_file(
     };
     tracing::info!("sliced {} layers ({backend})", sliced.layers.len());
     Ok(write_gcode(settings, &sliced)?)
+}
+
+fn parse_ams_mapping(raw: Option<&str>) -> Result<Vec<i32>, CliError> {
+    let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
+    raw.split(',')
+        .map(|p| {
+            p.trim()
+                .parse::<i32>()
+                .map_err(|_| CliError::Message(format!("invalid AMS mapping '{p}'")))
+        })
+        .collect()
 }
 
 fn lan_backend(host: String, code: String, serial: String) -> Result<LanBackend, CliError> {

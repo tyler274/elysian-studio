@@ -186,6 +186,8 @@ pub struct ModelVolume {
     pub triangle_color: Vec<String>,
     /// Extra `<metadata key>` on this part (`volume.config` in C++).
     pub config: BTreeMap<String, String>,
+    /// UI hide: skipped at slice time.
+    pub hidden: bool,
 }
 
 impl ModelVolume {
@@ -201,6 +203,7 @@ impl ModelVolume {
             triangle_fuzzy_skin: Vec::new(),
             triangle_color: Vec::new(),
             config: BTreeMap::new(),
+            hidden: false,
         }
     }
 
@@ -300,6 +303,9 @@ impl ModelObject {
         let volumes = self.volumes_or_mesh();
         let mut out = TriangleMesh::default();
         for vol in &volumes {
+            if vol.hidden {
+                continue;
+            }
             if vol.volume_type.is_model_part() {
                 out.append(&vol.mesh);
             }
@@ -379,6 +385,9 @@ impl Model {
             };
             for inst in instances {
                 for mut vol in volumes.clone() {
+                    if vol.hidden {
+                        continue;
+                    }
                     if inst.offset != Vec3::ZERO {
                         vol.mesh.translate(inst.offset);
                     }
@@ -396,6 +405,9 @@ impl Model {
                 continue;
             };
             let base = object.printable_mesh();
+            if object.volumes.iter().all(|v| v.hidden) && !object.volumes.is_empty() {
+                continue;
+            }
             if object.instances.is_empty() {
                 out.append(&base);
                 continue;

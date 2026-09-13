@@ -65,6 +65,24 @@ impl TriangleMesh {
         hit
     }
 
+    /// Triangle indices whose centroids lie within `radius` of `point`.
+    pub fn triangles_near(&self, point: Vec3, radius: f32) -> Vec<usize> {
+        let r2 = radius.max(0.0) * radius.max(0.0);
+        self.indices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, idx)| {
+                let [a, b, c] = self.triangle(*idx);
+                let centroid = (a + b + c) / 3.0;
+                if centroid.distance_squared(point) <= r2 {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn translate(&mut self, delta: Vec3) {
         for v in &mut self.vertices {
             *v += delta;

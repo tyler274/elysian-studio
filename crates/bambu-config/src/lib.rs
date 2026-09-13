@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 pub use bbl::{
     apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, config_block_gcode,
-    flatten_bbl_profile, is_region_key, load_bbl_process, overlay_bbl_profile,
+    flatten_bbl_profile, is_region_key, list_bbl_profiles, load_bbl_process, overlay_bbl_profile,
     project_settings_json, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
-    ConfigError,
+    BblProfileEntry, BblProfileKind, ConfigError,
 };
 pub use placeholder::{expand_placeholders, PlaceholderContext};
 
@@ -2800,6 +2800,29 @@ impl SliceSettings {
     /// C++ `nozzle_diameter.size()`.
     pub fn nozzle_count(&self) -> usize {
         self.nozzle_diameters_mm.len().max(1)
+    }
+
+    /// Square bed edge from `printable_area`, else 256 mm (X1/P1).
+    pub fn bed_size_mm(&self) -> f32 {
+        if self.printable_area.len() < 2 {
+            return 256.0;
+        }
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for &(x, y) in &self.printable_area {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        let edge = (max_x - min_x).max(max_y - min_y);
+        if edge.is_finite() && edge > 1.0 {
+            edge as f32
+        } else {
+            256.0
+        }
     }
 
     /// C++ `first_filaments` after `match_physical_extruder_for_each_filament`.

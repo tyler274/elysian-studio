@@ -16,7 +16,10 @@ use crate::SliceSettings;
 pub use emit::{config_block_gcode, project_settings_json};
 pub use inherit::{flatten_bbl_profile, write_flattened_bbl_profile};
 pub use parse::{apply_config_pairs, is_region_key};
-pub use paths::{bbl_oracle_paths, bbl_resources_dir, BblOraclePaths};
+pub use paths::{
+    bbl_oracle_paths, bbl_resources_dir, list_bbl_profiles, BblOraclePaths, BblProfileEntry,
+    BblProfileKind,
+};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {

@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bambu_device::{AmsState, MachineState};
+use bambu_device::{AmsState, AmsTray, HmsCode, MachineState};
 use serde_json::Value;
 
 pub const LAN_MQTT_PORT: u16 = 8883;
@@ -51,6 +51,54 @@ pub fn pushall(sequence_id: u64) -> String {
             "command": "pushall",
             "version": 1,
             "push_target": 1
+        }
+    })
+    .to_string()
+}
+
+fn print_command(sequence_id: u64, command: &str, param: &str) -> String {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id.to_string(),
+            "command": command,
+            "param": param,
+        }
+    })
+    .to_string()
+}
+
+/// C++ `MachineObject::command_task_pause`.
+pub fn pause(sequence_id: u64) -> String {
+    print_command(sequence_id, "pause", "")
+}
+
+/// C++ `MachineObject::command_task_resume`.
+pub fn resume(sequence_id: u64) -> String {
+    print_command(sequence_id, "resume", "")
+}
+
+/// C++ `MachineObject::command_task_abort`.
+pub fn stop(sequence_id: u64) -> String {
+    print_command(sequence_id, "stop", "")
+}
+
+/// C++ `MachineObject::command_set_printing_speed` (`param` is the level int).
+pub fn print_speed(sequence_id: u64, level: u8) -> String {
+    print_command(sequence_id, "print_speed", &level.to_string())
+}
+
+/// C++ `DevLamp::command_set_chamber_light`.
+pub fn chamber_light(sequence_id: u64, on: bool) -> String {
+    serde_json::json!({
+        "system": {
+            "command": "ledctrl",
+            "led_node": "chamber_light",
+            "sequence_id": sequence_id.to_string(),
+            "led_mode": if on { "on" } else { "off" },
+            "led_on_time": 500,
+            "led_off_time": 500,
+            "loop_times": 0,
+            "interval_time": 0
         }
     })
     .to_string()
@@ -171,7 +219,42 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
         bed_temp_c: number(print, "bed_temper"),
         fun,
         developer_mode: developer_mode_from_fun(fun),
+        mc_percent: uint(print, "mc_percent") as u8,
+        layer_num: uint(print, "layer_num"),
+        total_layer_num: uint(print, "total_layer_num"),
+        mc_remaining_time_min: uint(print, "mc_remaining_time"),
+        gcode_state: print
+            .get("gcode_state")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        wifi_signal: print
+            .get("wifi_signal")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        hms: parse_hms_items(print.get("hms")),
     })
+}
+
+/// C++ `DevHMS::ParseHMSItems` on `print.hms`.
+pub fn parse_hms_items(hms: Option<&Value>) -> Vec<HmsCode> {
+    let Some(arr) = hms.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let attr = uint(item, "attr");
+            let code = uint(item, "code");
+            if attr == 0 && code == 0 && item.get("attr").is_none() {
+                return None;
+            }
+            Some(HmsCode {
+                attr,
+                code,
+            })
+        })
+        .collect()
 }
 
 pub fn parse_ams(payload: &str) -> Option<AmsState> {
@@ -198,7 +281,7 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
                         .or_else(|| x.as_u64().map(|n| n as u8))
                 })
                 .unwrap_or(trays.len() as u8);
-            trays.push(bambu_device::AmsTray {
+            trays.push(AmsTray {
                 id,
                 filament_type: tray
                     .get("tray_type")
@@ -215,6 +298,7 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
                         .map(|n| n as u8)
                         .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
                 }),
+                humidity: optional_u8(tray, "humidity"),
             });
         }
     }
@@ -231,12 +315,35 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
                 .collect()
         })
         .unwrap_or_default();
+    let humidity = slots
+        .iter()
+        .find_map(|unit| optional_u8(unit, "humidity"))
+        .or_else(|| optional_u8(ams, "humidity"));
     Some(AmsState {
         slot_count: trays.len().max(slots.len()) as u8,
         active_slot: active,
         trays,
         mapping,
+        humidity,
     })
+}
+
+fn optional_u8(v: &Value, key: &str) -> Option<u8> {
+    v.get(key).and_then(|n| {
+        n.as_u64()
+            .map(|n| n as u8)
+            .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+
+fn uint(v: &Value, key: &str) -> u32 {
+    v.get(key)
+        .and_then(|n| {
+            n.as_u64()
+                .or_else(|| n.as_i64().map(|i| i.max(0) as u64))
+                .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+        })
+        .unwrap_or(0) as u32
 }
 
 fn number(v: &Value, key: &str) -> f32 {
@@ -331,5 +438,75 @@ mod tests {
         let st = parse_push_status(json).unwrap();
         assert!(!st.developer_mode);
         assert_eq!(st.fun, 0x1B3F_F9CB7);
+    }
+
+    #[test]
+    fn pause_resume_stop_match_studio() {
+        for (builder, cmd) in [
+            (pause as fn(u64) -> String, "pause"),
+            (resume, "resume"),
+            (stop, "stop"),
+        ] {
+            let v: Value = serde_json::from_str(&builder(20001)).unwrap();
+            assert_eq!(v["print"]["command"], cmd);
+            assert_eq!(v["print"]["param"], "");
+            assert_eq!(v["print"]["sequence_id"], "20001");
+        }
+        let speed: Value = serde_json::from_str(&print_speed(20002, 2)).unwrap();
+        assert_eq!(speed["print"]["command"], "print_speed");
+        assert_eq!(speed["print"]["param"], "2");
+        let light: Value = serde_json::from_str(&chamber_light(20003, true)).unwrap();
+        assert_eq!(light["system"]["command"], "ledctrl");
+        assert_eq!(light["system"]["led_node"], "chamber_light");
+        assert_eq!(light["system"]["led_mode"], "on");
+    }
+
+    #[test]
+    fn parses_progress_and_hms() {
+        let json = r#"{
+            "print": {
+                "command": "push_status",
+                "nozzle_temper": 0,
+                "bed_temper": 0,
+                "mc_percent": 42,
+                "layer_num": 12,
+                "total_layer_num": 80,
+                "mc_remaining_time": 35,
+                "gcode_state": "RUNNING",
+                "wifi_signal": "-44dBm",
+                "hms": [{"attr": 117440768, "code": 65537}]
+            }
+        }"#;
+        let st = parse_push_status(json).unwrap();
+        assert_eq!(st.mc_percent, 42);
+        assert_eq!(st.layer_num, 12);
+        assert_eq!(st.total_layer_num, 80);
+        assert_eq!(st.mc_remaining_time_min, 35);
+        assert_eq!(st.gcode_state, "RUNNING");
+        assert_eq!(st.wifi_signal, "-44dBm");
+        assert_eq!(st.hms.len(), 1);
+        assert_eq!(st.hms[0].long_error_code(), "0700010000010001");
+    }
+
+    #[test]
+    fn parse_ams_reads_humidity() {
+        let json = r#"{
+            "print": {
+                "ams": {
+                    "tray_now": "1",
+                    "humidity": "2",
+                    "ams": [{
+                        "id": "0",
+                        "humidity": "3",
+                        "tray": [
+                            {"id": "0", "tray_type": "PLA", "tray_color": "FFFFFFFF", "remain": 80, "humidity": "4"}
+                        ]
+                    }]
+                }
+            }
+        }"#;
+        let ams = parse_ams(json).unwrap();
+        assert_eq!(ams.humidity, Some(3));
+        assert_eq!(ams.trays[0].humidity, Some(4));
     }
 }

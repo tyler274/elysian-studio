@@ -76,7 +76,15 @@ cargo run -p bambu-cli -- device send cube.gcode --host 192.168.1.42 --code 1234
 cargo run -p bambu-cli -- device gcode --host 192.168.1.42 --code 12345678 --line G28
 ```
 
-`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Serial can be omitted: the MQTT certificate CN is used. `push_status.fun` bit 29 selects Developer Mode vs secured: secured printers get `url_enc`/`param_enc` (device-cert RSA) and optional `app_cert_install` when `slicer_cert.pem` + `slicer_crl.pem` are present.
+`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Serial can be omitted: the MQTT certificate CN is used. `push_status.fun` bit 29 selects Developer Mode vs secured: secured printers get `url_enc`/`param_enc` (device-cert RSA) and optional `app_cert_install` when `slicer_cert.pem` + `slicer_crl.pem` are present. LAN is the default send path. `device pause|resume|stop` publish the same `print.command` JSON as C++ Studio. Optional `--ams 0,1` on `send` sets `ams_mapping`.
+
+HMS text comes from MQTT `print.hms` plus a cached catalog from `https://e.bambulab.com/query.php` (`$XDG_CONFIG_HOME/bambu-studio-rs/hms/`). Offline, the UI/CLI show the raw long error code. Optional **cloud MQTT** uses a user token you store as `cloud_user`, `cloud_token`, `cloud_region`, and `cloud_serial` in that config dir (OpenBambuAPI / Home Assistant style). This workspace still does **not** dlopen `libbambu_networking` and does **not** ship PEMs. Cloud file-upload print is out of scope; FTPS + `project_file` remains the send path.
+
+```bash
+cargo run -p bambu-cli -- device pause --host 192.168.1.42 --code 12345678
+cargo run -p bambu-cli -- device hms --host 192.168.1.42 --code 12345678 --refresh
+cargo run -p bambu-cli -- device cloud-status
+```
 
 ```bash
 cargo run -p bambu-cli -- device camera --host 192.168.1.42 --code 12345678 --output /tmp/chamber.jpg

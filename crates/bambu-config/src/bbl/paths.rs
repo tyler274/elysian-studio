@@ -25,6 +25,59 @@ pub struct BblOraclePaths {
     pub filament: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BblProfileKind {
+    Process,
+    Filament,
+    Machine,
+}
+
+impl BblProfileKind {
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Filament => "filament",
+            Self::Machine => "machine",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BblProfileEntry {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// JSON files under `profiles/BBL/{process,filament,machine}`.
+pub fn list_bbl_profiles(kind: BblProfileKind) -> Vec<BblProfileEntry> {
+    let Some(root) = bbl_resources_dir() else {
+        return Vec::new();
+    };
+    let dir = root.join("profiles/BBL").join(kind.dir_name());
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<BblProfileEntry> = entries
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .map(|e| {
+            let path = e.path();
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("profile")
+                .to_string();
+            BblProfileEntry { name, path }
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 pub fn bbl_oracle_paths() -> Option<BblOraclePaths> {
     let bbl = bbl_resources_dir()?.join("profiles/BBL");
     let paths = BblOraclePaths {
