@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod monitor;
+mod sidebar;
+
 use bambu_alloc as _;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,15 +20,15 @@ use bambu_gpu::{
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
-    capture_chamber, describe_hms, load_cached_catalog, refresh_catalog, ChamberCapture,
-    CloudBackend, LanBackend,
+    describe_hms, load_cached_catalog, load_cloud_session, load_lan_codes, refresh_catalog,
+    save_cloud_session, CloudApi, CloudBackend, CloudDevice, LanBackend, LoginResult,
+    StudioPrinter,
 };
 use bambu_slicer::check_print_path_conflicts;
-use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, shader, slider, text,
-    text_input,
-};
+use iced::widget::{button, checkbox, column, container, row, shader, text};
 use iced::{Color, Element, Fill, Subscription, Task, Theme};
+
+use monitor::JpegThumb;
 
 fn main() -> iced::Result {
     reexec_with_vulkan_if_needed();
@@ -115,7 +118,18 @@ struct App {
     ams: AmsState,
     hms_lines: Vec<String>,
     live_monitor: bool,
-    use_cloud: bool,
+    send_via: SendVia,
+    cloud_user: String,
+    cloud_region: String,
+    has_bearer: bool,
+    imported_printers: Vec<StudioPrinter>,
+    cloud_devices: Vec<CloudDevice>,
+    selected_device: Option<String>,
+    login_account: String,
+    login_password: String,
+    login_code: String,
+    chamber_thumb: Option<JpegThumb>,
+    camera_note: String,
 }
 
 #[derive(Debug, Clone)]
@@ -133,7 +147,7 @@ enum Message {
     Send,
     Sent(Result<(), String>),
     Chamber,
-    ChamberShot(Result<String, String>),
+    ChamberShot(Result<ChamberResult, String>),
     WallLoops(u32),
     Infill(f64),
     LayerHeight(f64),
@@ -158,7 +172,19 @@ enum Message {
     Stop,
     PrintControl(Result<String, String>),
     LiveMonitor(bool),
-    UseCloud(bool),
+    SendVia(SendVia),
+    ImportStudio,
+    StudioImported(Result<Box<StudioImportUi>, String>),
+    RefreshDevices,
+    DevicesLoaded(Result<Vec<CloudDevice>, String>),
+    PickDevice(String),
+    LoginAccount(String),
+    LoginPassword(String),
+    LoginCode(String),
+    CloudLogin,
+    CloudLogged(Result<String, String>),
+    PrintSpeed(u8),
+    ChamberLight(bool),
     ProcessProfile(String),
     FilamentProfile(String),
     MachineProfile(String),
@@ -185,12 +211,51 @@ struct MonitorSnapshot {
     hms_lines: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SendVia {
+    #[default]
+    LanFtps,
+    CloudUpload,
+}
+
+impl SendVia {
+    fn label(self) -> &'static str {
+        match self {
+            SendVia::LanFtps => "LAN FTPS",
+            SendVia::CloudUpload => "Cloud upload",
+        }
+    }
+}
+
+impl std::fmt::Display for SendVia {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ChamberResult {
+    Jpeg { bytes: usize, thumb: JpegThumb },
+    Rtsps { detail: String },
+}
+
+#[derive(Debug, Clone)]
+struct StudioImportUi {
+    user_id: String,
+    region: String,
+    has_token: bool,
+    printers: Vec<StudioPrinter>,
+    default_serial: String,
+    status: String,
+    discovered: Vec<bambu_protocol::DiscoveredPrinter>,
+}
+
 impl App {
     fn new(adapter: String) -> Self {
         let settings = default_slice_settings();
         let bed = settings.bed_size_mm();
         let scene = ViewportScene::with_cube_on_bed(adapter.clone(), bed);
-        Self {
+        let mut app = Self {
             adapter,
             scene,
             status: format!("20mm cube on {bed:.0}mm bed"),
@@ -219,7 +284,98 @@ impl App {
             ams: AmsState::default(),
             hms_lines: Vec::new(),
             live_monitor: false,
-            use_cloud: false,
+            send_via: SendVia::LanFtps,
+            cloud_user: String::new(),
+            cloud_region: String::new(),
+            has_bearer: false,
+            imported_printers: Vec::new(),
+            cloud_devices: Vec::new(),
+            selected_device: None,
+            login_account: String::new(),
+            login_password: String::new(),
+            login_code: String::new(),
+            chamber_thumb: None,
+            camera_note: String::new(),
+        };
+        app.load_account_from_disk();
+        app
+    }
+
+    fn load_account_from_disk(&mut self) {
+        let dir = bambu_protocol::default_config_dir();
+        if let Ok(session) = load_cloud_session(&dir) {
+            self.cloud_user = session.user_id;
+            self.cloud_region = session.region;
+            self.has_bearer = !session.access_token.is_empty();
+            if self.serial.is_empty() {
+                self.serial = session.serial;
+            }
+        }
+        let codes = load_lan_codes(&dir);
+        if self.access_code.is_empty() {
+            if let Some(code) = codes.get(&self.serial) {
+                self.access_code = code.clone();
+            }
+        }
+        self.imported_printers = codes
+            .into_iter()
+            .map(|(serial, access_code)| StudioPrinter {
+                serial,
+                access_code,
+            })
+            .collect();
+    }
+
+    fn apply_studio_import(&mut self, imported: StudioImportUi) {
+        self.imported_printers = imported.printers;
+        self.load_account_from_disk();
+        if self.serial.is_empty() {
+            self.serial = imported.default_serial.clone();
+        }
+        let serial = self.serial.clone();
+        self.apply_device(&serial);
+        if self.host.is_empty() {
+            if let Some(found) = imported
+                .discovered
+                .iter()
+                .find(|p| p.dev_id == serial)
+                .or_else(|| imported.discovered.first())
+            {
+                self.host = found.dev_ip.clone();
+                if self.serial.is_empty() {
+                    self.serial = found.dev_id.clone();
+                    let serial = self.serial.clone();
+                    self.apply_device(&serial);
+                }
+            }
+        }
+        self.cloud_user = if imported.user_id.is_empty() {
+            self.cloud_user.clone()
+        } else {
+            imported.user_id
+        };
+        if !imported.region.is_empty() {
+            self.cloud_region = imported.region;
+        }
+        self.has_bearer = imported.has_token || self.has_bearer;
+        self.status = imported.status;
+    }
+
+    fn apply_device(&mut self, serial: &str) {
+        if serial.is_empty() {
+            return;
+        }
+        self.serial = serial.to_string();
+        self.selected_device = Some(serial.to_string());
+        if let Some(p) = self.imported_printers.iter().find(|p| p.serial == serial) {
+            self.access_code = p.access_code.clone();
+        } else if let Some(code) = load_lan_codes(bambu_protocol::default_config_dir()).get(serial)
+        {
+            self.access_code = code.clone();
+        }
+        if let Ok(mut session) = load_cloud_session(bambu_protocol::default_config_dir()) {
+            session.serial = serial.to_string();
+            let _ = save_cloud_session(bambu_protocol::default_config_dir(), &session);
         }
     }
 
@@ -313,6 +469,152 @@ impl App {
                 }
                 Err(err) => self.status = format!("extract failed: {err}"),
             },
+            Message::ImportStudio => {
+                self.status = "Import Studio…".into();
+                return Task::perform(
+                    async {
+                        std::thread::spawn(|| {
+                            let imported = bambu_protocol::import_studio(None, None)
+                                .map_err(|err| err.to_string())?;
+                            let discovered =
+                                bambu_protocol::discover(std::time::Duration::from_secs(3))
+                                    .unwrap_or_default();
+                            let status = imported
+                                .status_lines()
+                                .into_iter()
+                                .take(8)
+                                .collect::<Vec<_>>()
+                                .join(" · ");
+                            Ok(Box::new(StudioImportUi {
+                                user_id: imported.user_id,
+                                region: imported.region,
+                                has_token: imported.has_token,
+                                printers: imported.printers,
+                                default_serial: imported.default_serial,
+                                status,
+                                discovered,
+                            }))
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("import thread panicked".into()))
+                    },
+                    Message::StudioImported,
+                );
+            }
+            Message::StudioImported(Ok(imported)) => {
+                self.apply_studio_import(*imported);
+            }
+            Message::StudioImported(Err(err)) => {
+                self.status = format!("import failed: {err}");
+            }
+            Message::RefreshDevices => {
+                self.status = "cloud bind list…".into();
+                return Task::perform(
+                    async {
+                        std::thread::spawn(|| {
+                            let dir = bambu_protocol::default_config_dir();
+                            let session =
+                                load_cloud_session(&dir).map_err(|err| err.to_string())?;
+                            if !session.has_bearer() {
+                                return Err("cloud_token missing".into());
+                            }
+                            let mut api = CloudApi::new(
+                                &session.region,
+                                &session.access_token,
+                                &session.refresh_token,
+                            );
+                            let devices = api
+                                .with_retry(|api| api.list_devices())
+                                .map_err(|err| err.to_string())?;
+                            if api.access_token != session.access_token {
+                                let mut next = session.clone();
+                                next.access_token = api.access_token;
+                                next.refresh_token = api.refresh_token;
+                                let _ = save_cloud_session(&dir, &next);
+                            }
+                            Ok(devices)
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("devices thread panicked".into()))
+                    },
+                    Message::DevicesLoaded,
+                );
+            }
+            Message::DevicesLoaded(Ok(devices)) => {
+                self.cloud_devices = devices;
+                self.status = format!("{} cloud device(s)", self.cloud_devices.len());
+            }
+            Message::DevicesLoaded(Err(err)) => {
+                self.status = format!("devices: {err}");
+            }
+            Message::PickDevice(label) => {
+                if let Some(dev) = self
+                    .cloud_devices
+                    .iter()
+                    .find(|d| d.label() == label)
+                    .cloned()
+                {
+                    self.apply_device(&dev.dev_id);
+                }
+            }
+            Message::LoginAccount(s) => self.login_account = s,
+            Message::LoginPassword(s) => self.login_password = s,
+            Message::LoginCode(s) => self.login_code = s,
+            Message::CloudLogin => {
+                let account = self.login_account.clone();
+                let password = self.login_password.clone();
+                let code = self.login_code.clone();
+                let region = if self.cloud_region.is_empty() {
+                    "us".into()
+                } else {
+                    self.cloud_region.clone()
+                };
+                self.status = "cloud login…".into();
+                return Task::perform(
+                    async move {
+                        std::thread::spawn(move || {
+                            let code_opt = if code.is_empty() { None } else { Some(code) };
+                            let result =
+                                CloudApi::login(&region, &account, &password, code_opt.as_deref())
+                                    .map_err(|err| err.to_string())?;
+                            match result {
+                                LoginResult::NeedsCode { login_type } => {
+                                    Err(format!("enter email code ({login_type})"))
+                                }
+                                LoginResult::Tokens {
+                                    access_token,
+                                    refresh_token,
+                                    user_id,
+                                } => {
+                                    let dir = bambu_protocol::default_config_dir();
+                                    let mut session = load_cloud_session(&dir).unwrap_or_default();
+                                    session.region = region;
+                                    session.access_token = access_token;
+                                    if !refresh_token.is_empty() {
+                                        session.refresh_token = refresh_token;
+                                    }
+                                    if !user_id.is_empty() {
+                                        session.user_id = user_id;
+                                    }
+                                    save_cloud_session(&dir, &session)
+                                        .map_err(|err| err.to_string())?;
+                                    Ok("logged in (token stored, not shown)".into())
+                                }
+                            }
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("login thread panicked".into()))
+                    },
+                    Message::CloudLogged,
+                );
+            }
+            Message::CloudLogged(Ok(msg)) => {
+                self.load_account_from_disk();
+                self.login_password.clear();
+                self.login_code.clear();
+                self.status = msg;
+            }
+            Message::CloudLogged(Err(err)) => self.status = format!("login: {err}"),
             Message::Discover => {
                 self.status = "SSDP discover on UDP 2021…".into();
                 return Task::perform(
@@ -352,31 +654,61 @@ impl App {
                     self.status = "slice before send".into();
                     return Task::none();
                 };
-                if self.host.is_empty() || self.access_code.is_empty() {
+                let send_via = self.send_via;
+                if send_via == SendVia::LanFtps
+                    && (self.host.is_empty() || self.access_code.is_empty())
+                {
                     self.status = "printer IP and LAN access code required".into();
+                    return Task::none();
+                }
+                if send_via == SendVia::CloudUpload && !self.has_bearer {
+                    self.status =
+                        "cloud upload needs a Bearer token (Import Studio or login)".into();
                     return Task::none();
                 }
                 let host = self.host.clone();
                 let code = self.access_code.clone();
                 let serial = self.serial.clone();
                 let mapping = self.settings.filament_map.clone();
-                self.status = format!("FTPS + MQTT to {host}…");
+                self.status = match send_via {
+                    SendVia::LanFtps => format!("FTPS + MQTT to {host}…"),
+                    SendVia::CloudUpload => "cloud upload + MQTT project_file…".into(),
+                };
                 return Task::perform(
                     async move {
-                        let creds =
-                            bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
+                        match send_via {
+                            SendVia::CloudUpload => {
+                                let backend = CloudBackend::from_config_dir(
+                                    bambu_protocol::default_config_dir(),
+                                )
+                                .map_err(|err| err.to_string())?
+                                .with_ams_mapping(mapping);
+                                backend
+                                    .start_print(PrintJob {
+                                        filename: "plater.gcode".into(),
+                                        gcode,
+                                    })
+                                    .await
+                                    .map_err(|err| err.to_string())
+                            }
+                            SendVia::LanFtps => {
+                                let creds = bambu_protocol::load_from_dir(
+                                    bambu_protocol::default_config_dir(),
+                                )
                                 .unwrap_or_else(|_| Default::default());
-                        let backend = LanBackend::new(host, code)
-                            .with_serial(serial)
-                            .with_credentials(creds)
-                            .with_ams_mapping(mapping);
-                        backend
-                            .start_print(PrintJob {
-                                filename: "plater.gcode".into(),
-                                gcode,
-                            })
-                            .await
-                            .map_err(|err| err.to_string())
+                                let backend = LanBackend::new(host, code)
+                                    .with_serial(serial)
+                                    .with_credentials(creds)
+                                    .with_ams_mapping(mapping);
+                                backend
+                                    .start_print(PrintJob {
+                                        filename: "plater.gcode".into(),
+                                        gcode,
+                                    })
+                                    .await
+                                    .map_err(|err| err.to_string())
+                            }
+                        }
                     },
                     Message::Sent,
                 );
@@ -397,30 +729,26 @@ impl App {
                 self.status = format!("chamber JPEG :6000 / RTSPS :322 {host}…");
                 return Task::perform(
                     async move {
-                        std::thread::spawn(move || match capture_chamber(&host, &code) {
-                            Ok(ChamberCapture::Jpeg(jpeg)) => {
-                                let frame = bambu_protocol::jpeg_to_frame(&jpeg)
-                                    .map_err(|err| err.to_string())?;
-                                Ok(format!(
-                                    "chamber JPEG {}×{} ({} bytes)",
-                                    frame.width,
-                                    frame.height,
-                                    jpeg.len()
-                                ))
-                            }
-                            Ok(ChamberCapture::Rtsps { url, options }) => {
-                                let first = options.lines().next().unwrap_or("RTSPS");
-                                Ok(format!("chamber RTSPS {url} · {first}"))
-                            }
-                            Err(err) => Err(err.to_string()),
-                        })
-                        .join()
-                        .unwrap_or_else(|_| Err("camera thread panicked".into()))
+                        std::thread::spawn(move || monitor::grab_chamber(host, code))
+                            .join()
+                            .unwrap_or_else(|_| Err("camera thread panicked".into()))
                     },
                     Message::ChamberShot,
                 );
             }
-            Message::ChamberShot(Ok(msg)) => self.status = msg,
+            Message::ChamberShot(Ok(ChamberResult::Jpeg { bytes, thumb })) => {
+                self.status = format!(
+                    "chamber JPEG {}×{} ({} bytes)",
+                    thumb.width, thumb.height, bytes
+                );
+                self.camera_note.clear();
+                self.chamber_thumb = Some(thumb);
+            }
+            Message::ChamberShot(Ok(ChamberResult::Rtsps { detail })) => {
+                self.chamber_thumb = None;
+                self.camera_note = detail.clone();
+                self.status = detail;
+            }
             Message::ChamberShot(Err(err)) => {
                 self.status = format!("camera failed: {err}");
             }
@@ -498,6 +826,8 @@ impl App {
             Message::Pause => return self.run_print_cmd(PrintCmd::Pause),
             Message::Resume => return self.run_print_cmd(PrintCmd::Resume),
             Message::Stop => return self.run_print_cmd(PrintCmd::Stop),
+            Message::PrintSpeed(level) => return self.run_print_cmd(PrintCmd::Speed(level)),
+            Message::ChamberLight(on) => return self.run_print_cmd(PrintCmd::Light(on)),
             Message::PrintControl(Ok(msg)) => {
                 self.status = msg;
                 return self.refresh_monitor();
@@ -509,7 +839,7 @@ impl App {
                     return self.refresh_monitor();
                 }
             }
-            Message::UseCloud(v) => self.use_cloud = v,
+            Message::SendVia(v) => self.send_via = v,
             Message::ProcessProfile(name) => {
                 if let Some(path) = self
                     .process_profiles
@@ -612,207 +942,9 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let max_layer = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as f64;
-        let max_move = self.scene.toolpaths.vertices.len().saturating_sub(1) as f64;
-        let plate_row = self.plate_buttons();
-        let process_names: Vec<String> = self
-            .process_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-        let filament_names: Vec<String> = self
-            .filament_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-        let machine_names: Vec<String> = self
-            .machine_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-        let preview_z = self.scene.preview_z();
-        let layer_frac = if max_layer <= 0.0 {
-            1.0
-        } else {
-            f64::from(self.scene.preview_layer) / max_layer
-        };
-        let eta = self
-            .estimated_seconds
-            .map(|s| format_eta(s * layer_frac))
-            .unwrap_or_else(|| "—".into());
-        let sidebar = scrollable(
-            column![
-                text("Bambu Studio").size(22),
-                text("Rust rewrite · iced + wgpu").size(14),
-                text(format!("GPU: {}", self.adapter)).size(13),
-                text("Profiles").size(16),
-                pick_list(
-                    process_names,
-                    self.process_name.clone(),
-                    Message::ProcessProfile
-                )
-                .placeholder("process JSON"),
-                pick_list(
-                    filament_names,
-                    self.filament_name.clone(),
-                    Message::FilamentProfile
-                )
-                .placeholder("filament JSON"),
-                pick_list(
-                    machine_names,
-                    self.machine_name.clone(),
-                    Message::MachineProfile
-                )
-                .placeholder("machine JSON"),
-                text(format!("Bed {:.0} mm", self.scene.bed_mm)).size(12),
-                text("Process").size(16),
-                row![
-                    button("-").on_press(Message::WallLoops(
-                        self.settings.wall_loops.saturating_sub(1).max(1)
-                    )),
-                    text(format!("Walls {}", self.settings.wall_loops)).size(13),
-                    button("+")
-                        .on_press(Message::WallLoops((self.settings.wall_loops + 1).min(10))),
-                ]
-                .spacing(6),
-                text(format!("Layer {:.2} mm", self.settings.layer_height_mm)).size(13),
-                slider(
-                    0.08..=0.32,
-                    self.settings.layer_height_mm,
-                    Message::LayerHeight
-                )
-                .step(0.01),
-                text(format!(
-                    "Infill {:.0}% {}",
-                    self.settings.infill_density * 100.0,
-                    self.settings.infill_pattern.as_str()
-                ))
-                .size(13),
-                slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
-                checkbox(self.settings.enable_support)
-                    .label("Supports")
-                    .on_toggle(Message::EnableSupport),
-                text("Filament").size(16),
-                text(format!(
-                    "{} {} · {}°C · {} tool(s)",
-                    self.settings.filament_vendor,
-                    self.settings.filament_type,
-                    self.settings.temperature_c,
-                    self.settings.filament_count.max(1)
-                ))
-                .size(13),
-                text(format!("Nozzle {}°C", self.settings.temperature_c)).size(13),
-                slider(
-                    180.0..=280.0,
-                    f64::from(self.settings.temperature_c),
-                    Message::NozzleTemp,
-                )
-                .step(1.0),
-                text("Printer").size(16),
-                text(format!(
-                    "{} · {}",
-                    self.settings.printer_structure, self.settings.curr_bed_type
-                ))
-                .size(13),
-                checkbox(self.by_object)
-                    .label("By-object sequence")
-                    .on_toggle(Message::ByObject),
-                text("Plates").size(16),
-                plate_row,
-                text("Objects").size(16),
-                self.object_panel(),
-                text("Preview / G-code scrubber").size(16),
-                text(format!(
-                    "Layer {}  Z {:.2} mm  ~{eta}",
-                    self.scene.preview_layer + 1,
-                    if preview_z.is_finite() {
-                        preview_z
-                    } else {
-                        0.0
-                    }
-                ))
-                .size(12),
-                slider(
-                    0.0..=max_layer.max(1.0),
-                    f64::from(self.scene.preview_layer),
-                    |v| { Message::PreviewLayer(v as u32) }
-                )
-                .step(1.0),
-                slider(
-                    0.0..=max_move.max(1.0),
-                    f64::from(self.scene.preview_vertices),
-                    |v| Message::PreviewMove(v as u32)
-                )
-                .step(1.0),
-                text(role_legend()).size(11),
-                checkbox(self.scene.hide_infill)
-                    .label("Hide infill")
-                    .on_toggle(Message::HideInfill),
-                checkbox(self.scene.hide_support)
-                    .label("Hide support")
-                    .on_toggle(Message::HideSupport),
-                text("Paint (click triangle)").size(16),
-                checkbox(self.paint_blocker)
-                    .label("Blocker (else Enforcer)")
-                    .on_toggle(Message::PaintBlocker),
-                text(format!("Brush {:.1} mm", self.brush_mm)).size(12),
-                slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
-                    Message::BrushRadius(v as f32)
-                })
-                .step(0.5),
-                button("Paint support").on_press(Message::PaintSupport),
-                button("Paint seam").on_press(Message::PaintSeam),
-                button("Paint fuzzy").on_press(Message::PaintFuzzy),
-                button("Paint off").on_press(Message::PaintClear),
-                button("Open model").on_press(Message::OpenModel),
-                button("Calibration block").on_press(Message::Calibration),
-                button("Slice").on_press(Message::Slice),
-                button("Reset camera").on_press(Message::ResetCamera),
-                button("Extract keys").on_press(Message::ExtractKeys),
-                button("Discover printers").on_press(Message::Discover),
-                text_input("printer IP", &self.host).on_input(Message::Host),
-                text_input("LAN access code", &self.access_code)
-                    .secure(true)
-                    .on_input(Message::AccessCode),
-                text_input("serial (optional)", &self.serial).on_input(Message::Serial),
-                checkbox(self.use_cloud)
-                    .label("Cloud MQTT (token in config dir)")
-                    .on_toggle(Message::UseCloud),
-                checkbox(self.live_monitor)
-                    .label("Live monitor")
-                    .on_toggle(Message::LiveMonitor),
-                button("MQTT / AMS status").on_press(Message::RefreshStatus),
-                text(self.monitor_line()).size(12),
-                self.ams_chips(),
-                row![
-                    button("Pause").on_press(Message::Pause),
-                    button("Resume").on_press(Message::Resume),
-                    button("Stop").on_press(Message::Stop),
-                ]
-                .spacing(6),
-                text("HMS").size(16),
-                button("Refresh HMS catalog").on_press(Message::RefreshHms),
-                text(if self.hms_lines.is_empty() {
-                    "no HMS".into()
-                } else {
-                    self.hms_lines.join("\n")
-                })
-                .size(11),
-                button("Send last slice").on_press(Message::Send),
-                button("Chamber / RTSPS live").on_press(Message::Chamber),
-                text(&self.status).size(13),
-                text("Drag: orbit · Scroll: zoom · Click: paint").size(12),
-            ]
-            .spacing(8)
-            .padding(16)
-            .width(320),
-        )
-        .height(Fill);
-
         let viewport = shader(&self.scene).width(Fill).height(Fill);
-
         row![
-            container(sidebar)
+            container(self.sidebar())
                 .style(|_| container::Style {
                     background: Some(iced::Background::Color(Color::from_rgb(0.10, 0.11, 0.13))),
                     ..container::Style::default()
@@ -822,7 +954,6 @@ impl App {
         ]
         .into()
     }
-
     fn slice_current(&mut self) -> Task<Message> {
         self.settings.print_sequence = if self.by_object {
             String::from("by object")
@@ -1092,44 +1223,6 @@ impl App {
         col.spacing(4).into()
     }
 
-    fn ams_chips(&self) -> Element<'_, Message> {
-        let mut r = row![];
-        if self.settings.filament_map.is_empty() {
-            r = r.push(text("AMS map: —").size(11));
-        }
-        for (i, mapped) in self.settings.filament_map.iter().enumerate() {
-            r = r.push(
-                button(text(format!("F{}→T{mapped}", i + 1)).size(11))
-                    .on_press(Message::CycleAmsMap(i)),
-            );
-        }
-        r.spacing(4).into()
-    }
-
-    fn monitor_line(&self) -> String {
-        if self.mqtt_status.is_empty() {
-            return "AMS: —".into();
-        }
-        let humidity = self
-            .ams
-            .humidity
-            .map(|h| format!(" RH{h}"))
-            .unwrap_or_default();
-        format!(
-            "{} · {}% · L{}/{} · {}m · nozzle {:.0}°C{humidity}",
-            if self.machine.gcode_state.is_empty() {
-                "—"
-            } else {
-                self.machine.gcode_state.as_str()
-            },
-            self.machine.mc_percent,
-            self.machine.layer_num,
-            self.machine.total_layer_num,
-            self.machine.mc_remaining_time_min,
-            self.machine.nozzle_temp_c
-        )
-    }
-
     fn apply_named_profile(&mut self, kind: BblProfileKind, name: &str) {
         let list = match kind {
             BblProfileKind::Process => &self.process_profiles,
@@ -1216,10 +1309,10 @@ impl App {
         let host = self.host.clone();
         let code = self.access_code.clone();
         let serial = self.serial.clone();
-        let use_cloud = self.use_cloud;
+        let send_via = self.send_via;
         Task::perform(
             async move {
-                fetch_monitor(use_cloud, host, code, serial)
+                monitor::fetch_monitor(send_via, host, code, serial)
                     .await
                     .map(Box::new)
             },
@@ -1231,9 +1324,9 @@ impl App {
         let host = self.host.clone();
         let code = self.access_code.clone();
         let serial = self.serial.clone();
-        let use_cloud = self.use_cloud;
+        let send_via = self.send_via;
         Task::perform(
-            async move { run_cmd(use_cloud, host, code, serial, cmd).await },
+            async move { monitor::run_cmd(send_via, host, code, serial, cmd).await },
             Message::PrintControl,
         )
     }
@@ -1251,6 +1344,8 @@ enum PrintCmd {
     Pause,
     Resume,
     Stop,
+    Speed(u8),
+    Light(bool),
 }
 
 fn role_legend() -> String {
@@ -1293,91 +1388,6 @@ fn lan_from(host: String, code: String, serial: String) -> LanBackend {
     LanBackend::new(host, code)
         .with_serial(serial)
         .with_credentials(creds)
-}
-
-async fn snapshot_backend<B: PrinterBackend>(backend: B) -> Result<MonitorSnapshot, String> {
-    let st = backend.status().await.map_err(|e| e.to_string())?;
-    let ams = backend.ams().await.unwrap_or_default();
-    let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
-    let hms_lines = st
-        .hms
-        .iter()
-        .map(|h| describe_hms(catalog.as_ref(), *h, "en"))
-        .collect();
-    let trays = if ams.trays.is_empty() {
-        format!("{} slots", ams.slot_count)
-    } else {
-        ams.trays
-            .iter()
-            .map(|t| {
-                format!(
-                    "T{} {} {}",
-                    t.id,
-                    t.filament_type,
-                    if t.color.is_empty() { "—" } else { &t.color }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ")
-    };
-    Ok(MonitorSnapshot {
-        line: format!(
-            "{} {}% L{}/{} nozzle {:.0}°C · AMS {trays}",
-            st.gcode_state, st.mc_percent, st.layer_num, st.total_layer_num, st.nozzle_temp_c
-        ),
-        machine: st,
-        ams,
-        hms_lines,
-    })
-}
-
-async fn fetch_monitor(
-    use_cloud: bool,
-    host: String,
-    code: String,
-    serial: String,
-) -> Result<MonitorSnapshot, String> {
-    if use_cloud {
-        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
-            .map_err(|e| e.to_string())?;
-        return snapshot_backend(backend).await;
-    }
-    if host.is_empty() || code.is_empty() {
-        return Err("printer IP and LAN access code required".into());
-    }
-    snapshot_backend(lan_from(host, code, serial)).await
-}
-
-async fn run_cmd(
-    use_cloud: bool,
-    host: String,
-    code: String,
-    serial: String,
-    cmd: PrintCmd,
-) -> Result<String, String> {
-    async fn go<B: PrinterBackend>(backend: B, cmd: PrintCmd) -> Result<String, String> {
-        match cmd {
-            PrintCmd::Pause => backend.pause().await,
-            PrintCmd::Resume => backend.resume().await,
-            PrintCmd::Stop => backend.stop().await,
-        }
-        .map_err(|e| e.to_string())?;
-        Ok(match cmd {
-            PrintCmd::Pause => "pause sent",
-            PrintCmd::Resume => "resume sent",
-            PrintCmd::Stop => "stop sent",
-        }
-        .into())
-    }
-    if use_cloud {
-        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
-            .map_err(|e| e.to_string())?;
-        return go(backend, cmd).await;
-    }
-    if host.is_empty() || code.is_empty() {
-        return Err("printer IP and LAN access code required".into());
-    }
-    go(lan_from(host, code, serial), cmd).await
 }
 
 fn default_slice_settings() -> SliceSettings {

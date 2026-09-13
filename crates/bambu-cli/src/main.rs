@@ -15,8 +15,9 @@ use bambu_gpu::{
 };
 use bambu_io::load_model;
 use bambu_protocol::{
-    default_config_dir, describe_hms, install_app_cert, load_cached_catalog, load_cloud_session,
-    load_from_dir, refresh_catalog, send_gcode_line, snapshot_jpeg, CloudBackend, LanBackend,
+    default_config_dir, describe_hms, import_studio, install_app_cert, load_cached_catalog,
+    load_cloud_session, load_from_dir, refresh_catalog, save_cloud_session, send_gcode_line,
+    snapshot_jpeg, CloudApi, CloudBackend, CloudSession, LanBackend, LoginResult,
 };
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
@@ -190,6 +191,15 @@ enum KeysCommand {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+    /// Import LAN codes + user id from Studio, extract PEMs into the rewrite config dir.
+    ImportStudio {
+        /// Studio data dir (default: ~/.config/BambuStudio).
+        #[arg(long)]
+        studio: Option<PathBuf>,
+        /// Rewrite config dir (default: $XDG_CONFIG_HOME/bambu-studio-rs).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -213,9 +223,9 @@ enum DeviceCommand {
     /// FTPS-upload a G-code file as `.gcode.3mf` and MQTT `project_file`.
     Send {
         file: PathBuf,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         host: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         code: String,
         #[arg(long, default_value = "")]
         serial: String,
@@ -225,6 +235,9 @@ enum DeviceCommand {
         /// AMS tray mapping (comma-separated, 0-based). Printed and sent as `ams_mapping`.
         #[arg(long)]
         ams: Option<String>,
+        /// HTTPS upload + cloud MQTT `project_file` (token in the config dir).
+        #[arg(long)]
+        cloud: bool,
     },
     /// MQTT `print.command` pause.
     Pause {
@@ -278,6 +291,19 @@ enum DeviceCommand {
     },
     /// Cloud MQTT `pushall` using `cloud_user` / `cloud_token` / `cloud_serial` in the config dir.
     CloudStatus,
+    /// `GET /v1/iot-service/api/user/bind` device list (Bearer in the config dir).
+    Devices,
+    /// Public user-service login (email + password; email code if the API asks).
+    Login {
+        #[arg(long)]
+        account: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        code: Option<String>,
+        #[arg(long, default_value = "us")]
+        region: String,
+    },
     /// MQTT `gcode_line` (Developer Mode or signed Option B).
     Gcode {
         #[arg(long)]
@@ -487,6 +513,13 @@ fn run() -> Result<(), CliError> {
                     println!("{line}");
                 }
             }
+            KeysCommand::ImportStudio { studio, out } => {
+                let imported = import_studio(studio.as_deref(), out.as_deref())
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                for line in imported.status_lines() {
+                    println!("{line}");
+                }
+            }
         },
         Commands::Device { command } => match command {
             DeviceCommand::Discover { timeout } => {
@@ -532,6 +565,7 @@ fn run() -> Result<(), CliError> {
                 serial,
                 name,
                 ams,
+                cloud,
             } => {
                 let gcode = std::fs::read_to_string(&file)?;
                 let filename = name.unwrap_or_else(|| {
@@ -542,9 +576,21 @@ fn run() -> Result<(), CliError> {
                 });
                 let mapping = parse_ams_mapping(ams.as_deref())?;
                 println!("ams_mapping={mapping:?}");
-                let mut backend = lan_backend(host, code, serial)?;
-                backend = backend.with_ams_mapping(mapping);
-                block_on(backend.start_print(PrintJob { filename, gcode }))?;
+                if cloud {
+                    let backend = CloudBackend::from_config_dir(default_config_dir())
+                        .map_err(|err| CliError::Message(err.to_string()))?
+                        .with_ams_mapping(mapping);
+                    block_on(backend.start_print(PrintJob { filename, gcode }))?;
+                } else {
+                    if host.is_empty() || code.is_empty() {
+                        return Err(CliError::Message(
+                            "device send needs --host and --code (or pass --cloud)".into(),
+                        ));
+                    }
+                    let mut backend = lan_backend(host, code, serial)?;
+                    backend = backend.with_ams_mapping(mapping);
+                    block_on(backend.start_print(PrintJob { filename, gcode }))?;
+                }
                 println!("print command sent");
             }
             DeviceCommand::Pause { host, code, serial } => {
@@ -607,6 +653,81 @@ fn run() -> Result<(), CliError> {
                     st.layer_num,
                     st.total_layer_num
                 );
+            }
+            DeviceCommand::Devices => {
+                let dir = default_config_dir();
+                let session =
+                    load_cloud_session(&dir).map_err(|err| CliError::Message(err.to_string()))?;
+                if !session.has_bearer() {
+                    return Err(CliError::Message(
+                        "cloud_token missing; run keys import-studio or device login".into(),
+                    ));
+                }
+                let mut api = CloudApi::new(
+                    &session.region,
+                    &session.access_token,
+                    &session.refresh_token,
+                );
+                let devices = api
+                    .with_retry(|api| api.list_devices())
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                persist_api_tokens(&dir, &session, &api)?;
+                if devices.is_empty() {
+                    println!("no bound devices");
+                }
+                for d in devices {
+                    println!(
+                        "{}  {}  {}  online={}",
+                        d.dev_id, d.name, d.dev_name, d.online
+                    );
+                }
+            }
+            DeviceCommand::Login {
+                account,
+                password,
+                code,
+                region,
+            } => {
+                let dir = default_config_dir();
+                let result = CloudApi::login(&region, &account, &password, code.as_deref())
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                let result = match result {
+                    LoginResult::NeedsCode { .. } if code.is_none() => {
+                        eprint!("email code: ");
+                        let mut line = String::new();
+                        std::io::stdin().read_line(&mut line)?;
+                        CloudApi::login(&region, &account, &password, Some(line.trim()))
+                            .map_err(|err| CliError::Message(err.to_string()))?
+                    }
+                    other => other,
+                };
+                match result {
+                    LoginResult::NeedsCode { login_type } => {
+                        return Err(CliError::Message(format!(
+                            "login still needs an email code ({login_type})"
+                        )));
+                    }
+                    LoginResult::Tokens {
+                        access_token,
+                        refresh_token,
+                        user_id,
+                    } => {
+                        let mut session = load_cloud_session(&dir).unwrap_or_default();
+                        session.region = region;
+                        session.access_token = access_token;
+                        if !refresh_token.is_empty() {
+                            session.refresh_token = refresh_token;
+                        }
+                        if !user_id.is_empty() {
+                            session.user_id = user_id;
+                        }
+                        save_cloud_session(&dir, &session)
+                            .map_err(|err| CliError::Message(err.to_string()))?;
+                        for line in session.status_lines() {
+                            println!("{line}");
+                        }
+                    }
+                }
             }
             DeviceCommand::Gcode {
                 host,
@@ -720,6 +841,20 @@ fn parse_ams_mapping(raw: Option<&str>) -> Result<Vec<i32>, CliError> {
                 .map_err(|_| CliError::Message(format!("invalid AMS mapping '{p}'")))
         })
         .collect()
+}
+
+fn persist_api_tokens(
+    dir: &std::path::Path,
+    previous: &CloudSession,
+    api: &CloudApi,
+) -> Result<(), CliError> {
+    if api.access_token == previous.access_token && api.refresh_token == previous.refresh_token {
+        return Ok(());
+    }
+    let mut session = previous.clone();
+    session.access_token = api.access_token.clone();
+    session.refresh_token = api.refresh_token.clone();
+    save_cloud_session(dir, &session).map_err(|err| CliError::Message(err.to_string()))
 }
 
 fn lan_backend(host: String, code: String, serial: String) -> Result<LanBackend, CliError> {

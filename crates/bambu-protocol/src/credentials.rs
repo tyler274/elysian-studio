@@ -28,6 +28,13 @@ impl SlicerCredentials {
         self.key_pem.as_ref().is_some_and(|s| s.contains("BEGIN"))
     }
 
+    pub fn has_cert_and_key(&self) -> bool {
+        self.cert_pem
+            .as_ref()
+            .is_some_and(|s| s.contains("BEGIN CERTIFICATE"))
+            && self.can_sign()
+    }
+
     pub fn can_install_app_cert(&self) -> bool {
         self.cert_pem
             .as_ref()
@@ -174,16 +181,22 @@ pub fn candidate_import_dirs() -> Vec<PathBuf> {
         let xdg = PathBuf::from(xdg);
         dirs.push(xdg.join("BambuStudio"));
         dirs.push(xdg.join("OrcaSlicer"));
+        dirs.push(xdg.join("BambuConnect"));
+        dirs.push(xdg.join("open-bamboo-networking"));
     } else if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
         dirs.push(home.join(".config/BambuStudio"));
         dirs.push(home.join(".config/OrcaSlicer"));
+        dirs.push(home.join(".config/BambuConnect"));
+        dirs.push(home.join(".config/open-bamboo-networking"));
     }
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
         let appdata = PathBuf::from(appdata);
         dirs.push(appdata.join("BambuStudio"));
         dirs.push(appdata.join("OrcaSlicer"));
+        dirs.push(appdata.join("BambuConnect"));
+        dirs.push(appdata.join("open-bamboo-networking"));
     }
     dirs
 }

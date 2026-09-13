@@ -23,29 +23,39 @@ pub fn extract_to_config_dir(
     let mut report = ExtractReport::default();
     let imported = import_from_known_locations()?;
     report.credentials = imported;
-    if report.credentials.can_sign() {
+    if report.credentials.has_cert_and_key() {
         report.notes.push(
             "loaded existing slicer_*.pem from a config directory (Open Bamboo Networking or Studio)"
                 .into(),
         );
     }
 
-    let plugin_path = plugin.map(Path::to_path_buf).or_else(find_stock_plugin);
-    if let Some(path) = plugin_path {
+    let plugins = if let Some(path) = plugin {
+        vec![path.to_path_buf()]
+    } else {
+        find_all_stock_plugins()
+    };
+    if plugins.is_empty() {
+        report.notes.push(
+            "no stock plugin found; pass --plugin /path/to/libbambu_networking.so or set BAMBU_NETWORKING_PLUGIN"
+                .into(),
+        );
+    }
+    for path in plugins {
         report.notes.push(format!("scanning {}", path.display()));
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let found = extract_pems_from_bytes(&bytes);
                 merge_creds(&mut report.credentials, found);
-                report.plugin = Some(path);
+                if report.plugin.is_none() {
+                    report.plugin = Some(path);
+                }
             }
             Err(err) => report.notes.push(format!("could not read plugin: {err}")),
         }
-    } else {
-        report.notes.push(
-            "no stock plugin found; pass --plugin /path/to/libbambu_networking.so or set BAMBU_NETWORKING_PLUGIN"
-                .into(),
-        );
+        if report.credentials.has_cert_and_key() && report.credentials.crl_pem.is_some() {
+            break;
+        }
     }
 
     let dest = out_dir
@@ -171,35 +181,97 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 pub fn find_stock_plugin() -> Option<PathBuf> {
+    find_all_stock_plugins().into_iter().next()
+}
+
+/// Local plugin blobs only — never `dlopen`.
+pub fn find_all_stock_plugins() -> Vec<PathBuf> {
+    let mut out = Vec::new();
     if let Ok(p) = std::env::var("BAMBU_NETWORKING_PLUGIN") {
-        let path = PathBuf::from(p);
-        if path.is_file() {
-            return Some(path);
-        }
+        push_plugin(&mut out, PathBuf::from(p));
     }
-    let mut candidates = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         let home = PathBuf::from(home);
-        candidates.extend([
-            home.join(".local/share/BambuStudio/plugins/libbambu_networking.so"),
-            home.join(".BambuStudio/plugins/libbambu_networking.so"),
-            home.join(".config/BambuStudio/plugins/libbambu_networking.so"),
+        scan_plugin_dir(&mut out, &home.join(".local/share/BambuStudio/plugins"));
+        scan_plugin_dir(&mut out, &home.join(".BambuStudio/plugins"));
+        scan_plugin_dir(&mut out, &home.join(".config/BambuStudio/plugins"));
+        scan_plugin_dir(
+            &mut out,
+            &home.join("Library/Application Support/BambuStudio/plugins"),
+        );
+        push_plugin(
+            &mut out,
             home.join("Library/Application Support/BambuStudio/plugins/libbambu_networking.dylib"),
-        ]);
+        );
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        scan_plugin_dir(&mut out, &PathBuf::from(xdg).join("BambuStudio/plugins"));
     }
     if let Ok(studio) = std::env::var("BAMBU_STUDIO") {
-        let bin = PathBuf::from(studio);
-        if let Some(dir) = bin.parent() {
-            candidates.push(dir.join("libbambu_networking.so"));
-            candidates.push(dir.join("../lib/libbambu_networking.so"));
-            candidates.push(dir.join("../plugins/libbambu_networking.so"));
+        collect_neighbors(&mut out, Path::new(&studio));
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let bin = dir.join("bambu-studio");
+            if bin.is_file() {
+                collect_neighbors(&mut out, &bin);
+            }
         }
     }
     #[cfg(windows)]
     if let Ok(appdata) = std::env::var("APPDATA") {
-        candidates.push(PathBuf::from(appdata).join("BambuStudio/plugins/bambu_networking.dll"));
+        scan_plugin_dir(
+            &mut out,
+            &PathBuf::from(appdata).join("BambuStudio/plugins"),
+        );
     }
-    candidates.into_iter().find(|p| p.is_file())
+    out
+}
+
+fn collect_neighbors(out: &mut Vec<PathBuf>, studio_bin: &Path) {
+    let Some(dir) = studio_bin.parent() else {
+        return;
+    };
+    for rel in [
+        "libbambu_networking.so",
+        "bambu_networking.dll",
+        "libbambu_networking.dylib",
+        "../lib/libbambu_networking.so",
+        "../plugins/libbambu_networking.so",
+        "../lib/bambu-studio/plugins/libbambu_networking.so",
+        "../lib64/bambu-studio/plugins/libbambu_networking.so",
+    ] {
+        push_plugin(out, dir.join(rel));
+    }
+    scan_plugin_dir(out, &dir.join("plugins"));
+    if let Ok(canon) = dir.join("..").canonicalize() {
+        scan_plugin_dir(out, &canon.join("plugins"));
+        scan_plugin_dir(out, &canon.join("lib/bambu-studio/plugins"));
+    }
+}
+
+fn scan_plugin_dir(out: &mut Vec<PathBuf>, dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.contains("bambu_networking") || name.contains("bambunetwork") {
+            push_plugin(out, path);
+        }
+    }
+}
+
+fn push_plugin(out: &mut Vec<PathBuf>, path: PathBuf) {
+    let path = path.canonicalize().unwrap_or(path);
+    if path.is_file() && !out.iter().any(|p| p == &path) {
+        out.push(path);
+    }
 }
 
 #[cfg(test)]
@@ -225,5 +297,27 @@ mod tests {
         let xored: Vec<u8> = cert.bytes().map(|b| b ^ 0x5A).collect();
         let creds = extract_pems_from_bytes(&xored);
         assert!(creds.cert_pem.unwrap().contains("BEGIN CERTIFICATE"));
+    }
+
+    #[test]
+    fn extract_writes_pems_under_config_dir() {
+        let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let key = include_str!("../tests/fixtures/test_slicer_key.pem");
+        let mut blob = Vec::from(&b"noise\0"[..]);
+        blob.extend(cert.as_bytes());
+        blob.extend(b"\n");
+        blob.extend(key.as_bytes());
+        let tmp =
+            std::env::temp_dir().join(format!("bambu-extract-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let plugin = tmp.join("libbambu_networking.so");
+        std::fs::write(&plugin, blob).unwrap();
+        let out = tmp.join("cfg");
+        let report = extract_to_config_dir(Some(&plugin), Some(&out)).unwrap();
+        assert!(report.credentials.has_cert_and_key());
+        assert!(out.join("slicer_cert.pem").is_file());
+        assert!(out.join("slicer_key.pem").is_file());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

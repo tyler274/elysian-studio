@@ -34,7 +34,7 @@ bytemuck = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 clipper2-rust = "1"
 glam = "0.29"
-iced = { version = "0.14", features = ["tokio", "wgpu"] }
+iced = { version = "0.14", features = ["tokio", "wgpu", "advanced"] }
 jpeg-decoder = { version = "0.3", default-features = false }
 pollster = "0.4"
 quick-xml = "0.37"

@@ -1,17 +1,12 @@
 //! Public HMS catalog (`https://e.bambulab.com/query.php`) — no plugin, no PEMs.
 
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use bambu_device::HmsCode;
-use rustls::pki_types::ServerName;
-use rustls::{ClientConnection, Stream};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::tls::{install_ring_provider, lan_client_config, TlsError};
+use crate::https::{self, HttpsError};
 
 pub const HMS_HOST: &str = "e.bambulab.com";
 
@@ -20,7 +15,7 @@ pub enum HmsError {
     #[error("hms: {0}")]
     Message(String),
     #[error(transparent)]
-    Tls(#[from] TlsError),
+    Https(#[from] HttpsError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -102,8 +97,17 @@ pub fn describe_hms(catalog: Option<&Value>, code: HmsCode, lang: &str) -> Strin
 pub fn fetch_catalog(lang: &str) -> Result<Value, HmsError> {
     let lang = if lang.is_empty() { "en" } else { lang };
     let path = format!("/query.php?lang={lang}");
-    let body = https_get(HMS_HOST, &path)?;
-    let value: Value = serde_json::from_str(&body)?;
+    let resp = https::request(
+        "GET",
+        HMS_HOST,
+        &path,
+        &[("Accept", "application/json")],
+        None,
+    )?;
+    if resp.status != 200 {
+        return Err(HmsError::Message(format!("HMS HTTP {}", resp.status)));
+    }
+    let value: Value = serde_json::from_str(&resp.body_text())?;
     if value.get("result").and_then(Value::as_i64) == Some(0) {
         if let Some(data) = value.get("data") {
             return Ok(data.clone());
@@ -116,67 +120,6 @@ pub fn refresh_catalog(config_dir: impl AsRef<Path>, lang: &str) -> Result<Value
     let catalog = fetch_catalog(lang)?;
     save_cached_catalog(config_dir, lang, &catalog)?;
     Ok(catalog)
-}
-
-fn https_get(host: &str, path: &str) -> Result<String, HmsError> {
-    install_ring_provider();
-    let config = lan_client_config()?;
-    let name = ServerName::try_from(host.to_string())
-        .map_err(|err| HmsError::Message(format!("server name {host}: {err}")))?;
-    let mut tcp = TcpStream::connect((host, 443))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(20)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(20)))?;
-    let mut conn =
-        ClientConnection::new(config, name).map_err(|err| HmsError::Message(err.to_string()))?;
-    let mut tls = Stream::new(&mut conn, &mut tcp);
-    let req = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-    );
-    tls.write_all(req.as_bytes())?;
-    tls.flush()?;
-    let mut raw = Vec::new();
-    tls.read_to_end(&mut raw)?;
-    let text = String::from_utf8_lossy(&raw);
-    split_http_body(&text).ok_or_else(|| HmsError::Message("HTTP response had no body".into()))
-}
-
-fn split_http_body(response: &str) -> Option<String> {
-    let (headers, body) = response.split_once("\r\n\r\n")?;
-    let status = headers.lines().next().unwrap_or("");
-    if !status.contains(" 200 ") && !status.ends_with(" 200") {
-        return None;
-    }
-    let chunked = headers.lines().any(|l| {
-        l.to_ascii_lowercase().starts_with("transfer-encoding:")
-            && l.to_ascii_lowercase().contains("chunked")
-    });
-    if chunked {
-        decode_chunked(body)
-    } else {
-        Some(body.to_string())
-    }
-}
-
-fn decode_chunked(body: &str) -> Option<String> {
-    let mut rest = body;
-    let mut out = String::new();
-    loop {
-        let (size_line, after) = rest.split_once("\r\n")?;
-        let size =
-            usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16).ok()?;
-        if size == 0 {
-            break;
-        }
-        if after.len() < size {
-            return None;
-        }
-        out.push_str(&after[..size]);
-        rest = after
-            .get(size..)?
-            .strip_prefix("\r\n")
-            .unwrap_or(&after[size..]);
-    }
-    Some(out)
 }
 
 #[cfg(test)]

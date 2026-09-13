@@ -2,15 +2,18 @@
 
 mod camera;
 mod cloud;
+mod cloud_api;
 mod credentials;
 mod extract;
 mod ftps;
 mod hms;
+mod https;
 mod lan_mqtt;
 mod mqtt;
 mod pack;
 mod signing;
 mod ssdp;
+mod studio_import;
 mod tls;
 
 use std::time::Duration;
@@ -23,14 +26,21 @@ pub use camera::{
     snapshot_jpeg, ChamberCapture, RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
 pub use cloud::{
-    cloud_mqtt_host, load_cloud_session, load_cloud_session_default, CloudBackend, CloudSession,
+    cloud_mqtt_host, load_cloud_session, load_cloud_session_default, save_cloud_session,
+    CloudBackend, CloudSession,
+};
+pub use cloud_api::{
+    api_host, bind_path, login_body, md5_hex, parse_bind_devices, parse_login, parse_upload_ticket,
+    refresh_body, upload_ticket_body, CloudApi, CloudApiError, CloudDevice, LoginResult,
+    UploadTicket,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
     load_from_dir, save_device_cert, write_to_dir, CredentialError, SlicerCredentials,
 };
 pub use extract::{
-    extract_pems_from_bytes, extract_to_config_dir, find_stock_plugin, ExtractReport,
+    extract_pems_from_bytes, extract_to_config_dir, find_all_stock_plugins, find_stock_plugin,
+    ExtractReport,
 };
 pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
 pub use hms::{
@@ -39,13 +49,18 @@ pub use hms::{
 };
 pub use mqtt::{
     app_cert_install, chamber_light, gcode_line, next_sequence_id, parse_ams, parse_hms_items,
-    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_with_ams,
-    pushall, report_topic, request_topic, resume, stop, LAN_MQTT_PORT, LAN_MQTT_USER,
+    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_cloud,
+    project_file_with_ams, pushall, report_topic, request_topic, resume, stop, LAN_MQTT_PORT,
+    LAN_MQTT_USER,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
 pub use ssdp::{
     discover, parse_ssdp, printer_from_headers, DiscoveredPrinter, SsdpError, SSDP_PORT,
+};
+pub use studio_import::{
+    default_studio_data_dir, import_studio, load_lan_codes, parse_studio_conf, save_lan_codes,
+    StudioImport, StudioPrinter,
 };
 pub use tls::{peek_peer_cn, peek_peer_leaf, TlsError};
 
@@ -71,6 +86,10 @@ pub enum ProtocolError {
     Camera(#[from] camera::CameraError),
     #[error(transparent)]
     Hms(#[from] hms::HmsError),
+    #[error(transparent)]
+    Https(#[from] https::HttpsError),
+    #[error(transparent)]
+    CloudApi(#[from] cloud_api::CloudApiError),
 }
 
 /// LAN MQTT/FTPS backend (OpenBambuAPI + open-bamboo-networking).

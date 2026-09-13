@@ -147,6 +147,46 @@ pub fn project_file_with_ams(
     .to_string()
 }
 
+/// Cloud `project_file` after an HTTPS upload (`url` is `https://…`, not `ftp://`).
+pub fn project_file_cloud(
+    sequence_id: u64,
+    filename: &str,
+    subtask_name: &str,
+    plate: u32,
+    url: &str,
+    md5: &str,
+    ams_mapping: &[i32],
+) -> String {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id.to_string(),
+            "command": "project_file",
+            "param": format!("Metadata/plate_{plate}.gcode"),
+            "project_id": "0",
+            "profile_id": "0",
+            "task_id": "0",
+            "subtask_id": "0",
+            "subtask_name": subtask_name,
+            "file": filename,
+            "url": url,
+            "md5": md5,
+            "bed_type": "auto",
+            "bed_leveling": false,
+            "flow_cali": false,
+            "vibration_cali": false,
+            "layer_inspect": false,
+            "timelapse": false,
+            "use_ams": !ams_mapping.is_empty(),
+            "ams_mapping": ams_mapping,
+            "auto_bed_leveling": 0,
+            "cfg": "0",
+            "extrude_cali_flag": 0,
+            "nozzle_offset_cali": 2
+        }
+    })
+    .to_string()
+}
+
 /// `print.fun` bit 29 set ⇒ Developer Mode **off** (field encryption required).
 pub const FUN_BIT_SECURED: u32 = 29;
 
@@ -249,10 +289,7 @@ pub fn parse_hms_items(hms: Option<&Value>) -> Vec<HmsCode> {
             if attr == 0 && code == 0 && item.get("attr").is_none() {
                 return None;
             }
-            Some(HmsCode {
-                attr,
-                code,
-            })
+            Some(HmsCode { attr, code })
         })
         .collect()
 }
@@ -396,6 +433,25 @@ mod tests {
             v["print"]["ams_mapping"].as_array().map(|a| a.len()),
             Some(3)
         );
+    }
+
+    #[test]
+    fn project_file_cloud_uses_https_url() {
+        let json = project_file_cloud(
+            9,
+            "cube.gcode.3mf",
+            "cube",
+            1,
+            "https://cdn.example/cube.gcode.3mf",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            &[0],
+        );
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["print"]["command"], "project_file");
+        assert_eq!(v["print"]["url"], "https://cdn.example/cube.gcode.3mf");
+        assert!(!v["print"]["url"].as_str().unwrap().starts_with("ftp://"));
+        assert_eq!(v["print"]["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(v["print"]["use_ams"], true);
     }
 
     #[test]
