@@ -35,6 +35,7 @@ pub struct ViewportScene {
     pub mesh: TriangleMesh,
     pub toolpaths: ToolpathBuffer,
     pub preview_layer: u32,
+    pub preview_vertices: u32,
     pub hide_infill: bool,
     pub hide_support: bool,
 }
@@ -55,6 +56,7 @@ impl ViewportScene {
             mesh,
             toolpaths: ToolpathBuffer::default(),
             preview_layer: 0,
+            preview_vertices: 0,
             hide_infill: false,
             hide_support: false,
         }
@@ -65,6 +67,7 @@ impl ViewportScene {
         self.mesh = mesh;
         self.toolpaths = ToolpathBuffer::default();
         self.preview_layer = 0;
+        self.preview_vertices = 0;
         self.camera = OrbitCamera::looking_at_bed(BED_MM);
     }
 
@@ -79,6 +82,7 @@ impl ViewportScene {
 
     pub fn set_toolpaths(&mut self, toolpaths: ToolpathBuffer) {
         self.preview_layer = toolpaths.layer_zs.len().saturating_sub(1) as u32;
+        self.preview_vertices = toolpaths.vertices.len() as u32;
         self.toolpaths = toolpaths;
     }
 }
@@ -87,12 +91,14 @@ impl ViewportScene {
 pub struct ViewportState {
     dragging: bool,
     last: Option<iced::Point>,
+    press: Option<iced::Point>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ViewportEvent {
     Orbit { dx: f32, dy: f32 },
     Zoom(f32),
+    Click { ndc_x: f32, ndc_y: f32, aspect: f32 },
 }
 
 impl<Message> shader::Program<Message> for ViewportScene
@@ -114,14 +120,38 @@ where
                 if cursor.position_over(bounds).is_some() {
                     state.dragging = true;
                     state.last = cursor.position();
+                    state.press = cursor.position();
                     Some(shader::Action::request_redraw())
                 } else {
                     None
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let click = if let (Some(press), Some(pos)) = (state.press, cursor.position()) {
+                    let dx = pos.x - press.x;
+                    let dy = pos.y - press.y;
+                    dx * dx + dy * dy < 16.0
+                } else {
+                    false
+                };
                 state.dragging = false;
                 state.last = None;
+                state.press = None;
+                if click {
+                    if let Some(pos) = cursor.position_over(bounds) {
+                        let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
+                        let ndc_x = ((pos.x - bounds.x) / bounds.width.max(1.0)) * 2.0 - 1.0;
+                        let ndc_y = 1.0 - ((pos.y - bounds.y) / bounds.height.max(1.0)) * 2.0;
+                        return Some(shader::Action::publish(
+                            ViewportEvent::Click {
+                                ndc_x,
+                                ndc_y,
+                                aspect,
+                            }
+                            .into(),
+                        ));
+                    }
+                }
                 None
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
@@ -166,6 +196,7 @@ where
         lines.extend(toolpath_vertices(
             &self.toolpaths,
             self.preview_z(),
+            self.preview_vertices as usize,
             self.hide_infill,
             self.hide_support,
         ));
@@ -616,11 +647,12 @@ fn grid_vertices(bed: f32) -> Vec<Vertex> {
 fn toolpath_vertices(
     buf: &ToolpathBuffer,
     max_z: f32,
+    max_vertices: usize,
     hide_infill: bool,
     hide_support: bool,
 ) -> Vec<Vertex> {
     let n = [0.0, 0.0, 1.0];
-    buf.visible(max_z, |role| match role {
+    buf.visible(max_z, max_vertices, |role| match role {
         ExtrusionRole::Infill | ExtrusionRole::SolidInfill if hide_infill => true,
         ExtrusionRole::Support | ExtrusionRole::SupportInterface if hide_support => true,
         _ => false,

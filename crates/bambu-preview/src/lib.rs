@@ -32,12 +32,14 @@ pub struct ToolpathVertex {
 pub struct ToolpathBuffer {
     pub vertices: Vec<ToolpathVertex>,
     pub layer_zs: Vec<f32>,
+    pub layer_vertex_ends: Vec<usize>,
 }
 
 impl ToolpathBuffer {
     pub fn from_slice(sliced: &SliceResult) -> Self {
         let mut vertices = Vec::new();
         let mut layer_zs = Vec::with_capacity(sliced.layers.len());
+        let mut layer_vertex_ends = Vec::with_capacity(sliced.layers.len());
         for layer in &sliced.layers {
             let z = layer.print_z_mm as f32;
             layer_zs.push(z);
@@ -141,8 +143,13 @@ impl ToolpathBuffer {
                 ExtrusionRole::Ironing,
                 false,
             );
+            layer_vertex_ends.push(vertices.len());
         }
-        Self { vertices, layer_zs }
+        Self {
+            vertices,
+            layer_zs,
+            layer_vertex_ends,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -152,10 +159,16 @@ impl ToolpathBuffer {
     pub fn visible(
         &self,
         max_z: f32,
+        max_vertices: usize,
         hide: impl Fn(ExtrusionRole) -> bool,
     ) -> impl Iterator<Item = &ToolpathVertex> {
         self.vertices
             .iter()
+            .take(if max_vertices == 0 {
+                self.vertices.len()
+            } else {
+                max_vertices.min(self.vertices.len())
+            })
             .filter(move |v| v.position.z <= max_z + 1e-4 && !hide(v.role))
     }
 }

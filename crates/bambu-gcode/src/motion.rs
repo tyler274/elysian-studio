@@ -424,7 +424,9 @@ impl<'a> Writer<'a> {
         } else {
             &grown
         };
-        let Some(mut hops) = contour_detour(from, dest, rings) else {
+        let Some(mut hops) = contour_detour(from, dest, rings)
+            .or_else(|| edge_grid_detour(from, dest, rings, spacing))
+        else {
             return vec![dest];
         };
         hops.push(dest);
@@ -847,7 +849,117 @@ impl<'a> Writer<'a> {
     }
 }
 
-pub(crate) fn xy_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
+fn edge_grid_detour(
+    from: (f64, f64),
+    dest: (f64, f64),
+    rings: &[Polygon],
+    spacing: f64,
+) -> Option<Vec<(f64, f64)>> {
+    let cell = spacing.max(0.4);
+    let mut min_x = from.0.min(dest.0);
+    let mut min_y = from.1.min(dest.1);
+    let mut max_x = from.0.max(dest.0);
+    let mut max_y = from.1.max(dest.1);
+    for poly in rings {
+        for p in poly {
+            let (x, y) = xy(*p);
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    let pad = cell * 2.0;
+    min_x -= pad;
+    min_y -= pad;
+    max_x += pad;
+    max_y += pad;
+    let w = (((max_x - min_x) / cell).ceil() as usize).clamp(4, 96);
+    let h = (((max_y - min_y) / cell).ceil() as usize).clamp(4, 96);
+    let mut blocked = vec![false; w * h];
+    let to_cell = |p: (f64, f64)| {
+        let gx = ((p.0 - min_x) / cell).floor() as isize;
+        let gy = ((p.1 - min_y) / cell).floor() as isize;
+        (
+            gx.clamp(0, w as isize - 1) as usize,
+            gy.clamp(0, h as isize - 1) as usize,
+        )
+    };
+    for poly in rings {
+        let n = closed_vertex_count(poly);
+        if n < 3 {
+            continue;
+        }
+        for i in 0..n {
+            let a = xy(poly[i]);
+            let b = xy(poly[(i + 1) % n]);
+            let steps = ((xy_dist(a, b) / (cell * 0.5)).ceil() as usize).max(1);
+            for s in 0..=steps {
+                let t = s as f64 / steps as f64;
+                let p = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                let (gx, gy) = to_cell(p);
+                blocked[gy * w + gx] = true;
+            }
+        }
+    }
+    let start = to_cell(from);
+    let goal = to_cell(dest);
+    blocked[start.1 * w + start.0] = false;
+    blocked[goal.1 * w + goal.0] = false;
+    let mut prev = vec![None; w * h];
+    let mut q = std::collections::VecDeque::new();
+    q.push_back(start);
+    prev[start.1 * w + start.0] = Some(start);
+    const DIRS: [(isize, isize); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    while let Some((cx, cy)) = q.pop_front() {
+        if (cx, cy) == goal {
+            break;
+        }
+        for (dx, dy) in DIRS {
+            let nx = cx as isize + dx;
+            let ny = cy as isize + dy;
+            if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                continue;
+            }
+            let (ux, uy) = (nx as usize, ny as usize);
+            let idx = uy * w + ux;
+            if blocked[idx] || prev[idx].is_some() {
+                continue;
+            }
+            prev[idx] = Some((cx, cy));
+            q.push_back((ux, uy));
+        }
+    }
+    prev[goal.1 * w + goal.0]?;
+    let mut cells = vec![goal];
+    let mut cur = goal;
+    while cur != start {
+        let p = prev[cur.1 * w + cur.0]?;
+        if p == cur {
+            break;
+        }
+        cells.push(p);
+        cur = p;
+    }
+    cells.reverse();
+    let mut hops: Vec<(f64, f64)> = cells
+        .iter()
+        .map(|&(gx, gy)| {
+            (
+                min_x + (gx as f64 + 0.5) * cell,
+                min_y + (gy as f64 + 0.5) * cell,
+            )
+        })
+        .collect();
+    hops.push(dest);
+    if hops.len() < 2 {
+        None
+    } else {
+        Some(hops.into_iter().skip(1).collect())
+    }
+}
+
+fn xy_dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
 }
 

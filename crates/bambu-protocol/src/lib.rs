@@ -17,8 +17,8 @@ use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, Printer
 use thiserror::Error;
 
 pub use camera::{
-    auth_packet, capture_chamber, jpeg_to_frame, probe_rtsps, rtsps_url, snapshot_jpeg,
-    ChamberCapture, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
+    auth_packet, capture_chamber, describe_rtsps, jpeg_to_frame, probe_rtsps, rtsps_url,
+    snapshot_jpeg, ChamberCapture, RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
@@ -30,8 +30,8 @@ pub use extract::{
 pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
 pub use mqtt::{
     app_cert_install, gcode_line, next_sequence_id, parse_ams, parse_printer_cert,
-    parse_push_status, project_file, pushall, report_topic, request_topic, LAN_MQTT_PORT,
-    LAN_MQTT_USER,
+    parse_push_status, project_file, project_file_with_ams, pushall, report_topic, request_topic,
+    LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
@@ -69,6 +69,7 @@ pub struct LanBackend {
     pub access_code: String,
     pub serial: String,
     pub credentials: SlicerCredentials,
+    pub ams_mapping: Vec<i32>,
 }
 
 impl LanBackend {
@@ -78,6 +79,7 @@ impl LanBackend {
             access_code: access_code.into(),
             serial: String::new(),
             credentials: SlicerCredentials::default(),
+            ams_mapping: Vec::new(),
         }
     }
 
@@ -88,6 +90,11 @@ impl LanBackend {
 
     pub fn with_credentials(mut self, credentials: SlicerCredentials) -> Self {
         self.credentials = credentials;
+        self
+    }
+
+    pub fn with_ams_mapping(mut self, mapping: Vec<i32>) -> Self {
+        self.ams_mapping = mapping;
         self
     }
 
@@ -198,7 +205,8 @@ impl PrinterBackend for LanBackend {
             archive.len()
         );
         ftps::stor(&self.host, &self.access_code, &remote, &archive).map_err(Self::map_err)?;
-        let payload = project_file(next_sequence_id(), &remote, &stem, 1);
+        let payload =
+            project_file_with_ams(next_sequence_id(), &remote, &stem, 1, &self.ams_mapping);
         let report = self
             .publish(
                 &payload,

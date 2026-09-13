@@ -59,6 +59,16 @@ pub fn pushall(sequence_id: u64) -> String {
 /// LAN `project_file` after an FTPS upload. Developer Mode requires cleartext `url`;
 /// secured firmware (`fun` bit 29) gets `url_enc` in [`crate::signing::maybe_sign_ex`].
 pub fn project_file(sequence_id: u64, filename: &str, subtask_name: &str, plate: u32) -> String {
+    project_file_with_ams(sequence_id, filename, subtask_name, plate, &[])
+}
+
+pub fn project_file_with_ams(
+    sequence_id: u64,
+    filename: &str,
+    subtask_name: &str,
+    plate: u32,
+    ams_mapping: &[i32],
+) -> String {
     serde_json::json!({
         "print": {
             "sequence_id": sequence_id.to_string(),
@@ -78,8 +88,8 @@ pub fn project_file(sequence_id: u64, filename: &str, subtask_name: &str, plate:
             "vibration_cali": false,
             "layer_inspect": false,
             "timelapse": false,
-            "use_ams": false,
-            "ams_mapping": [],
+            "use_ams": !ams_mapping.is_empty(),
+            "ams_mapping": ams_mapping,
             "auto_bed_leveling": 0,
             "cfg": "0",
             "extrude_cali_flag": 0,
@@ -172,10 +182,60 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
     let active = ams
         .get("tray_now")
         .and_then(Value::as_str)
-        .and_then(|s| s.parse().ok());
+        .and_then(|s| s.parse().ok())
+        .or_else(|| ams.get("tray_now").and_then(Value::as_u64).map(|n| n as u8));
+    let mut trays = Vec::new();
+    for unit in slots {
+        let Some(tray_list) = unit.get("tray").and_then(Value::as_array) else {
+            continue;
+        };
+        for tray in tray_list {
+            let id = tray
+                .get("id")
+                .and_then(|x| {
+                    x.as_str()
+                        .and_then(|s| s.parse().ok())
+                        .or_else(|| x.as_u64().map(|n| n as u8))
+                })
+                .unwrap_or(trays.len() as u8);
+            trays.push(bambu_device::AmsTray {
+                id,
+                filament_type: tray
+                    .get("tray_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                color: tray
+                    .get("tray_color")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                remain: tray.get("remain").and_then(|x| {
+                    x.as_u64()
+                        .map(|n| n as u8)
+                        .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+                }),
+            });
+        }
+    }
+    let mapping = ams
+        .get("ams_mapping")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| {
+                    x.as_i64()
+                        .map(|n| n as i32)
+                        .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Some(AmsState {
-        slot_count: slots.len() as u8,
+        slot_count: trays.len().max(slots.len()) as u8,
         active_slot: active,
+        trays,
+        mapping,
     })
 }
 
@@ -217,6 +277,41 @@ mod tests {
         assert_eq!(v["print"]["param"], "Metadata/plate_1.gcode");
         assert_eq!(v["print"]["md5"], "from_sd_card");
         assert_eq!(v["print"]["sequence_id"], "20042");
+        assert_eq!(v["print"]["use_ams"], false);
+    }
+
+    #[test]
+    fn project_file_with_ams_mapping_enables_use_ams() {
+        let json = project_file_with_ams(20042, "cube.gcode.3mf", "cube", 1, &[0, 1, 2]);
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["print"]["use_ams"], true);
+        assert_eq!(
+            v["print"]["ams_mapping"].as_array().map(|a| a.len()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn parse_ams_reads_trays() {
+        let json = r#"{
+            "print": {
+                "ams": {
+                    "tray_now": "1",
+                    "ams": [{
+                        "id": "0",
+                        "tray": [
+                            {"id": "0", "tray_type": "PLA", "tray_color": "FFFFFFFF", "remain": 80},
+                            {"id": "1", "tray_type": "PETG", "tray_color": "000000FF", "remain": 10}
+                        ]
+                    }]
+                }
+            }
+        }"#;
+        let ams = parse_ams(json).unwrap();
+        assert_eq!(ams.active_slot, Some(1));
+        assert_eq!(ams.trays.len(), 2);
+        assert_eq!(ams.trays[0].filament_type, "PLA");
+        assert_eq!(ams.trays[1].filament_type, "PETG");
     }
 
     #[test]

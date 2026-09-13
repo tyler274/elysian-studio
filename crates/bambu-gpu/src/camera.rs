@@ -39,4 +39,16 @@ impl OrbitCamera {
         let factor = (1.0 - scroll_lines * 0.08).clamp(0.5, 1.5);
         self.distance = (self.distance * factor).clamp(40.0, 2500.0);
     }
+
+    pub fn ray_from_ndc(self, ndc_x: f32, ndc_y: f32, aspect: f32) -> (Vec3, Vec3) {
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect.max(0.1), 1.0, 4000.0);
+        let view = self.view_matrix();
+        let inv = (proj * view).inverse();
+        let n = inv * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let f = inv * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let a = n.truncate() / n.w.max(1e-8);
+        let b = f.truncate() / f.w.max(1e-8);
+        let dir = (b - a).normalize_or_zero();
+        (a, dir)
+    }
 }

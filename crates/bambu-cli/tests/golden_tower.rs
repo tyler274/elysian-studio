@@ -2,7 +2,7 @@
 //!
 //! The project 3MF embeds P1P 0.28 mm Extra Draft settings, tree supports, a
 //! prime tower, and eight filament-mapped parts. Compare layer/Z geometry and
-//! object FEATURE roles; flush volumes and wipe-tower TCR stay C++-only.
+//! object FEATURE roles. Flush volumes and wipe-tower TCR follow the rewrite matrix.
 
 mod common;
 

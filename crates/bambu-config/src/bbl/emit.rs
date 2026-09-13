@@ -1348,6 +1348,19 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     insert_bool(&mut map, "flush_into_objects", settings.flush_into_objects);
     insert_bool(&mut map, "flush_into_infill", settings.flush_into_infill);
     insert_bool(&mut map, "flush_into_support", settings.flush_into_support);
+    if !settings.flush_volumes_mm3.is_empty() {
+        insert(
+            &mut map,
+            "flush_volumes_matrix",
+            settings
+                .flush_volumes_mm3
+                .iter()
+                .copied()
+                .map(num_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
     insert(
         &mut map,
         "filament_diameter",

@@ -33,9 +33,10 @@ use bambu_geom::{
 use rayon::prelude::*;
 
 use crate::infill;
+use crate::GpuAssist;
 use crate::Layer;
 
-pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
+pub fn apply(layers: &mut [Layer], settings: &SliceSettings, assist: Option<&GpuAssist>) {
     if !settings.enable_support || layers.len() < 2 {
         return;
     }
@@ -48,11 +49,38 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     apply_enforcer_blocker(&mut overhangs, layers);
     trim_bridged_overhangs(&mut overhangs, layers, settings);
     expand_overhangs(&mut overhangs, layers, settings);
+    coalesce_independent_support(&mut overhangs, settings);
     match settings.support_type {
         SupportType::Classic => apply_classic(layers, settings, &overhangs),
-        SupportType::Tree => tree::apply(layers, settings, &overhangs),
+        SupportType::Tree => tree::apply(layers, settings, &overhangs, assist),
     }
     iron_support_interface(layers, settings);
+}
+
+/// C++ `independent_support_layer_height`: merge every other object layer when
+/// `2 * layer_height` still fits `max_layer_height` and the wipe tower is off.
+fn coalesce_independent_support(overhangs: &mut [Vec<Polygon>], settings: &SliceSettings) {
+    if !settings.independent_support_layer_height || settings.has_wipe_tower() {
+        return;
+    }
+    if 2.0 * settings.layer_height_mm > settings.max_layer_height_mm + 1e-9 {
+        return;
+    }
+    let n = overhangs.len();
+    for i in (1..n).step_by(2) {
+        let extra = if i + 1 < n {
+            overhangs[i + 1].clone()
+        } else {
+            Vec::new()
+        };
+        if !extra.is_empty() {
+            overhangs[i].extend(extra);
+            overhangs[i] = union_polygons(&overhangs[i]);
+        }
+        if i + 1 < n {
+            overhangs[i + 1].clear();
+        }
+    }
 }
 
 fn detect_overhangs(layers: &[Layer], settings: &SliceSettings) -> Vec<Vec<Polygon>> {

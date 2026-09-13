@@ -38,8 +38,8 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     if settings.prime_tower_enable_framework {
         spacing *= 2.0;
     }
-    // Extra purge volume as filament count grows (C++ wipe-volume matrix stand-in).
-    let purge = f64::from(settings.filament_count.max(2) as u32).sqrt();
+    // Flush-volume matrix densifies the hatch (C++ wipe-volume matrix).
+    let purge = (settings.max_flush_volume_mm3() / 800.0).max(1.0).sqrt();
     spacing = (spacing / purge).max(line);
     let clip = settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE;
     let brim_w = settings.prime_tower_brim_width_mm.max(0.0);
@@ -75,6 +75,17 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
             }
         }
         paths.extend(infill::rectilinear(&fill, hatch, i, 0.0));
+        if layer.has_toolchange(settings) {
+            let extra = ((settings.max_flush_volume_mm3() / 400.0).ceil() as u32).clamp(0, 6);
+            for k in 0..extra {
+                paths.extend(infill::rectilinear(
+                    &fill,
+                    hatch,
+                    i + k as usize + 17,
+                    15.0 * f64::from(k + 1),
+                ));
+            }
+        }
         if i == 0 && brim_loops > 0 {
             paths.extend(skirt_brim::concentric_loops(&square, 0.0, brim_loops, line));
         }
@@ -184,6 +195,24 @@ mod tests {
         assert!(
             on[4].prime_tower.len() > on[2].prime_tower.len(),
             "flat ironing should densify the last layer"
+        );
+    }
+
+    #[test]
+    fn flush_matrix_densifies_sparse_hatch() {
+        let mut settings = SliceSettings::default();
+        settings.enable_prime_tower = true;
+        settings.filament_count = 2;
+        settings.prime_tower_width_mm = 35.0;
+        let mut sparse = dummy_layers(3);
+        apply(&mut sparse, &settings);
+        settings.flush_volumes_mm3 = vec![0.0, 3200.0, 3200.0, 0.0];
+        let mut dense = dummy_layers(3);
+        apply(&mut dense, &settings);
+        assert!(
+            dense[1].prime_tower.iter().map(|p| p.len()).sum::<usize>()
+                >= sparse[1].prime_tower.iter().map(|p| p.len()).sum::<usize>(),
+            "larger flush volume should pack more tower hatch"
         );
     }
 }

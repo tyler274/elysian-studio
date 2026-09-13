@@ -419,15 +419,44 @@ fn leftover_centerline(
         let rings = deepest_inset(contours, lo, hi)?;
         return Some(seam_rings(rings, settings, hint));
     }
-    let mut out = Vec::new();
+    let mut sampled = Vec::new();
     for k in 1..=beads {
         let t = f64::from(k) / f64::from(beads + 1);
         let inset = lo + (hi - lo) * t;
         if let Some(rings) = offset_keep(contours, inset) {
-            out.extend(seam_rings(rings, settings, hint));
+            sampled.push(rings);
         }
     }
+    if sampled.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for pair in sampled.windows(2) {
+        out.extend(graph_ribs(&pair[0], &pair[1]));
+    }
+    for rings in sampled {
+        out.extend(seam_rings(rings, settings, hint));
+    }
     (!out.is_empty()).then_some(out)
+}
+
+fn graph_ribs(outer: &[Polygon], inner: &[Polygon]) -> Vec<Polyline> {
+    let mut ribs = Vec::new();
+    for ring in outer {
+        for p in ring {
+            let Some(q) = inner
+                .iter()
+                .flatten()
+                .min_by_key(|c| (c.x - p.x).abs() + (c.y - p.y).abs())
+            else {
+                continue;
+            };
+            if *p != *q {
+                ribs.push(vec![*p, *q]);
+            }
+        }
+    }
+    ribs
 }
 
 fn deepest_inset(contours: &[Polygon], lo: f64, hi: f64) -> Option<Vec<Polygon>> {

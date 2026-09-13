@@ -1627,6 +1627,8 @@ pub struct SliceSettings {
     pub flush_into_objects: bool,
     pub flush_into_infill: bool,
     pub flush_into_support: bool,
+    /// C++ `flush_volumes_matrix` (n×n mm³). Empty uses 800 mm³ between tools.
+    pub flush_volumes_mm3: Vec<f64>,
     /// C++ `filament_diameter.values.size()`.
     pub filament_count: usize,
 }
@@ -1973,6 +1975,7 @@ impl Default for SliceSettings {
             flush_into_objects: false,
             flush_into_infill: false,
             flush_into_support: false,
+            flush_volumes_mm3: Vec::new(),
             filament_count: 1,
         }
     }
@@ -2690,6 +2693,32 @@ impl SliceSettings {
             return true;
         }
         !self.spiral_mode && self.filament_count > 1
+    }
+
+    /// Flush from 1-based filament `from` into `to` (mm³). Diagonal is 0.
+    pub fn flush_volume_mm3(&self, from_1based: i32, to_1based: i32) -> f64 {
+        if from_1based == to_1based {
+            return 0.0;
+        }
+        let n = self.filament_count.max(1);
+        let i = (from_1based.max(1) as usize - 1).min(n - 1);
+        let j = (to_1based.max(1) as usize - 1).min(n - 1);
+        let idx = i * n + j;
+        self.flush_volumes_mm3
+            .get(idx)
+            .copied()
+            .filter(|v| *v > 0.0)
+            .unwrap_or(800.0)
+    }
+
+    pub fn max_flush_volume_mm3(&self) -> f64 {
+        if self.filament_count <= 1 {
+            return 0.0;
+        }
+        let n = self.filament_count as i32;
+        (1..=n)
+            .flat_map(|a| (1..=n).map(move |b| self.flush_volume_mm3(a, b)))
+            .fold(0.0, f64::max)
     }
 
     /// C++ `wipe_tower_sparse_layers_skipped`.

@@ -14,7 +14,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 mod clip;
 mod fuzzy;
@@ -43,7 +43,8 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 pub use clip::{
-    classify_floating, classify_overhang, classify_polyline, point_in_polygons, ClassifiedPath,
+    classify_floating, classify_overhang, classify_polyline, clip_polylines, point_in_polygons,
+    ClassifiedPath,
 };
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
 pub use slicing::{generate_object_layers, layer_plan, layer_z_values, LayerSpec};
@@ -82,6 +83,77 @@ pub fn check_print_object_conflicts(meshes: &[TriangleMesh]) -> Result<(), Slice
         }
     }
     Ok(())
+}
+
+/// C++ extrusion-line pile check after each object is sliced.
+pub fn check_print_path_conflicts(results: &[SliceResult]) -> Result<(), SlicerError> {
+    for (i, a) in results.iter().enumerate() {
+        for b in results.iter().skip(i + 1) {
+            if extrusion_piles_conflict(a, b) {
+                return Err(SlicerError::ObjectConflict);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn extrusion_piles_conflict(a: &SliceResult, b: &SliceResult) -> bool {
+    for la in &a.layers {
+        for lb in &b.layers {
+            if (la.print_z_mm - lb.print_z_mm).abs() > la.height_mm.max(lb.height_mm) * 0.51 {
+                continue;
+            }
+            let Some((amin, amax)) = layer_extrusion_aabb(la) else {
+                continue;
+            };
+            let Some((bmin, bmax)) = layer_extrusion_aabb(lb) else {
+                continue;
+            };
+            if amin.x <= bmax.x && bmin.x <= amax.x && amin.y <= bmax.y && bmin.y <= amax.y {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn layer_extrusion_aabb(layer: &Layer) -> Option<(Point, Point)> {
+    let mut min_x = i64::MAX;
+    let mut min_y = i64::MAX;
+    let mut max_x = i64::MIN;
+    let mut max_y = i64::MIN;
+    let mut any = false;
+    let mut bump = |paths: &[Polyline]| {
+        for path in paths {
+            for p in path {
+                any = true;
+                min_x = min_x.min(p.x);
+                min_y = min_y.min(p.y);
+                max_x = max_x.max(p.x);
+                max_y = max_y.max(p.y);
+            }
+        }
+    };
+    bump(&layer.outer_walls);
+    bump(&layer.inner_walls);
+    bump(&layer.infill);
+    bump(&layer.solid_infill);
+    bump(&layer.support);
+    bump(&layer.support_interface);
+    bump(&layer.prime_tower);
+    bump(&layer.skirt);
+    bump(&layer.brim);
+    if !any {
+        None
+    } else {
+        Some((Point::new(min_x, min_y), Point::new(max_x, max_y)))
+    }
+}
+
+/// Optional GPU occupancy samples fed into tree contacts (Clipper stays CPU).
+#[derive(Debug, Clone, Default)]
+pub struct GpuAssist {
+    pub occupancy: Vec<(f64, Vec<Point>)>,
 }
 
 /// Per-region fill snapshots (`LayerRegion` infill roles).
@@ -294,6 +366,22 @@ pub fn slice_volumes(
     volumes: &[ModelVolume],
     settings: &SliceSettings,
 ) -> Result<SliceResult, SlicerError> {
+    slice_volumes_with_planes(volumes, settings, |mesh, zs| {
+        zs.par_iter()
+            .map(|&z| union_polygons(&slice_at_z(mesh, z as f32)))
+            .collect()
+    })
+}
+
+/// Same Clipper volume pipeline, with a pluggable triangle–plane source (CPU or GPU).
+pub fn slice_volumes_with_planes<F>(
+    volumes: &[ModelVolume],
+    settings: &SliceSettings,
+    mut plane: F,
+) -> Result<SliceResult, SlicerError>
+where
+    F: FnMut(&TriangleMesh, &[f64]) -> Vec<Vec<Polygon>>,
+{
     let object_settings = bambu_model::agreed_object_settings(volumes, settings);
     let settings = &object_settings;
     let part_vols: Vec<&ModelVolume> = volumes
@@ -345,19 +433,42 @@ pub fn slice_volumes(
         merged.append(part);
     }
     let plan = layer_plan(&merged, settings)?;
+    let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
+    let mut cache: HashMap<usize, Vec<Vec<Polygon>>> = HashMap::new();
+    let color_meshes = paint_color_meshes(&part_vols);
+    for mesh in parts
+        .iter()
+        .copied()
+        .chain(negatives.iter().copied())
+        .chain(enforcers.iter().copied())
+        .chain(blockers.iter().copied())
+        .chain(part_vols.iter().map(|v| &v.mesh))
+        .chain(modifiers.iter().map(|v| &v.mesh))
+        .chain(color_meshes.iter().map(|(_, m)| m))
+    {
+        ingest_plane(&mut cache, &mut plane, mesh, &zs);
+    }
     let layers = plan
         .par_iter()
-        .copied()
-        .map(|spec| {
-            let z = spec.slice_z_mm as f32;
-            let pos = union_slices(&parts, z);
+        .enumerate()
+        .map(|(zi, spec)| {
+            let spec = *spec;
+            let pos = union_cached(&cache, &parts, zi);
             let contours = if negatives.is_empty() {
                 pos
             } else {
-                difference_polygons(&pos, &union_slices(&negatives, z))
+                difference_polygons(&pos, &union_cached(&cache, &negatives, zi))
             };
             let (mut regions, mut region_settings) = split_volume_regions(
-                &contours, &part_vols, &negatives, &modifiers, &part_cfgs, z, settings,
+                &contours,
+                &part_vols,
+                &negatives,
+                &modifiers,
+                &part_cfgs,
+                &cache,
+                zi,
+                &color_meshes,
+                settings,
             );
             let contours = if regions.is_empty() {
                 contours
@@ -376,7 +487,7 @@ pub fn slice_volumes(
                 spec,
                 contours,
                 enforcers: merge_support(
-                    union_slices(&enforcers, z),
+                    union_cached(&cache, &enforcers, zi),
                     paint_polygons(
                         volumes,
                         spec,
@@ -385,7 +496,7 @@ pub fn slice_volumes(
                     ),
                 ),
                 blockers: merge_support(
-                    union_slices(&blockers, z),
+                    union_cached(&cache, &blockers, zi),
                     paint_polygons(
                         volumes,
                         spec,
@@ -411,18 +522,63 @@ pub fn slice_volumes(
             }
         })
         .collect();
-    Ok(slice_prepared(layers, settings, Some(&merged)))
+    Ok(slice_prepared(layers, settings, Some(&merged), None))
 }
 
-fn union_slices(meshes: &[&TriangleMesh], z: f32) -> Vec<Polygon> {
+fn ingest_plane<F>(
+    cache: &mut HashMap<usize, Vec<Vec<Polygon>>>,
+    plane: &mut F,
+    mesh: &TriangleMesh,
+    zs: &[f64],
+) where
+    F: FnMut(&TriangleMesh, &[f64]) -> Vec<Vec<Polygon>>,
+{
+    let key = mesh as *const TriangleMesh as usize;
+    if cache.contains_key(&key) {
+        return;
+    }
+    let layers = plane(mesh, zs);
+    let layers = if layers.len() == zs.len() {
+        layers
+    } else {
+        zs.par_iter()
+            .map(|&z| union_polygons(&slice_at_z(mesh, z as f32)))
+            .collect()
+    };
+    cache.insert(key, layers);
+}
+
+fn union_cached(
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    meshes: &[&TriangleMesh],
+    zi: usize,
+) -> Vec<Polygon> {
     if meshes.is_empty() {
         return Vec::new();
     }
     let mut acc = Vec::new();
     for mesh in meshes {
-        acc.extend(slice_at_z(mesh, z));
+        let key = *mesh as *const TriangleMesh as usize;
+        if let Some(layers) = cache.get(&key) {
+            if let Some(polys) = layers.get(zi) {
+                acc.extend(polys.iter().cloned());
+            }
+        }
     }
     union_polygons(&acc)
+}
+
+fn cached_mesh(
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    mesh: &TriangleMesh,
+    zi: usize,
+) -> Vec<Polygon> {
+    let key = mesh as *const TriangleMesh as usize;
+    cache
+        .get(&key)
+        .and_then(|layers| layers.get(zi))
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn merge_support(mut a: Vec<Polygon>, b: Vec<Polygon>) -> Vec<Polygon> {
@@ -452,17 +608,20 @@ fn part_region_settings(vol: &ModelVolume, settings: &SliceSettings) -> SliceSet
 
 /// Split printable contours by model-part extruders and parameter modifiers
 /// (C++ `slices_to_regions` + `clip_multipart_objects`).
+#[allow(clippy::too_many_arguments)]
 fn split_volume_regions(
     contours: &[Polygon],
     part_vols: &[&ModelVolume],
     negatives: &[&TriangleMesh],
     modifiers: &[&ModelVolume],
     part_cfgs: &[SliceSettings],
-    z: f32,
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    zi: usize,
+    color_meshes: &[(String, TriangleMesh)],
     settings: &SliceSettings,
 ) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
     let (mut slots, mut cfgs) = if !part_cfgs.is_empty() {
-        split_model_part_regions(part_vols, negatives, part_cfgs, z, settings)
+        split_model_part_regions(part_vols, negatives, part_cfgs, cache, zi, settings)
     } else if modifiers.is_empty()
         && !part_vols
             .iter()
@@ -472,18 +631,12 @@ fn split_volume_regions(
     } else {
         (vec![contours.to_vec()], vec![settings.clone()])
     };
-    apply_modifiers(&mut slots, &mut cfgs, modifiers, z, settings);
-    apply_paint_color_regions(&mut slots, &mut cfgs, part_vols, z, settings);
+    apply_modifiers(&mut slots, &mut cfgs, modifiers, cache, zi, settings);
+    apply_paint_color_regions(&mut slots, &mut cfgs, color_meshes, cache, zi, settings);
     (slots, cfgs)
 }
 
-fn apply_paint_color_regions(
-    slots: &mut Vec<Vec<Polygon>>,
-    cfgs: &mut Vec<SliceSettings>,
-    part_vols: &[&ModelVolume],
-    z: f32,
-    settings: &SliceSettings,
-) {
+fn paint_color_meshes(part_vols: &[&ModelVolume]) -> Vec<(String, TriangleMesh)> {
     let mut by_color: BTreeMap<String, TriangleMesh> = BTreeMap::new();
     for vol in part_vols {
         if vol.triangle_color.is_empty() {
@@ -501,15 +654,26 @@ fn apply_paint_color_regions(
             mesh.indices.push([base, base + 1, base + 2]);
         }
     }
-    if by_color.is_empty() {
+    by_color.into_iter().collect()
+}
+
+fn apply_paint_color_regions(
+    slots: &mut Vec<Vec<Polygon>>,
+    cfgs: &mut Vec<SliceSettings>,
+    color_meshes: &[(String, TriangleMesh)],
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    zi: usize,
+    settings: &SliceSettings,
+) {
+    if color_meshes.is_empty() {
         return;
     }
     if slots.is_empty() {
         slots.push(Vec::new());
         cfgs.push(settings.clone());
     }
-    for (hex, mesh) in by_color {
-        let painted = union_polygons(&slice_at_z(&mesh, z));
+    for (hex, mesh) in color_meshes {
+        let painted = union_polygons(&cached_mesh(cache, mesh, zi));
         if painted.is_empty() {
             continue;
         }
@@ -534,16 +698,17 @@ fn split_model_part_regions(
     part_vols: &[&ModelVolume],
     negatives: &[&TriangleMesh],
     part_cfgs: &[SliceSettings],
-    z: f32,
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    zi: usize,
     settings: &SliceSettings,
 ) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
-    let neg = union_slices(negatives, z);
+    let neg = union_cached(cache, negatives, zi);
     let mut part_slices: Vec<(usize, Vec<Polygon>)> = part_vols
         .iter()
         .map(|vol| {
             let cfg = part_region_settings(vol, settings);
             let idx = part_cfgs.iter().position(|c| c == &cfg).unwrap_or(0);
-            let mut sliced = union_polygons(&slice_at_z(&vol.mesh, z));
+            let mut sliced = union_polygons(&cached_mesh(cache, &vol.mesh, zi));
             if !neg.is_empty() {
                 sliced = difference_polygons(&sliced, &neg);
             }
@@ -578,12 +743,13 @@ fn apply_modifiers(
     slots: &mut Vec<Vec<Polygon>>,
     cfgs: &mut Vec<SliceSettings>,
     modifiers: &[&ModelVolume],
-    z: f32,
+    cache: &HashMap<usize, Vec<Vec<Polygon>>>,
+    zi: usize,
     settings: &SliceSettings,
 ) {
     for vol in modifiers {
         cfgs.push(vol.region_settings(settings));
-        let sliced = slice_at_z(&vol.mesh, z);
+        let sliced = cached_mesh(cache, &vol.mesh, zi);
         if sliced.is_empty() {
             slots.push(Vec::new());
             continue;
@@ -698,6 +864,15 @@ pub fn slice_from_contours(
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
 ) -> SliceResult {
+    slice_from_contours_with_assist(layers, settings, mesh, None)
+}
+
+pub fn slice_from_contours_with_assist(
+    layers: Vec<(LayerSpec, Vec<Polygon>)>,
+    settings: &SliceSettings,
+    mesh: Option<&TriangleMesh>,
+    assist: Option<&GpuAssist>,
+) -> SliceResult {
     let layers = layers
         .into_iter()
         .map(|(spec, contours)| PreparedContours {
@@ -711,13 +886,14 @@ pub fn slice_from_contours(
             fuzzy_paint: false,
         })
         .collect();
-    slice_prepared(layers, settings, mesh)
+    slice_prepared(layers, settings, mesh, assist)
 }
 
 fn slice_prepared(
     layers: Vec<PreparedContours>,
     settings: &SliceSettings,
     mesh: Option<&TriangleMesh>,
+    assist: Option<&GpuAssist>,
 ) -> SliceResult {
     let prepared: Vec<_> = layers
         .into_par_iter()
@@ -823,7 +999,7 @@ fn slice_prepared(
 
     prepare_infill::apply(&mut out, settings, mesh);
     ironing::apply(&mut out, settings);
-    support::apply(&mut out, settings);
+    support::apply(&mut out, settings, assist);
     raft::apply(&mut out, settings);
     lift::detect_overhangs_for_lift(&mut out, settings.line_width_mm);
     if !out.is_empty() {
@@ -3940,6 +4116,46 @@ mod tests {
         b.translate(glam::Vec3::new(40.0, 0.0, 0.0));
         assert!(!objects_conflict(&a, &b));
         check_print_object_conflicts(&[a, b]).unwrap();
+    }
+
+    #[test]
+    fn stacked_cubes_mesh_aabb_conflict_paths_may_clear() {
+        let a = TriangleMesh::cube(20.0);
+        let mut b = TriangleMesh::cube(20.0);
+        b.translate(glam::Vec3::new(0.0, 0.0, 25.0));
+        assert!(!objects_conflict(&a, &b));
+        let settings = SliceSettings::default();
+        let sa = slice_mesh(&a, &settings).unwrap();
+        let sb = slice_mesh(&b, &settings).unwrap();
+        check_print_path_conflicts(&[sa, sb]).unwrap();
+    }
+
+    #[test]
+    fn independent_support_coalesces_when_max_height_allows() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.enable_support = true;
+        settings.support_type = bambu_config::SupportType::Classic;
+        settings.independent_support_layer_height = true;
+        settings.max_layer_height_mm = 0.4;
+        settings.enable_prime_tower = false;
+        let sliced = slice_mesh(&mesh, &settings).unwrap();
+        let support_layers = sliced
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .count();
+        settings.independent_support_layer_height = false;
+        let every = slice_mesh(&mesh, &settings).unwrap();
+        let every_n = every
+            .layers
+            .iter()
+            .filter(|l| !l.support.is_empty() || !l.support_interface.is_empty())
+            .count();
+        assert!(
+            support_layers <= every_n,
+            "independent support should not add layers: independent={support_layers} every={every_n}"
+        );
     }
 
     #[test]

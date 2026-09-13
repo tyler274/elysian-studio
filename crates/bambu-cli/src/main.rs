@@ -10,12 +10,14 @@ use bambu_config::{
 };
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
-use bambu_gpu::{slice_on_vulkan, slice_with_gpu_or_cpu, SliceBackend};
+use bambu_gpu::{
+    slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,
+};
 use bambu_io::load_model;
 use bambu_protocol::{
     default_config_dir, install_app_cert, load_from_dir, send_gcode_line, snapshot_jpeg, LanBackend,
 };
-use bambu_slicer::{slice_mesh, slice_volumes};
+use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
 use thiserror::Error;
 
@@ -532,10 +534,25 @@ pub fn slice_file(
             )));
         }
         if force_gpu {
-            tracing::warn!("volume modifiers: Clipper booleans stay on CPU");
+            tracing::info!("volume modifiers: GPU plane, Clipper booleans stay on CPU");
         }
-        let sliced = slice_volumes(&volumes, settings)?;
-        tracing::info!("sliced {} layers (cpu)", sliced.layers.len());
+        let (sliced, backend) = if force_cpu {
+            (
+                bambu_slicer::slice_volumes(&volumes, settings)?,
+                SliceBackend::Cpu,
+            )
+        } else if force_gpu {
+            let (sliced, backend) = slice_volumes_with_gpu_or_cpu(&volumes, settings)?;
+            if backend != SliceBackend::VulkanCompute {
+                return Err(CliError::Message(
+                    "Vulkan compute required (--gpu) but no adapter".into(),
+                ));
+            }
+            (sliced, backend)
+        } else {
+            slice_volumes_with_gpu_or_cpu(&volumes, settings)?
+        };
+        tracing::info!("sliced {} layers ({backend})", sliced.layers.len());
         return Ok(write_gcode(settings, &sliced)?);
     }
     let mesh = model.mesh_for_plate(plate_idx).ok_or_else(|| {

@@ -114,8 +114,19 @@ pub fn rtsps_url(host: &str, access_code: &str) -> String {
     format!("rtsps://{LAN_MQTT_USER}:{access_code}@{host}:{LAN_RTSPS_PORT}/streaming/live/1")
 }
 
-/// TLS OPTIONS on :322. Does not decode H.264 and never ships Bambu PEMs.
+/// TLS OPTIONS + DESCRIBE on :322. Does not decode H.264 and never ships Bambu PEMs.
 pub fn probe_rtsps(host: &str, access_code: &str) -> Result<String, CameraError> {
+    describe_rtsps(host, access_code).map(|live| live.sdp)
+}
+
+#[derive(Debug, Clone)]
+pub struct RtspsSession {
+    pub url: String,
+    pub sdp: String,
+}
+
+/// OPTIONS then DESCRIBE on one TLS connection (live view handshake without PEMs).
+pub fn describe_rtsps(host: &str, access_code: &str) -> Result<RtspsSession, CameraError> {
     if access_code.is_empty() {
         return Err(CameraError::Message("LAN access code is empty".into()));
     }
@@ -127,18 +138,35 @@ pub fn probe_rtsps(host: &str, access_code: &str) -> Result<String, CameraError>
     let conn =
         ClientConnection::new(config, name).map_err(|err| CameraError::Message(err.to_string()))?;
     let mut tls = StreamOwned::new(conn, tcp);
-    let req = format!(
+    let options = format!(
         "OPTIONS rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
     );
-    tls.write_all(req.as_bytes())?;
+    tls.write_all(options.as_bytes())?;
     tls.flush()?;
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 4096];
     let n = tls.read(&mut buf)?;
-    let text = String::from_utf8_lossy(&buf[..n]).to_string();
-    if text.is_empty() {
+    if n == 0 {
         return Err(CameraError::Message("empty RTSPS OPTIONS response".into()));
     }
-    Ok(text)
+    let describe = format!(
+        "DESCRIBE rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
+    );
+    tls.write_all(describe.as_bytes())?;
+    tls.flush()?;
+    let mut sdp_buf = [0u8; 8192];
+    let m = tls.read(&mut sdp_buf).unwrap_or(0);
+    let mut sdp = String::from_utf8_lossy(&buf[..n]).to_string();
+    if m > 0 {
+        sdp.push('\n');
+        sdp.push_str(&String::from_utf8_lossy(&sdp_buf[..m]));
+    }
+    if sdp.trim().is_empty() {
+        return Err(CameraError::Message("empty RTSPS DESCRIBE response".into()));
+    }
+    Ok(RtspsSession {
+        url: rtsps_url(host, access_code),
+        sdp,
+    })
 }
 
 #[derive(Debug)]
@@ -147,14 +175,14 @@ pub enum ChamberCapture {
     Rtsps { url: String, options: String },
 }
 
-/// P1/A1 JPEG :6000, then X1/H2 RTSPS :322 probe.
+/// P1/A1 JPEG :6000, then X1/H2 RTSPS :322 OPTIONS+DESCRIBE.
 pub fn capture_chamber(host: &str, access_code: &str) -> Result<ChamberCapture, CameraError> {
     match snapshot_jpeg(host, access_code) {
         Ok(jpeg) => Ok(ChamberCapture::Jpeg(jpeg)),
-        Err(jpeg_err) => match probe_rtsps(host, access_code) {
-            Ok(options) => Ok(ChamberCapture::Rtsps {
-                url: rtsps_url(host, access_code),
-                options,
+        Err(jpeg_err) => match describe_rtsps(host, access_code) {
+            Ok(live) => Ok(ChamberCapture::Rtsps {
+                url: live.url,
+                options: live.sdp,
             }),
             Err(rtsps_err) => Err(CameraError::Message(format!(
                 "JPEG :{LAN_CAMERA_PORT}: {jpeg_err}; RTSPS :{LAN_RTSPS_PORT}: {rtsps_err}"

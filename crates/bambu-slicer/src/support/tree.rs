@@ -10,21 +10,47 @@ use rayon::prelude::*;
 
 use crate::clip::point_in_polygons;
 use crate::infill;
+use crate::GpuAssist;
 use crate::Layer;
 
 const DISK_SIDES: usize = 12;
 const MIN_MM: f64 = 0.05;
 
-pub fn apply(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Vec<Polygon>]) {
+pub fn apply(
+    layers: &mut [Layer],
+    settings: &SliceSettings,
+    overhangs: &[Vec<Polygon>],
+    assist: Option<&GpuAssist>,
+) {
     let n = layers.len();
     if n == 0 {
         return;
     }
     let diameter = settings.tree_branch_diameter_mm.max(settings.line_width_mm);
     let spacing = scale(settings.tree_branch_distance_mm.max(MIN_MM));
+    let zs: Vec<f64> = layers.iter().map(|l| l.z_mm).collect();
     let contacts: Vec<Vec<Point>> = overhangs
         .par_iter()
-        .map(|overhang| sample_contacts(overhang, spacing))
+        .enumerate()
+        .map(|(i, overhang)| {
+            let mut pts = sample_contacts(overhang, spacing);
+            if overhang.is_empty() {
+                return pts;
+            }
+            if let (Some(assist), Some(&z)) = (assist, zs.get(i)) {
+                for (az, extra) in &assist.occupancy {
+                    if (az - z).abs() < 1e-4 {
+                        pts.extend(
+                            extra
+                                .iter()
+                                .copied()
+                                .filter(|p| point_in_polygons(*p, overhang)),
+                        );
+                    }
+                }
+            }
+            pts
+        })
         .collect();
     let radii: Vec<f64> = (0..n)
         .map(|i| settings.tree_branch_radius_mm(mm_to_top(i, layers, overhangs)))

@@ -40,10 +40,20 @@ impl Default for MachineState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmsTray {
+    pub id: u8,
+    pub filament_type: String,
+    pub color: String,
+    pub remain: Option<u8>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AmsState {
     pub slot_count: u8,
     pub active_slot: Option<u8>,
+    pub trays: Vec<AmsTray>,
+    pub mapping: Vec<i32>,
 }
 
 #[derive(Debug, Clone)]

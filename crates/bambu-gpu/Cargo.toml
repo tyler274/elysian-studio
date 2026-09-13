@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 bambu-config.workspace = true
 bambu-geom.workspace = true
+bambu-model.workspace = true
 bambu-preview.workspace = true
 bambu-slicer.workspace = true
 bytemuck.workspace = true

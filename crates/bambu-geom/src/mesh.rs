@@ -45,6 +45,26 @@ impl TriangleMesh {
         ]
     }
 
+    /// Closest triangle along a world-space ray, or `None`.
+    pub fn pick_triangle(&self, origin: Vec3, dir: Vec3) -> Option<usize> {
+        let dir = dir.normalize_or_zero();
+        if dir.length_squared() < 1e-12 {
+            return None;
+        }
+        let mut best = f32::MAX;
+        let mut hit = None;
+        for (i, idx) in self.indices.iter().enumerate() {
+            let [a, b, c] = self.triangle(*idx);
+            if let Some(t) = ray_triangle(origin, dir, a, b, c) {
+                if t < best {
+                    best = t;
+                    hit = Some(i);
+                }
+            }
+        }
+        hit
+    }
+
     pub fn translate(&mut self, delta: Vec3) {
         for v in &mut self.vertices {
             *v += delta;
@@ -226,4 +246,28 @@ impl TriangleMesh {
             ],
         }
     }
+}
+
+fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+    const EPS: f32 = 1e-8;
+    let e1 = b - a;
+    let e2 = c - a;
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < EPS {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let tvec = origin - a;
+    let u = tvec.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = tvec.cross(e1);
+    let v = dir.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(q) * inv;
+    (t > EPS).then_some(t)
 }

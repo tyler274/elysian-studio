@@ -1135,6 +1135,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "flush_into_support") {
         s.flush_into_support = v;
     }
+    if let Some(v) = nums(map, "flush_volumes_matrix") {
+        s.flush_volumes_mm3 = v;
+    }
     if let Some(v) = nums(map, "filament_diameter") {
         s.filament_count = v.len().max(1);
         if let Some(&d) = v.first() {
