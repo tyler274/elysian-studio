@@ -5,7 +5,7 @@ use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, Widget};
 use iced::advanced::{Layout, Renderer};
 use iced::mouse;
-use iced::widget::{button, column, row, text};
+use iced::widget::{button, column, row, slider, text, text_input};
 use iced::{Background, Border, Color, Element, Length, Rectangle, Size};
 
 use bambu_device::{Frame, PrinterBackend};
@@ -136,6 +136,38 @@ impl crate::App {
         r.spacing(4).into()
     }
 
+    pub(crate) fn ams_load_row(&self) -> Element<'_, Message> {
+        let mut r = row![];
+        if self.ams.trays.is_empty() && self.ams.vt_tray.is_none() {
+            r = r.push(text("AMS load: —").size(11));
+        }
+        let mut unloaded = Vec::new();
+        for tray in &self.ams.trays {
+            let ams_id = tray.ams_id;
+            let slot_id = tray.id;
+            r = r.push(
+                button(text(format!("Load T{slot_id}")).size(11))
+                    .on_press(Message::AmsLoad { ams_id, slot_id }),
+            );
+            if !unloaded.contains(&ams_id) {
+                unloaded.push(ams_id);
+                r = r.push(
+                    button(text(format!("Unload A{ams_id}")).size(11))
+                        .on_press(Message::AmsUnload { ams_id }),
+                );
+            }
+        }
+        if let Some(vt) = &self.ams.vt_tray {
+            r = r.push(
+                button(text("Load ext").size(11)).on_press(Message::AmsLoad {
+                    ams_id: vt.ams_id,
+                    slot_id: 0,
+                }),
+            );
+        }
+        r.spacing(4).into()
+    }
+
     pub(crate) fn monitor_line(&self) -> String {
         if self.mqtt_status.is_empty() {
             return "AMS: —".into();
@@ -146,7 +178,7 @@ impl crate::App {
             .map(|h| format!(" RH{h}"))
             .unwrap_or_default();
         format!(
-            "{} · {}% · L{}/{} · {}m · nozzle {:.0}°C{humidity}",
+            "{} · {}% · L{}/{} · {}m · nozzle {:.0}/{:.0}°C · bed {:.0}/{:.0}°C · wifi {} · spd {}{humidity}",
             if self.machine.gcode_state.is_empty() {
                 "—"
             } else {
@@ -156,7 +188,16 @@ impl crate::App {
             self.machine.layer_num,
             self.machine.total_layer_num,
             self.machine.mc_remaining_time_min,
-            self.machine.nozzle_temp_c
+            self.machine.nozzle_temp_c,
+            self.machine.nozzle_target_c,
+            self.machine.bed_temp_c,
+            self.machine.bed_target_c,
+            if self.machine.wifi_signal.is_empty() {
+                "—"
+            } else {
+                self.machine.wifi_signal.as_str()
+            },
+            self.machine.spd_lvl
         )
     }
 
@@ -173,6 +214,7 @@ impl crate::App {
         column![
             text(self.monitor_line()).size(12),
             self.ams_chips(),
+            self.ams_load_row(),
             row![
                 button("Pause").on_press(Message::Pause),
                 button("Resume").on_press(Message::Resume),
@@ -192,6 +234,20 @@ impl crate::App {
                 button("Light off").on_press(Message::ChamberLight(false)),
             ]
             .spacing(6),
+            text("Bed / nozzle °C").size(13),
+            row![
+                text_input("bed", &self.control_bed).on_input(Message::BedSet),
+                button("Set bed").on_press(Message::SendBed),
+            ]
+            .spacing(4),
+            row![
+                text_input("nozzle", &self.control_nozzle).on_input(Message::NozzleSet),
+                button("Set nozzle").on_press(Message::SendNozzle),
+            ]
+            .spacing(4),
+            text(format!("Cooling fan {}", self.control_fan)).size(13),
+            slider(0.0..=255.0, f64::from(self.control_fan), Message::FanSet).step(1.0),
+            button("Set fan").on_press(Message::SendFan),
             text("Chamber").size(13),
             thumb,
         ]
@@ -229,8 +285,17 @@ pub(crate) async fn snapshot_backend<B: PrinterBackend>(
     };
     Ok(MonitorSnapshot {
         line: format!(
-            "{} {}% L{}/{} nozzle {:.0}°C · AMS {trays}",
-            st.gcode_state, st.mc_percent, st.layer_num, st.total_layer_num, st.nozzle_temp_c
+            "{} {}% L{}/{} nozzle {:.0}/{:.0}°C bed {:.0}/{:.0}°C wifi {} spd {} · AMS {trays}",
+            st.gcode_state,
+            st.mc_percent,
+            st.layer_num,
+            st.total_layer_num,
+            st.nozzle_temp_c,
+            st.nozzle_target_c,
+            st.bed_temp_c,
+            st.bed_target_c,
+            st.wifi_signal,
+            st.spd_lvl
         ),
         machine: st,
         ams,
@@ -269,6 +334,15 @@ pub(crate) async fn run_cmd(
             PrintCmd::Stop => backend.stop().await,
             PrintCmd::Speed(level) => backend.set_print_speed(level).await,
             PrintCmd::Light(on) => backend.set_chamber_light(on).await,
+            PrintCmd::Bed(temp) => backend.set_bed_temp(temp).await,
+            PrintCmd::Nozzle(temp) => backend.set_nozzle_temp(temp).await,
+            PrintCmd::Fan { index, speed } => backend.set_fan(index, speed).await,
+            PrintCmd::AmsLoad { ams_id, slot_id } => {
+                backend.ams_load(ams_id, slot_id, 220, 220).await
+            }
+            PrintCmd::AmsUnload { ams_id } => backend.ams_unload(ams_id).await,
+            PrintCmd::HmsResume { ref err, ref job } => backend.hms_resume(err, job).await,
+            PrintCmd::HmsIgnore { ref err, ref job } => backend.hms_ignore(err, job).await,
         }
         .map_err(|e| e.to_string())?;
         Ok(match cmd {
@@ -278,6 +352,15 @@ pub(crate) async fn run_cmd(
             PrintCmd::Speed(level) => format!("print_speed {level} sent"),
             PrintCmd::Light(true) => "chamber light on".into(),
             PrintCmd::Light(false) => "chamber light off".into(),
+            PrintCmd::Bed(temp) => format!("set_bed_temp {temp} sent"),
+            PrintCmd::Nozzle(temp) => format!("set_nozzle_temp {temp} sent"),
+            PrintCmd::Fan { index, speed } => format!("set_fan {index}/{speed} sent"),
+            PrintCmd::AmsLoad { ams_id, slot_id } => {
+                format!("ams load A{ams_id} T{slot_id} sent")
+            }
+            PrintCmd::AmsUnload { ams_id } => format!("ams unload A{ams_id} sent"),
+            PrintCmd::HmsResume { .. } => "hms resume sent".into(),
+            PrintCmd::HmsIgnore { .. } => "hms ignore sent".into(),
         })
     }
     if send_via == SendVia::CloudUpload {

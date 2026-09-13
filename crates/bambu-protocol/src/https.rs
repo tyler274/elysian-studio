@@ -210,4 +210,12 @@ mod tests {
         assert_eq!(resp.status, 201);
         assert_eq!(resp.body, b"abcd");
     }
+
+    #[test]
+    fn non_200_still_returns_body() {
+        let raw = b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 16\r\n\r\n{\"error\":\"auth\"}";
+        let resp = parse_http_response(raw).unwrap();
+        assert_eq!(resp.status, 401);
+        assert_eq!(resp.body_text(), "{\"error\":\"auth\"}");
+    }
 }

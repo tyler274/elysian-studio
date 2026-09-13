@@ -22,7 +22,7 @@ use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
     describe_hms, load_cached_catalog, load_cloud_session, load_lan_codes, refresh_catalog,
     save_cloud_session, CloudApi, CloudBackend, CloudDevice, LanBackend, LoginResult,
-    StudioPrinter,
+    ProjectFileOpts, StudioPrinter,
 };
 use bambu_slicer::check_print_path_conflicts;
 use iced::widget::{button, checkbox, column, container, row, shader, text};
@@ -130,6 +130,10 @@ struct App {
     login_code: String,
     chamber_thumb: Option<JpegThumb>,
     camera_note: String,
+    control_bed: String,
+    control_nozzle: String,
+    control_fan: u8,
+    project_opts: ProjectFileOpts,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +189,21 @@ enum Message {
     CloudLogged(Result<String, String>),
     PrintSpeed(u8),
     ChamberLight(bool),
+    BedSet(String),
+    NozzleSet(String),
+    FanSet(f64),
+    SendBed,
+    SendNozzle,
+    SendFan,
+    AmsLoad { ams_id: u8, slot_id: u8 },
+    AmsUnload { ams_id: u8 },
+    HmsResume,
+    HmsIgnore,
+    ProjectBedLevel(bool),
+    ProjectFlowCali(bool),
+    ProjectVibrationCali(bool),
+    ProjectLayerInspect(bool),
+    ProjectTimelapse(bool),
     ProcessProfile(String),
     FilamentProfile(String),
     MachineProfile(String),
@@ -296,6 +315,10 @@ impl App {
             login_code: String::new(),
             chamber_thumb: None,
             camera_note: String::new(),
+            control_bed: String::new(),
+            control_nozzle: String::new(),
+            control_fan: 0,
+            project_opts: ProjectFileOpts::default(),
         };
         app.load_account_from_disk();
         app
@@ -670,6 +693,7 @@ impl App {
                 let code = self.access_code.clone();
                 let serial = self.serial.clone();
                 let mapping = self.settings.filament_map.clone();
+                let opts = self.project_opts;
                 self.status = match send_via {
                     SendVia::LanFtps => format!("FTPS + MQTT to {host}…"),
                     SendVia::CloudUpload => "cloud upload + MQTT project_file…".into(),
@@ -682,7 +706,8 @@ impl App {
                                     bambu_protocol::default_config_dir(),
                                 )
                                 .map_err(|err| err.to_string())?
-                                .with_ams_mapping(mapping);
+                                .with_ams_mapping(mapping)
+                                .with_project_opts(opts);
                                 backend
                                     .start_print(PrintJob {
                                         filename: "plater.gcode".into(),
@@ -699,7 +724,8 @@ impl App {
                                 let backend = LanBackend::new(host, code)
                                     .with_serial(serial)
                                     .with_credentials(creds)
-                                    .with_ams_mapping(mapping);
+                                    .with_ams_mapping(mapping)
+                                    .with_project_opts(opts);
                                 backend
                                     .start_print(PrintJob {
                                         filename: "plater.gcode".into(),
@@ -816,6 +842,12 @@ impl App {
             Message::EnableSupport(v) => self.settings.enable_support = v,
             Message::RefreshStatus => return self.refresh_monitor(),
             Message::Status(Ok(snap)) => {
+                if self.control_bed.is_empty() && snap.machine.bed_target_c > 0.0 {
+                    self.control_bed = format!("{:.0}", snap.machine.bed_target_c);
+                }
+                if self.control_nozzle.is_empty() && snap.machine.nozzle_target_c > 0.0 {
+                    self.control_nozzle = format!("{:.0}", snap.machine.nozzle_target_c);
+                }
                 self.machine = snap.machine.clone();
                 self.ams = snap.ams.clone();
                 self.hms_lines = snap.hms_lines.clone();
@@ -828,6 +860,48 @@ impl App {
             Message::Stop => return self.run_print_cmd(PrintCmd::Stop),
             Message::PrintSpeed(level) => return self.run_print_cmd(PrintCmd::Speed(level)),
             Message::ChamberLight(on) => return self.run_print_cmd(PrintCmd::Light(on)),
+            Message::BedSet(s) => self.control_bed = s,
+            Message::NozzleSet(s) => self.control_nozzle = s,
+            Message::FanSet(v) => self.control_fan = v.round().clamp(0.0, 255.0) as u8,
+            Message::SendBed => {
+                let temp = parse_temp_c(&self.control_bed);
+                return self.run_print_cmd(PrintCmd::Bed(temp));
+            }
+            Message::SendNozzle => {
+                let temp = parse_temp_c(&self.control_nozzle);
+                return self.run_print_cmd(PrintCmd::Nozzle(temp));
+            }
+            Message::SendFan => {
+                return self.run_print_cmd(PrintCmd::Fan {
+                    index: 1,
+                    speed: self.control_fan,
+                });
+            }
+            Message::AmsLoad { ams_id, slot_id } => {
+                return self.run_print_cmd(PrintCmd::AmsLoad { ams_id, slot_id });
+            }
+            Message::AmsUnload { ams_id } => {
+                return self.run_print_cmd(PrintCmd::AmsUnload { ams_id });
+            }
+            Message::HmsResume => {
+                let Some(cmd) = self.hms_cmd(true) else {
+                    self.status = "no HMS item to resume".into();
+                    return Task::none();
+                };
+                return self.run_print_cmd(cmd);
+            }
+            Message::HmsIgnore => {
+                let Some(cmd) = self.hms_cmd(false) else {
+                    self.status = "no HMS item to ignore".into();
+                    return Task::none();
+                };
+                return self.run_print_cmd(cmd);
+            }
+            Message::ProjectBedLevel(v) => self.project_opts.bed_leveling = v,
+            Message::ProjectFlowCali(v) => self.project_opts.flow_cali = v,
+            Message::ProjectVibrationCali(v) => self.project_opts.vibration_cali = v,
+            Message::ProjectLayerInspect(v) => self.project_opts.layer_inspect = v,
+            Message::ProjectTimelapse(v) => self.project_opts.timelapse = v,
             Message::PrintControl(Ok(msg)) => {
                 self.status = msg;
                 return self.refresh_monitor();
@@ -1320,6 +1394,17 @@ impl App {
         )
     }
 
+    fn hms_cmd(&self, resume: bool) -> Option<PrintCmd> {
+        let hms = self.machine.hms.first()?;
+        let err = hms.long_error_code();
+        let job = self.machine.job_id.clone();
+        Some(if resume {
+            PrintCmd::HmsResume { err, job }
+        } else {
+            PrintCmd::HmsIgnore { err, job }
+        })
+    }
+
     fn run_print_cmd(&self, cmd: PrintCmd) -> Task<Message> {
         let host = self.host.clone();
         let code = self.access_code.clone();
@@ -1339,13 +1424,27 @@ enum PaintKind {
     Fuzzy,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum PrintCmd {
     Pause,
     Resume,
     Stop,
     Speed(u8),
     Light(bool),
+    Bed(u16),
+    Nozzle(u16),
+    Fan { index: u8, speed: u8 },
+    AmsLoad { ams_id: u8, slot_id: u8 },
+    AmsUnload { ams_id: u8 },
+    HmsResume { err: String, job: String },
+    HmsIgnore { err: String, job: String },
+}
+
+fn parse_temp_c(raw: &str) -> u16 {
+    raw.trim()
+        .parse::<f32>()
+        .map(|n| n.round().clamp(0.0, 300.0) as u16)
+        .unwrap_or(0)
 }
 
 fn role_legend() -> String {

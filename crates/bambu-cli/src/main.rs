@@ -17,7 +17,7 @@ use bambu_io::load_model;
 use bambu_protocol::{
     default_config_dir, describe_hms, import_studio, install_app_cert, load_cached_catalog,
     load_cloud_session, load_from_dir, refresh_catalog, save_cloud_session, send_gcode_line,
-    snapshot_jpeg, CloudApi, CloudBackend, CloudSession, LanBackend, LoginResult,
+    snapshot_jpeg, CloudApi, CloudBackend, CloudSession, LanBackend, LoginResult, ProjectFileOpts,
 };
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
@@ -238,6 +238,21 @@ enum DeviceCommand {
         /// HTTPS upload + cloud MQTT `project_file` (token in the config dir).
         #[arg(long)]
         cloud: bool,
+        /// MQTT `project_file` `bed_leveling` (default false).
+        #[arg(long)]
+        bed_level: bool,
+        /// MQTT `project_file` `flow_cali`.
+        #[arg(long)]
+        flow_cali: bool,
+        /// MQTT `project_file` `vibration_cali`.
+        #[arg(long)]
+        vibration_cali: bool,
+        /// MQTT `project_file` `layer_inspect`.
+        #[arg(long)]
+        layer_inspect: bool,
+        /// MQTT `project_file` `timelapse`.
+        #[arg(long)]
+        timelapse: bool,
     },
     /// MQTT `print.command` pause.
     Pause {
@@ -276,6 +291,120 @@ enum DeviceCommand {
         serial: String,
         #[arg(long)]
         level: u8,
+    },
+    /// MQTT `set_bed_temp`.
+    Bed {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        temp: u16,
+    },
+    /// MQTT `set_nozzle_temp`.
+    Nozzle {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        temp: u16,
+    },
+    /// MQTT `set_fan` (`speed` 0–255; `index` 1 cooling / 2 aux / 3 chamber).
+    Fan {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        speed: u8,
+        #[arg(long, default_value_t = 1)]
+        index: u8,
+    },
+    /// MQTT `ams_change_filament` load.
+    AmsLoad {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long, default_value_t = 0)]
+        ams: u8,
+        #[arg(long, default_value_t = 0)]
+        slot: u8,
+        #[arg(long, default_value_t = 220)]
+        old_temp: u16,
+        #[arg(long, default_value_t = 220)]
+        new_temp: u16,
+    },
+    /// MQTT `ams_change_filament` unload (`target`/`slot_id` 255).
+    AmsUnload {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long, default_value_t = 0)]
+        ams: u8,
+    },
+    /// MQTT HMS `resume` with `err` + `job_id`.
+    HmsResume {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        err: String,
+        #[arg(long)]
+        job: String,
+    },
+    /// MQTT HMS `ignore` with `err` + `job_id`.
+    HmsIgnore {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        err: String,
+        #[arg(long)]
+        job: String,
+    },
+    /// MQTT HMS `stop` with `err` + `job_id`.
+    HmsStop {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        #[arg(long)]
+        err: String,
+        #[arg(long)]
+        job: String,
+    },
+    /// MQTT `skip_objects` (`obj_list`).
+    Skip {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        /// Comma-separated object ids.
+        #[arg(long)]
+        objects: String,
     },
     /// Print HMS codes from `push_status` (catalog text if cached).
     Hms {
@@ -540,11 +669,18 @@ fn run() -> Result<(), CliError> {
                 let backend = lan_backend(host, code, serial)?;
                 let st = block_on(backend.status())?;
                 println!(
-                    "{}  {}  nozzle={:.1}C  bed={:.1}C  online={}  developer_mode={}  {}%  layer={}/{}  eta={}m  state={}  wifi={}",
+                    "{}  {}  nozzle={:.1}/{:.1}C  bed={:.1}/{:.1}C  chamber={:.1}C  fans={}/{}/{}  spd={}  online={}  developer_mode={}  {}%  layer={}/{}  eta={}m  state={}  wifi={}  file={}  err={}",
                     st.serial,
                     st.name,
                     st.nozzle_temp_c,
+                    st.nozzle_target_c,
                     st.bed_temp_c,
+                    st.bed_target_c,
+                    st.chamber_temp_c,
+                    st.cooling_fan,
+                    st.aux_fan,
+                    st.chamber_fan,
+                    st.spd_lvl,
                     st.online,
                     st.developer_mode,
                     st.mc_percent,
@@ -552,7 +688,9 @@ fn run() -> Result<(), CliError> {
                     st.total_layer_num,
                     st.mc_remaining_time_min,
                     st.gcode_state,
-                    st.wifi_signal
+                    st.wifi_signal,
+                    st.gcode_file,
+                    st.print_error
                 );
                 for hms in &st.hms {
                     println!("hms {}", hms.long_error_code());
@@ -566,6 +704,11 @@ fn run() -> Result<(), CliError> {
                 name,
                 ams,
                 cloud,
+                bed_level,
+                flow_cali,
+                vibration_cali,
+                layer_inspect,
+                timelapse,
             } => {
                 let gcode = std::fs::read_to_string(&file)?;
                 let filename = name.unwrap_or_else(|| {
@@ -575,11 +718,19 @@ fn run() -> Result<(), CliError> {
                         .to_string()
                 });
                 let mapping = parse_ams_mapping(ams.as_deref())?;
-                println!("ams_mapping={mapping:?}");
+                let opts = ProjectFileOpts {
+                    bed_leveling: bed_level,
+                    flow_cali,
+                    vibration_cali,
+                    layer_inspect,
+                    timelapse,
+                };
+                println!("ams_mapping={mapping:?} project_opts={opts:?}");
                 if cloud {
                     let backend = CloudBackend::from_config_dir(default_config_dir())
                         .map_err(|err| CliError::Message(err.to_string()))?
-                        .with_ams_mapping(mapping);
+                        .with_ams_mapping(mapping)
+                        .with_project_opts(opts);
                     block_on(backend.start_print(PrintJob { filename, gcode }))?;
                 } else {
                     if host.is_empty() || code.is_empty() {
@@ -587,8 +738,9 @@ fn run() -> Result<(), CliError> {
                             "device send needs --host and --code (or pass --cloud)".into(),
                         ));
                     }
-                    let mut backend = lan_backend(host, code, serial)?;
-                    backend = backend.with_ams_mapping(mapping);
+                    let backend = lan_backend(host, code, serial)?
+                        .with_ams_mapping(mapping)
+                        .with_project_opts(opts);
                     block_on(backend.start_print(PrintJob { filename, gcode }))?;
                 }
                 println!("print command sent");
@@ -617,6 +769,104 @@ fn run() -> Result<(), CliError> {
                 let backend = lan_backend(host, code, serial)?;
                 block_on(backend.set_print_speed(level))?;
                 println!("print_speed {level} sent");
+            }
+            DeviceCommand::Bed {
+                host,
+                code,
+                serial,
+                temp,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.set_bed_temp(temp))?;
+                println!("set_bed_temp {temp} sent");
+            }
+            DeviceCommand::Nozzle {
+                host,
+                code,
+                serial,
+                temp,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.set_nozzle_temp(temp))?;
+                println!("set_nozzle_temp {temp} sent");
+            }
+            DeviceCommand::Fan {
+                host,
+                code,
+                serial,
+                speed,
+                index,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.set_fan(index, speed))?;
+                println!("set_fan index={index} speed={speed} sent");
+            }
+            DeviceCommand::AmsLoad {
+                host,
+                code,
+                serial,
+                ams,
+                slot,
+                old_temp,
+                new_temp,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.ams_load(ams, slot, old_temp, new_temp))?;
+                println!("ams_change_filament load ams={ams} slot={slot} sent");
+            }
+            DeviceCommand::AmsUnload {
+                host,
+                code,
+                serial,
+                ams,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.ams_unload(ams))?;
+                println!("ams_change_filament unload ams={ams} sent");
+            }
+            DeviceCommand::HmsResume {
+                host,
+                code,
+                serial,
+                err,
+                job,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.hms_resume(&err, &job))?;
+                println!("hms resume sent");
+            }
+            DeviceCommand::HmsIgnore {
+                host,
+                code,
+                serial,
+                err,
+                job,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.hms_ignore(&err, &job))?;
+                println!("hms ignore sent");
+            }
+            DeviceCommand::HmsStop {
+                host,
+                code,
+                serial,
+                err,
+                job,
+            } => {
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.hms_stop(&err, &job))?;
+                println!("hms stop sent");
+            }
+            DeviceCommand::Skip {
+                host,
+                code,
+                serial,
+                objects,
+            } => {
+                let ids = parse_object_ids(&objects)?;
+                let backend = lan_backend(host, code, serial)?;
+                block_on(backend.skip_objects(&ids))?;
+                println!("skip_objects {ids:?} sent");
             }
             DeviceCommand::Hms {
                 host,
@@ -839,6 +1089,17 @@ fn parse_ams_mapping(raw: Option<&str>) -> Result<Vec<i32>, CliError> {
             p.trim()
                 .parse::<i32>()
                 .map_err(|_| CliError::Message(format!("invalid AMS mapping '{p}'")))
+        })
+        .collect()
+}
+
+fn parse_object_ids(raw: &str) -> Result<Vec<u32>, CliError> {
+    raw.split(',')
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            p.trim()
+                .parse::<u32>()
+                .map_err(|_| CliError::Message(format!("invalid object id '{p}'")))
         })
         .collect()
 }

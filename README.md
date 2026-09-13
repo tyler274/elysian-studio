@@ -76,7 +76,7 @@ cargo run -p bambu-cli -- device send cube.gcode --host 192.168.1.42 --code 1234
 cargo run -p bambu-cli -- device gcode --host 192.168.1.42 --code 12345678 --line G28
 ```
 
-`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Serial can be omitted: the MQTT certificate CN is used. `push_status.fun` bit 29 selects Developer Mode vs secured: secured printers get `url_enc`/`param_enc` (device-cert RSA) and optional `app_cert_install` when `slicer_cert.pem` + `slicer_crl.pem` are present. LAN is the default send path. `device pause|resume|stop` publish the same `print.command` JSON as C++ Studio. Optional `--ams 0,1` on `send` sets `ams_mapping`.
+`device status` / `send` use MQTT `:8883` (user `bblp`, password = access code, self-signed TLS) and `send` uploads a `.gcode.3mf` over implicit FTPS `:990` then publishes `project_file`. Serial can be omitted: the MQTT certificate CN is used. `push_status.fun` bit 29 selects Developer Mode vs secured: secured printers get `url_enc`/`param_enc` (device-cert RSA) and optional `app_cert_install` when `slicer_cert.pem` + `slicer_crl.pem` are present. LAN is the default send path. `device pause|resume|stop` publish the same `print.command` JSON as C++ Studio. `device bed --temp` / `nozzle --temp` / `fan --speed` / `ams-load` / `ams-unload` / `hms-resume --err --job` match C++ `MachineObject` MQTT. Optional `--ams 0,1` on `send` sets `ams_mapping`. `--bed-level` / `--timelapse` (and flow/vibration/layer-inspect) default off so LAN cube sends stay uncalibrated.
 
 HMS text comes from MQTT `print.hms` plus a cached catalog from `https://e.bambulab.com/query.php` (`$XDG_CONFIG_HOME/bambu-studio-rs/hms/`). Offline, the UI/CLI show the raw long error code.
 
@@ -87,6 +87,8 @@ cargo run -p bambu-cli -- keys import-studio
 cargo run -p bambu-cli -- device devices
 cargo run -p bambu-cli -- device send cube.gcode --cloud
 cargo run -p bambu-cli -- device pause --host 192.168.1.42 --code 12345678
+cargo run -p bambu-cli -- device bed --host 192.168.1.42 --code 12345678 --temp 65
+cargo run -p bambu-cli -- device hms-resume --host 192.168.1.42 --code 12345678 --err 0700010000010001 --job 123456
 cargo run -p bambu-cli -- device hms --host 192.168.1.42 --code 12345678 --refresh
 cargo run -p bambu-cli -- device cloud-status
 ```

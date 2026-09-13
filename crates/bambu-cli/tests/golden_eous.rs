@@ -119,6 +119,11 @@ fn eous_chassis_matches_cpp_bambu_studio() {
     slice_plate_against_cpp(2, CHASSIS_ROLES, 0.8);
 }
 
+#[test]
+fn eous_chassis2_matches_cpp_bambu_studio() {
+    slice_plate_against_cpp(3, CHASSIS_ROLES, 0.8);
+}
+
 fn slice_plate_against_cpp(plate: u32, roles: &[&str], z_slop_mm: f64) {
     let Some(bin) = bambu_studio_or_skip() else {
         return;

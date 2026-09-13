@@ -104,6 +104,132 @@ pub fn chamber_light(sequence_id: u64, on: bool) -> String {
     .to_string()
 }
 
+/// C++ `MachineObject::command_set_bed` (typed MQTT, not `gcode_line` M140).
+pub fn set_bed_temp(sequence_id: u64, temp_c: u16) -> String {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id.to_string(),
+            "command": "set_bed_temp",
+            "temp": temp_c,
+        }
+    })
+    .to_string()
+}
+
+/// C++ `MachineObject::command_set_nozzle_new`.
+pub fn set_nozzle_temp(sequence_id: u64, temp_c: u16) -> String {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id.to_string(),
+            "command": "set_nozzle_temp",
+            "extruder_index": 0,
+            "target_temp": temp_c,
+        }
+    })
+    .to_string()
+}
+
+/// C++ `DevFan::command_control_fan_new` (`fan_index` + `speed` 0–255).
+pub fn set_fan(sequence_id: u64, fan_index: u8, speed: u8) -> String {
+    serde_json::json!({
+        "print": {
+            "sequence_id": sequence_id.to_string(),
+            "command": "set_fan",
+            "fan_index": fan_index,
+            "speed": speed,
+        }
+    })
+    .to_string()
+}
+
+/// C++ `MachineObject::command_ams_change_filament` (`load` vs unload `target`/`slot_id` 255).
+pub fn ams_change_filament(
+    sequence_id: u64,
+    load: bool,
+    ams_id: u8,
+    slot_id: u8,
+    old_temp: u16,
+    new_temp: u16,
+) -> String {
+    let tray_id = if ams_id < 16 {
+        u16::from(ams_id) * 4 + u16::from(slot_id)
+    } else {
+        0
+    };
+    let (target, slot) = if load {
+        let target = if tray_id == 0 {
+            u16::from(ams_id)
+        } else {
+            tray_id
+        };
+        (target, u16::from(slot_id))
+    } else {
+        (255, 255)
+    };
+    serde_json::json!({
+        "print": {
+            "command": "ams_change_filament",
+            "sequence_id": sequence_id.to_string(),
+            "curr_temp": old_temp,
+            "tar_temp": new_temp,
+            "ams_id": ams_id,
+            "target": target,
+            "slot_id": slot,
+        }
+    })
+    .to_string()
+}
+
+/// C++ `MachineObject::command_hms_resume`.
+pub fn hms_resume(sequence_id: u64, err: &str, job_id: &str) -> String {
+    hms_dismiss(sequence_id, "resume", err, job_id)
+}
+
+/// C++ `MachineObject::command_hms_ignore`.
+pub fn hms_ignore(sequence_id: u64, err: &str, job_id: &str) -> String {
+    hms_dismiss(sequence_id, "ignore", err, job_id)
+}
+
+/// C++ `MachineObject::command_hms_stop`.
+pub fn hms_stop(sequence_id: u64, err: &str, job_id: &str) -> String {
+    hms_dismiss(sequence_id, "stop", err, job_id)
+}
+
+fn hms_dismiss(sequence_id: u64, command: &str, err: &str, job_id: &str) -> String {
+    serde_json::json!({
+        "print": {
+            "command": command,
+            "err": err,
+            "param": "reserve",
+            "job_id": job_id,
+            "sequence_id": sequence_id.to_string(),
+        }
+    })
+    .to_string()
+}
+
+/// C++ `MachineObject::command_task_partskip`.
+pub fn skip_objects(sequence_id: u64, obj_list: &[u32]) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "skip_objects",
+            "obj_list": obj_list,
+            "sequence_id": sequence_id.to_string(),
+        }
+    })
+    .to_string()
+}
+
+/// Calibration flags on MQTT `project_file`. Defaults are all false (cube-safe LAN).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectFileOpts {
+    pub bed_leveling: bool,
+    pub flow_cali: bool,
+    pub vibration_cali: bool,
+    pub layer_inspect: bool,
+    pub timelapse: bool,
+}
+
 /// LAN `project_file` after an FTPS upload. Developer Mode requires cleartext `url`;
 /// secured firmware (`fun` bit 29) gets `url_enc` in [`crate::signing::maybe_sign_ex`].
 pub fn project_file(sequence_id: u64, filename: &str, subtask_name: &str, plate: u32) -> String {
@@ -117,34 +243,34 @@ pub fn project_file_with_ams(
     plate: u32,
     ams_mapping: &[i32],
 ) -> String {
-    serde_json::json!({
-        "print": {
-            "sequence_id": sequence_id.to_string(),
-            "command": "project_file",
-            "param": format!("Metadata/plate_{plate}.gcode"),
-            "project_id": "0",
-            "profile_id": "0",
-            "task_id": "0",
-            "subtask_id": "0",
-            "subtask_name": subtask_name,
-            "file": filename,
-            "url": format!("ftp://{filename}"),
-            "md5": "from_sd_card",
-            "bed_type": "auto",
-            "bed_leveling": false,
-            "flow_cali": false,
-            "vibration_cali": false,
-            "layer_inspect": false,
-            "timelapse": false,
-            "use_ams": !ams_mapping.is_empty(),
-            "ams_mapping": ams_mapping,
-            "auto_bed_leveling": 0,
-            "cfg": "0",
-            "extrude_cali_flag": 0,
-            "nozzle_offset_cali": 2
-        }
-    })
-    .to_string()
+    project_file_with_ams_opts(
+        sequence_id,
+        filename,
+        subtask_name,
+        plate,
+        ams_mapping,
+        ProjectFileOpts::default(),
+    )
+}
+
+pub fn project_file_with_ams_opts(
+    sequence_id: u64,
+    filename: &str,
+    subtask_name: &str,
+    plate: u32,
+    ams_mapping: &[i32],
+    opts: ProjectFileOpts,
+) -> String {
+    project_file_body(
+        sequence_id,
+        filename,
+        subtask_name,
+        plate,
+        &format!("ftp://{filename}"),
+        "from_sd_card",
+        ams_mapping,
+        opts,
+    )
 }
 
 /// Cloud `project_file` after an HTTPS upload (`url` is `https://…`, not `ftp://`).
@@ -156,6 +282,52 @@ pub fn project_file_cloud(
     url: &str,
     md5: &str,
     ams_mapping: &[i32],
+) -> String {
+    project_file_cloud_opts(
+        sequence_id,
+        filename,
+        subtask_name,
+        plate,
+        url,
+        md5,
+        ams_mapping,
+        ProjectFileOpts::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn project_file_cloud_opts(
+    sequence_id: u64,
+    filename: &str,
+    subtask_name: &str,
+    plate: u32,
+    url: &str,
+    md5: &str,
+    ams_mapping: &[i32],
+    opts: ProjectFileOpts,
+) -> String {
+    project_file_body(
+        sequence_id,
+        filename,
+        subtask_name,
+        plate,
+        url,
+        md5,
+        ams_mapping,
+        opts,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_file_body(
+    sequence_id: u64,
+    filename: &str,
+    subtask_name: &str,
+    plate: u32,
+    url: &str,
+    md5: &str,
+    ams_mapping: &[i32],
+    opts: ProjectFileOpts,
 ) -> String {
     serde_json::json!({
         "print": {
@@ -171,11 +343,11 @@ pub fn project_file_cloud(
             "url": url,
             "md5": md5,
             "bed_type": "auto",
-            "bed_leveling": false,
-            "flow_cali": false,
-            "vibration_cali": false,
-            "layer_inspect": false,
-            "timelapse": false,
+            "bed_leveling": opts.bed_leveling,
+            "flow_cali": opts.flow_cali,
+            "vibration_cali": opts.vibration_cali,
+            "layer_inspect": opts.layer_inspect,
+            "timelapse": opts.timelapse,
             "use_ams": !ams_mapping.is_empty(),
             "ams_mapping": ams_mapping,
             "auto_bed_leveling": 0,
@@ -243,36 +415,35 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
     }
     let fun = print.get("fun").map(parse_fun).unwrap_or(0);
     Some(MachineState {
-        serial: print
-            .get("dev_id")
-            .or_else(|| v.get("dev_id"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        name: print
-            .get("subtask_name")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        serial: textish(print, "dev_id")
+            .or_else(|| textish(&v, "dev_id"))
+            .unwrap_or_default(),
+        name: textish(print, "subtask_name").unwrap_or_default(),
         online: true,
         nozzle_temp_c: number(print, "nozzle_temper"),
         bed_temp_c: number(print, "bed_temper"),
+        nozzle_target_c: number(print, "nozzle_target_temper"),
+        bed_target_c: number(print, "bed_target_temper"),
+        chamber_temp_c: number(print, "chamber_temper"),
+        cooling_fan: uint(print, "cooling_fan_speed") as u8,
+        aux_fan: uint(print, "big_fan1_speed") as u8,
+        chamber_fan: uint(print, "big_fan2_speed") as u8,
+        heatbreak_fan: uint(print, "heatbreak_fan_speed") as u8,
+        spd_lvl: uint(print, "spd_lvl") as u8,
+        spd_mag: uint(print, "spd_mag") as u16,
+        print_error: uint(print, "print_error"),
+        mc_print_stage: textish(print, "mc_print_stage").unwrap_or_default(),
+        gcode_file: textish(print, "gcode_file").unwrap_or_default(),
+        job_id: textish(print, "job_id").unwrap_or_default(),
+        chamber_light_on: chamber_light_from_report(print.get("lights_report")),
         fun,
         developer_mode: developer_mode_from_fun(fun),
         mc_percent: uint(print, "mc_percent") as u8,
         layer_num: uint(print, "layer_num"),
         total_layer_num: uint(print, "total_layer_num"),
         mc_remaining_time_min: uint(print, "mc_remaining_time"),
-        gcode_state: print
-            .get("gcode_state")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        wifi_signal: print
-            .get("wifi_signal")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        gcode_state: textish(print, "gcode_state").unwrap_or_default(),
+        wifi_signal: textish(print, "wifi_signal").unwrap_or_default(),
         hms: parse_hms_items(print.get("hms")),
     })
 }
@@ -297,50 +468,37 @@ pub fn parse_hms_items(hms: Option<&Value>) -> Vec<HmsCode> {
 pub fn parse_ams(payload: &str) -> Option<AmsState> {
     let v: Value = serde_json::from_str(payload).ok()?;
     let print = v.get("print")?;
-    let ams = print.get("ams")?;
-    let slots = ams.get("ams").and_then(Value::as_array)?;
-    let active = ams
-        .get("tray_now")
-        .and_then(Value::as_str)
-        .and_then(|s| s.parse().ok())
-        .or_else(|| ams.get("tray_now").and_then(Value::as_u64).map(|n| n as u8));
+    if print.get("ams").is_none() && print.get("vt_tray").is_none() {
+        return None;
+    }
+    let ams = print.get("ams");
+    let empty: Vec<Value> = Vec::new();
+    let slots = ams
+        .and_then(|a| a.get("ams"))
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let active = ams.and_then(|a| {
+        a.get("tray_now")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse().ok())
+            .or_else(|| a.get("tray_now").and_then(Value::as_u64).map(|n| n as u8))
+    });
     let mut trays = Vec::new();
+    let mut unit_temp = None;
     for unit in slots {
+        if unit_temp.is_none() {
+            unit_temp = optional_f32(unit, "temp");
+        }
+        let ams_id = unit.get("id").and_then(as_u8).unwrap_or(0);
         let Some(tray_list) = unit.get("tray").and_then(Value::as_array) else {
             continue;
         };
         for tray in tray_list {
-            let id = tray
-                .get("id")
-                .and_then(|x| {
-                    x.as_str()
-                        .and_then(|s| s.parse().ok())
-                        .or_else(|| x.as_u64().map(|n| n as u8))
-                })
-                .unwrap_or(trays.len() as u8);
-            trays.push(AmsTray {
-                id,
-                filament_type: tray
-                    .get("tray_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                color: tray
-                    .get("tray_color")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                remain: tray.get("remain").and_then(|x| {
-                    x.as_u64()
-                        .map(|n| n as u8)
-                        .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
-                }),
-                humidity: optional_u8(tray, "humidity"),
-            });
+            trays.push(parse_tray(tray, trays.len() as u8, ams_id));
         }
     }
     let mapping = ams
-        .get("ams_mapping")
+        .and_then(|a| a.get("ams_mapping"))
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
@@ -355,13 +513,66 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
     let humidity = slots
         .iter()
         .find_map(|unit| optional_u8(unit, "humidity"))
-        .or_else(|| optional_u8(ams, "humidity"));
+        .or_else(|| ams.and_then(|a| optional_u8(a, "humidity")));
+    let vt_tray = print.get("vt_tray").map(|tray| parse_tray(tray, 254, 254));
     Some(AmsState {
         slot_count: trays.len().max(slots.len()) as u8,
         active_slot: active,
         trays,
         mapping,
         humidity,
+        unit_temp,
+        vt_tray,
+    })
+}
+
+fn parse_tray(tray: &Value, fallback_id: u8, ams_id: u8) -> AmsTray {
+    let id = tray.get("id").and_then(as_u8).unwrap_or(fallback_id);
+    AmsTray {
+        id,
+        ams_id,
+        filament_type: textish(tray, "tray_type").unwrap_or_default(),
+        color: textish(tray, "tray_color").unwrap_or_default(),
+        remain: optional_u8(tray, "remain"),
+        humidity: optional_u8(tray, "humidity"),
+        tray_info_idx: textish(tray, "tray_info_idx").unwrap_or_default(),
+        temp: optional_f32(tray, "temp"),
+    }
+}
+
+fn chamber_light_from_report(lights: Option<&Value>) -> bool {
+    let Some(arr) = lights.and_then(Value::as_array) else {
+        return false;
+    };
+    arr.iter().any(|item| {
+        item.get("node").and_then(Value::as_str) == Some("chamber_light")
+            && item
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.eq_ignore_ascii_case("on"))
+    })
+}
+
+fn as_u8(v: &Value) -> Option<u8> {
+    v.as_u64()
+        .map(|n| n as u8)
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+fn textish(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|n| {
+        n.as_str()
+            .map(str::to_string)
+            .or_else(|| n.as_i64().map(|i| i.to_string()))
+            .or_else(|| n.as_u64().map(|i| i.to_string()))
+    })
+}
+
+fn optional_f32(v: &Value, key: &str) -> Option<f32> {
+    v.get(key).and_then(|n| {
+        n.as_f64()
+            .map(|n| n as f32)
+            .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
     })
 }
 
@@ -422,6 +633,8 @@ mod tests {
         assert_eq!(v["print"]["md5"], "from_sd_card");
         assert_eq!(v["print"]["sequence_id"], "20042");
         assert_eq!(v["print"]["use_ams"], false);
+        assert_eq!(v["print"]["bed_leveling"], false);
+        assert_eq!(v["print"]["timelapse"], false);
     }
 
     #[test]
@@ -564,5 +777,117 @@ mod tests {
         let ams = parse_ams(json).unwrap();
         assert_eq!(ams.humidity, Some(3));
         assert_eq!(ams.trays[0].humidity, Some(4));
+    }
+
+    #[test]
+    fn parses_full_push_status_fixture() {
+        let json = include_str!("../tests/fixtures/push_status_full.json");
+        let st = parse_push_status(json).unwrap();
+        assert_eq!(st.serial, "01P00AFAKE00001");
+        assert!((st.nozzle_target_c - 220.0).abs() < 0.01);
+        assert!((st.bed_target_c - 65.0).abs() < 0.01);
+        assert!((st.chamber_temp_c - 35.0).abs() < 0.01);
+        assert_eq!(st.cooling_fan, 8);
+        assert_eq!(st.aux_fan, 10);
+        assert_eq!(st.chamber_fan, 0);
+        assert_eq!(st.heatbreak_fan, 15);
+        assert_eq!(st.spd_lvl, 2);
+        assert_eq!(st.spd_mag, 100);
+        assert_eq!(st.print_error, 0);
+        assert_eq!(st.mc_print_stage, "2");
+        assert_eq!(st.gcode_file, "cube.gcode");
+        assert_eq!(st.job_id, "123456");
+        assert!(st.chamber_light_on);
+        assert_eq!(st.wifi_signal, "-44dBm");
+        assert_eq!(st.hms.len(), 1);
+        let ams = parse_ams(json).unwrap();
+        assert_eq!(ams.trays.len(), 1);
+        assert_eq!(ams.trays[0].tray_info_idx, "GFA00");
+        assert!((ams.unit_temp.unwrap() - 28.5).abs() < 0.01);
+        let vt = ams.vt_tray.expect("vt_tray");
+        assert_eq!(vt.id, 254);
+        assert_eq!(vt.filament_type, "PLA");
+        assert_eq!(vt.tray_info_idx, "GFA00");
+    }
+
+    #[test]
+    fn set_bed_nozzle_fan_match_studio() {
+        let bed: Value = serde_json::from_str(&set_bed_temp(20010, 65)).unwrap();
+        assert_eq!(bed["print"]["command"], "set_bed_temp");
+        assert_eq!(bed["print"]["temp"], 65);
+        let nozzle: Value = serde_json::from_str(&set_nozzle_temp(20011, 220)).unwrap();
+        assert_eq!(nozzle["print"]["command"], "set_nozzle_temp");
+        assert_eq!(nozzle["print"]["target_temp"], 220);
+        assert_eq!(nozzle["print"]["extruder_index"], 0);
+        let fan: Value = serde_json::from_str(&set_fan(20012, 1, 128)).unwrap();
+        assert_eq!(fan["print"]["command"], "set_fan");
+        assert_eq!(fan["print"]["fan_index"], 1);
+        assert_eq!(fan["print"]["speed"], 128);
+    }
+
+    #[test]
+    fn ams_change_filament_load_and_unload() {
+        let load: Value =
+            serde_json::from_str(&ams_change_filament(1, true, 0, 1, 220, 220)).unwrap();
+        assert_eq!(load["print"]["command"], "ams_change_filament");
+        assert_eq!(load["print"]["target"], 1);
+        assert_eq!(load["print"]["slot_id"], 1);
+        assert_eq!(load["print"]["ams_id"], 0);
+        let unload: Value =
+            serde_json::from_str(&ams_change_filament(2, false, 0, 0, 0, 0)).unwrap();
+        assert_eq!(unload["print"]["target"], 255);
+        assert_eq!(unload["print"]["slot_id"], 255);
+    }
+
+    #[test]
+    fn hms_dismiss_and_skip_objects_match_studio() {
+        let resume: Value =
+            serde_json::from_str(&hms_resume(3, "0700010000010001", "123456")).unwrap();
+        assert_eq!(resume["print"]["command"], "resume");
+        assert_eq!(resume["print"]["err"], "0700010000010001");
+        assert_eq!(resume["print"]["param"], "reserve");
+        assert_eq!(resume["print"]["job_id"], "123456");
+        let ignore: Value = serde_json::from_str(&hms_ignore(4, "e", "j")).unwrap();
+        assert_eq!(ignore["print"]["command"], "ignore");
+        let stop: Value = serde_json::from_str(&hms_stop(5, "e", "j")).unwrap();
+        assert_eq!(stop["print"]["command"], "stop");
+        let skip: Value = serde_json::from_str(&skip_objects(6, &[1, 2])).unwrap();
+        assert_eq!(skip["print"]["command"], "skip_objects");
+        assert_eq!(
+            skip["print"]["obj_list"].as_array().map(|a| a.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn project_file_opts_flags() {
+        let opts = ProjectFileOpts {
+            bed_leveling: true,
+            flow_cali: false,
+            vibration_cali: true,
+            layer_inspect: false,
+            timelapse: true,
+        };
+        let json = project_file_with_ams_opts(9, "cube.gcode.3mf", "cube", 1, &[], opts);
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["print"]["bed_leveling"], true);
+        assert_eq!(v["print"]["flow_cali"], false);
+        assert_eq!(v["print"]["vibration_cali"], true);
+        assert_eq!(v["print"]["layer_inspect"], false);
+        assert_eq!(v["print"]["timelapse"], true);
+        assert_eq!(v["print"]["url"], "ftp://cube.gcode.3mf");
+        let cloud = project_file_cloud_opts(
+            9,
+            "cube.gcode.3mf",
+            "cube",
+            1,
+            "https://cdn.example/cube.gcode.3mf",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            &[],
+            opts,
+        );
+        let c: Value = serde_json::from_str(&cloud).unwrap();
+        assert_eq!(c["print"]["timelapse"], true);
+        assert!(c["print"]["url"].as_str().unwrap().starts_with("https://"));
     }
 }

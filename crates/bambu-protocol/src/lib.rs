@@ -48,10 +48,12 @@ pub use hms::{
     refresh_catalog, save_cached_catalog, HMS_HOST,
 };
 pub use mqtt::{
-    app_cert_install, chamber_light, gcode_line, next_sequence_id, parse_ams, parse_hms_items,
-    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_cloud,
-    project_file_with_ams, pushall, report_topic, request_topic, resume, stop, LAN_MQTT_PORT,
-    LAN_MQTT_USER,
+    ams_change_filament, app_cert_install, chamber_light, gcode_line, hms_ignore, hms_resume,
+    hms_stop, next_sequence_id, parse_ams, parse_hms_items, parse_printer_cert, parse_push_status,
+    pause, print_speed, project_file, project_file_cloud, project_file_cloud_opts,
+    project_file_with_ams, project_file_with_ams_opts, pushall, report_topic, request_topic,
+    resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts,
+    LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
@@ -100,6 +102,7 @@ pub struct LanBackend {
     pub serial: String,
     pub credentials: SlicerCredentials,
     pub ams_mapping: Vec<i32>,
+    pub project_opts: ProjectFileOpts,
 }
 
 impl LanBackend {
@@ -110,6 +113,7 @@ impl LanBackend {
             serial: String::new(),
             credentials: SlicerCredentials::default(),
             ams_mapping: Vec::new(),
+            project_opts: ProjectFileOpts::default(),
         }
     }
 
@@ -125,6 +129,11 @@ impl LanBackend {
 
     pub fn with_ams_mapping(mut self, mapping: Vec<i32>) -> Self {
         self.ams_mapping = mapping;
+        self
+    }
+
+    pub fn with_project_opts(mut self, opts: ProjectFileOpts) -> Self {
+        self.project_opts = opts;
         self
     }
 
@@ -263,8 +272,14 @@ impl PrinterBackend for LanBackend {
             archive.len()
         );
         ftps::stor(&self.host, &self.access_code, &remote, &archive).map_err(Self::map_err)?;
-        let payload =
-            project_file_with_ams(next_sequence_id(), &remote, &stem, 1, &self.ams_mapping);
+        let payload = project_file_with_ams_opts(
+            next_sequence_id(),
+            &remote,
+            &stem,
+            1,
+            &self.ams_mapping,
+            self.project_opts,
+        );
         let report = self
             .publish(
                 &payload,
@@ -319,6 +334,69 @@ impl PrinterBackend for LanBackend {
 
     async fn set_chamber_light(&self, on: bool) -> Result<(), DeviceError> {
         self.command(chamber_light(next_sequence_id(), on)).await
+    }
+
+    async fn set_bed_temp(&self, temp_c: u16) -> Result<(), DeviceError> {
+        self.command(set_bed_temp(next_sequence_id(), temp_c)).await
+    }
+
+    async fn set_nozzle_temp(&self, temp_c: u16) -> Result<(), DeviceError> {
+        self.command(set_nozzle_temp(next_sequence_id(), temp_c))
+            .await
+    }
+
+    async fn set_fan(&self, fan_index: u8, speed: u8) -> Result<(), DeviceError> {
+        self.command(set_fan(next_sequence_id(), fan_index, speed))
+            .await
+    }
+
+    async fn ams_load(
+        &self,
+        ams_id: u8,
+        slot_id: u8,
+        old_temp: u16,
+        new_temp: u16,
+    ) -> Result<(), DeviceError> {
+        self.command(ams_change_filament(
+            next_sequence_id(),
+            true,
+            ams_id,
+            slot_id,
+            old_temp,
+            new_temp,
+        ))
+        .await
+    }
+
+    async fn ams_unload(&self, ams_id: u8) -> Result<(), DeviceError> {
+        self.command(ams_change_filament(
+            next_sequence_id(),
+            false,
+            ams_id,
+            255,
+            0,
+            0,
+        ))
+        .await
+    }
+
+    async fn hms_resume(&self, err: &str, job_id: &str) -> Result<(), DeviceError> {
+        self.command(hms_resume(next_sequence_id(), err, job_id))
+            .await
+    }
+
+    async fn hms_ignore(&self, err: &str, job_id: &str) -> Result<(), DeviceError> {
+        self.command(hms_ignore(next_sequence_id(), err, job_id))
+            .await
+    }
+
+    async fn hms_stop(&self, err: &str, job_id: &str) -> Result<(), DeviceError> {
+        self.command(hms_stop(next_sequence_id(), err, job_id))
+            .await
+    }
+
+    async fn skip_objects(&self, ids: &[u32]) -> Result<(), DeviceError> {
+        self.command(skip_objects(next_sequence_id(), ids)).await
     }
 }
 

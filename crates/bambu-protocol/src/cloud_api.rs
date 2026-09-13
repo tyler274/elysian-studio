@@ -571,6 +571,26 @@ mod tests {
     }
 
     #[test]
+    fn bind_data_devices_shape() {
+        let v = serde_json::json!({
+            "data": {
+                "devices": [
+                    {
+                        "dev_id": "01P00AFAKE00003",
+                        "name": "Office",
+                        "dev_name": "A1",
+                        "online": "1"
+                    }
+                ]
+            }
+        });
+        let devices = parse_bind_devices(&v);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].dev_id, "01P00AFAKE00003");
+        assert!(devices[0].online);
+    }
+
+    #[test]
     fn upload_ticket_and_body() {
         let body = upload_ticket_body("cube.gcode.3mf", 12, "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(body["filename"], "cube.gcode.3mf");
@@ -584,6 +604,42 @@ mod tests {
         let ticket = parse_upload_ticket(&v).unwrap();
         assert_eq!(ticket.put_url, "https://oss.example/put");
         assert!(ticket.public_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn upload_ticket_nested_url_and_headers() {
+        let v = serde_json::json!({
+            "data": {
+                "url": {
+                    "put": "https://oss.example/put",
+                    "get": "https://cdn.example/cube.gcode.3mf"
+                },
+                "headers": {
+                    "x-amz-acl": "private"
+                }
+            }
+        });
+        let ticket = parse_upload_ticket(&v).unwrap();
+        assert_eq!(ticket.put_url, "https://oss.example/put");
+        assert_eq!(ticket.public_url, "https://cdn.example/cube.gcode.3mf");
+        assert!(ticket
+            .extra_headers
+            .iter()
+            .any(|(k, v)| k == "x-amz-acl" && v == "private"));
+    }
+
+    #[test]
+    fn parse_refresh_tokens() {
+        let v = serde_json::json!({
+            "data": {
+                "accessToken": "tok_refresh",
+                "refreshToken": "ref_refresh",
+                "userId": "99"
+            }
+        });
+        let (access, refresh) = parse_refresh(&v).unwrap();
+        assert_eq!(access, "tok_refresh");
+        assert_eq!(refresh, "ref_refresh");
     }
 
     #[test]

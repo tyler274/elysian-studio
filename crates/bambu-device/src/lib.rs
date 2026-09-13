@@ -40,6 +40,20 @@ pub struct MachineState {
     pub online: bool,
     pub nozzle_temp_c: f32,
     pub bed_temp_c: f32,
+    pub nozzle_target_c: f32,
+    pub bed_target_c: f32,
+    pub chamber_temp_c: f32,
+    pub cooling_fan: u8,
+    pub aux_fan: u8,
+    pub chamber_fan: u8,
+    pub heatbreak_fan: u8,
+    pub spd_lvl: u8,
+    pub spd_mag: u16,
+    pub print_error: u32,
+    pub mc_print_stage: String,
+    pub gcode_file: String,
+    pub job_id: String,
+    pub chamber_light_on: bool,
     /// Raw `print.fun` capability mask from `push_status`.
     pub fun: u64,
     /// Printer Developer Mode is **on** when `fun` bit 29 is clear.
@@ -67,6 +81,20 @@ impl Default for MachineState {
             online: false,
             nozzle_temp_c: 0.0,
             bed_temp_c: 0.0,
+            nozzle_target_c: 0.0,
+            bed_target_c: 0.0,
+            chamber_temp_c: 0.0,
+            cooling_fan: 0,
+            aux_fan: 0,
+            chamber_fan: 0,
+            heatbreak_fan: 0,
+            spd_lvl: 0,
+            spd_mag: 0,
+            print_error: 0,
+            mc_print_stage: String::new(),
+            gcode_file: String::new(),
+            job_id: String::new(),
+            chamber_light_on: false,
             fun: 0,
             developer_mode: true,
             mc_percent: 0,
@@ -80,13 +108,16 @@ impl Default for MachineState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AmsTray {
     pub id: u8,
+    pub ams_id: u8,
     pub filament_type: String,
     pub color: String,
     pub remain: Option<u8>,
     pub humidity: Option<u8>,
+    pub tray_info_idx: String,
+    pub temp: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -97,6 +128,9 @@ pub struct AmsState {
     pub mapping: Vec<i32>,
     /// Unit humidity (firmware enum / percent; printer-dependent).
     pub humidity: Option<u8>,
+    pub unit_temp: Option<f32>,
+    /// External spool (`print.vt_tray`).
+    pub vt_tray: Option<AmsTray>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +156,37 @@ pub trait PrinterBackend {
     fn stop(&self) -> impl Future<Output = Result<(), DeviceError>> + Send;
     fn set_print_speed(&self, level: u8) -> impl Future<Output = Result<(), DeviceError>> + Send;
     fn set_chamber_light(&self, on: bool) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn set_bed_temp(&self, temp_c: u16) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn set_nozzle_temp(&self, temp_c: u16) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn set_fan(
+        &self,
+        fan_index: u8,
+        speed: u8,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn ams_load(
+        &self,
+        ams_id: u8,
+        slot_id: u8,
+        old_temp: u16,
+        new_temp: u16,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn ams_unload(&self, ams_id: u8) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn hms_resume(
+        &self,
+        err: &str,
+        job_id: &str,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn hms_ignore(
+        &self,
+        err: &str,
+        job_id: &str,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn hms_stop(
+        &self,
+        err: &str,
+        job_id: &str,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn skip_objects(&self, ids: &[u32]) -> impl Future<Output = Result<(), DeviceError>> + Send;
 }
 
 #[cfg(test)]

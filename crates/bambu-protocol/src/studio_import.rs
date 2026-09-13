@@ -545,6 +545,18 @@ mod tests {
     }
 
     #[test]
+    fn engine_conf_fixture_copies_tokens() {
+        let mut found = EngineTokens::default();
+        merge_engine_text(
+            include_str!("../tests/fixtures/BambuNetworkEngine.conf"),
+            &mut found,
+        );
+        assert_eq!(found.access_token, "tok_test_not_real");
+        assert_eq!(found.refresh_token, "ref_test_not_real");
+        assert_eq!(found.country_code, "US");
+    }
+
+    #[test]
     fn cn_country_overrides_iot_environment() {
         let v = serde_json::json!({
             "iot_environment": "3",
@@ -584,7 +596,7 @@ mod tests {
         std::fs::write(plugins.join("libbambu_networking.so"), blob).unwrap();
         std::fs::write(
             studio.join("BambuNetworkEngine.conf"),
-            r#"{"accessToken":"tok_test_not_real","refreshToken":"ref_test_not_real"}"#,
+            include_str!("../tests/fixtures/BambuNetworkEngine.conf"),
         )
         .unwrap();
 

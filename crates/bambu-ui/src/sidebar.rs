@@ -225,6 +225,26 @@ impl crate::App {
                     self.hms_lines.join("\n")
                 })
                 .size(11),
+                row![
+                    button("HMS resume").on_press(Message::HmsResume),
+                    button("HMS ignore").on_press(Message::HmsIgnore),
+                ]
+                .spacing(6),
+                checkbox(self.project_opts.bed_leveling)
+                    .label("Bed level")
+                    .on_toggle(Message::ProjectBedLevel),
+                checkbox(self.project_opts.flow_cali)
+                    .label("Flow cali")
+                    .on_toggle(Message::ProjectFlowCali),
+                checkbox(self.project_opts.vibration_cali)
+                    .label("Vibration cali")
+                    .on_toggle(Message::ProjectVibrationCali),
+                checkbox(self.project_opts.layer_inspect)
+                    .label("Layer inspect")
+                    .on_toggle(Message::ProjectLayerInspect),
+                checkbox(self.project_opts.timelapse)
+                    .label("Timelapse")
+                    .on_toggle(Message::ProjectTimelapse),
                 button("Send last slice").on_press(Message::Send),
                 button("Chamber / RTSPS live").on_press(Message::Chamber),
                 text(&self.status).size(13),
