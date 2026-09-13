@@ -1448,6 +1448,104 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
             settings.filament_colour.clone(),
         );
     }
+    if !settings.filament_id.is_empty() {
+        insert(&mut map, "filament_id", settings.filament_id.clone());
+    }
+    if settings.filament_soluble {
+        insert_bool(&mut map, "filament_soluble", true);
+    }
+    if settings.filament_is_support {
+        insert_bool(&mut map, "filament_is_support", true);
+    }
+    if settings.enable_pressure_advance {
+        insert_bool(&mut map, "enable_pressure_advance", true);
+    }
+    if settings.pressure_advance > 0.0 {
+        insert(
+            &mut map,
+            "pressure_advance",
+            num_str(settings.pressure_advance),
+        );
+    }
+    if settings.nozzle_temperature_range_low > 0 {
+        insert(
+            &mut map,
+            "nozzle_temperature_range_low",
+            settings.nozzle_temperature_range_low.to_string(),
+        );
+    }
+    if settings.filament_cost > 0.0 {
+        insert(&mut map, "filament_cost", num_str(settings.filament_cost));
+    }
+    if !settings.filament_notes.is_empty() {
+        insert(&mut map, "filament_notes", settings.filament_notes.clone());
+    }
+    if settings.filament_printable != 0 {
+        insert(
+            &mut map,
+            "filament_printable",
+            settings.filament_printable.to_string(),
+        );
+    }
+    if settings.filament_adaptive_volumetric_speed {
+        insert_bool(&mut map, "filament_adaptive_volumetric_speed", true);
+    }
+    if settings.filament_prime_volume > 0.0 {
+        insert(
+            &mut map,
+            "filament_prime_volume",
+            num_str(settings.filament_prime_volume),
+        );
+    }
+    if settings.filament_flush_temp != 0 {
+        insert(
+            &mut map,
+            "filament_flush_temp",
+            settings.filament_flush_temp.to_string(),
+        );
+    }
+    if settings.filament_flush_temp_fast != 0 {
+        insert(
+            &mut map,
+            "filament_flush_temp_fast",
+            settings.filament_flush_temp_fast.to_string(),
+        );
+    }
+    if settings.filament_flush_volumetric_speed > 0.0 {
+        insert(
+            &mut map,
+            "filament_flush_volumetric_speed",
+            num_str(settings.filament_flush_volumetric_speed),
+        );
+    }
+    if settings.filament_ramming_volumetric_speed >= 0.0 {
+        insert(
+            &mut map,
+            "filament_ramming_volumetric_speed",
+            num_str(settings.filament_ramming_volumetric_speed),
+        );
+    }
+    if settings.filament_ramming_travel_time > 0.0 {
+        insert(
+            &mut map,
+            "filament_ramming_travel_time",
+            num_str(settings.filament_ramming_travel_time),
+        );
+    }
+    if settings.filament_pre_cooling_temperature != 0 {
+        insert(
+            &mut map,
+            "filament_pre_cooling_temperature",
+            settings.filament_pre_cooling_temperature.to_string(),
+        );
+    }
+    if settings.filament_map_mode != crate::FilamentMapMode::AutoForFlush {
+        insert(
+            &mut map,
+            "filament_map_mode",
+            settings.filament_map_mode.as_str().to_string(),
+        );
+    }
     insert(
         &mut map,
         "chamber_temperatures",

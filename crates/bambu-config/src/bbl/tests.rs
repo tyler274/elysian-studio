@@ -1604,3 +1604,60 @@ fn clone_filament_as_user_writes_from_user() {
     assert_eq!(v["instantiation"], "true");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn tab_filament_keys_parse_and_skip_cube_emit() {
+    let empty = SliceSettings::default();
+    let baked = project_settings_json(&empty).unwrap();
+    for key in [
+        "filament_soluble",
+        "enable_pressure_advance",
+        "pressure_advance",
+        "filament_notes",
+        "filament_map_mode",
+        "filament_id",
+        "filament_flush_temp",
+        "filament_ramming_volumetric_speed",
+        "filament_ramming_travel_time",
+        "filament_pre_cooling_temperature",
+    ] {
+        assert!(
+            !baked.contains(key),
+            "{key} must not grow default CONFIG_BLOCK"
+        );
+    }
+    let s = settings_from_json(
+        r#"{"filament_soluble":"1","enable_pressure_advance":"true","pressure_advance":"0.04","filament_notes":"kitchen","filament_id":"GFA00","filament_map_mode":"Manual","nozzle_temperature_range_low":"190","filament_ramming_volumetric_speed":"12","filament_ramming_travel_time":"0.4","filament_pre_cooling_temperature":"180"}"#,
+    )
+    .unwrap();
+    assert!(s.filament_soluble);
+    assert!(s.enable_pressure_advance);
+    assert!((s.pressure_advance - 0.04).abs() < 1e-9);
+    assert_eq!(s.filament_notes, "kitchen");
+    assert_eq!(s.filament_id, "GFA00");
+    assert_eq!(s.filament_map_mode, crate::FilamentMapMode::Manual);
+    assert_eq!(s.nozzle_temperature_range_low, 190);
+    assert!((s.filament_ramming_volumetric_speed - 12.0).abs() < 1e-9);
+    assert!((s.filament_ramming_travel_time - 0.4).abs() < 1e-9);
+    assert_eq!(s.filament_pre_cooling_temperature, 180);
+    let with = project_settings_json(&s).unwrap();
+    assert!(with.contains("pressure_advance"));
+    assert!(with.contains("filament_map_mode"));
+    assert!(with.contains("filament_ramming_volumetric_speed"));
+}
+
+#[test]
+fn ams_tray_info_idx_resolves_bambu_pla_basic() {
+    if bbl_resources_dir().is_none() {
+        return;
+    }
+    let profiles = list_instantiated_bbl_profiles(BblProfileKind::Filament);
+    let hit = resolve_ams_filament("GFA00", "PLA", &profiles).expect("GFA00");
+    assert!(
+        hit.name.contains("PLA Basic") || profile_filament_id(&hit.path) == "GFA00",
+        "{}",
+        hit.name
+    );
+    let generic = resolve_ams_filament("", "PLA", &profiles).expect("Generic PLA");
+    assert!(generic.name.starts_with("Generic PLA"));
+}

@@ -490,6 +490,49 @@ impl CloudApi {
         Ok(ticket)
     }
 
+    pub fn list_filaments(&self) -> Result<Vec<crate::FilamentSpool>, CloudApiError> {
+        let v = self.send_json("GET", crate::filament_v2_path(), None)?;
+        Ok(crate::parse_cloud_filaments(&v))
+    }
+
+    pub fn create_filament(
+        &self,
+        spool: &crate::FilamentSpool,
+    ) -> Result<crate::FilamentSpool, CloudApiError> {
+        let body = crate::spool_to_cloud_json(spool);
+        let v = self.send_json("POST", crate::filament_v2_path(), Some(&body))?;
+        Ok(crate::spool_from_cloud_json(&v)
+            .or_else(|| crate::parse_cloud_filaments(&v).into_iter().next())
+            .unwrap_or_else(|| {
+                let mut next = spool.clone();
+                next.cloud_synced = true;
+                next
+            }))
+    }
+
+    pub fn update_filament(
+        &self,
+        spool: &crate::FilamentSpool,
+    ) -> Result<crate::FilamentSpool, CloudApiError> {
+        let body = crate::spool_to_cloud_json(spool);
+        let v = self.send_json("PUT", crate::filament_v2_path(), Some(&body))?;
+        Ok(crate::spool_from_cloud_json(&v).unwrap_or_else(|| {
+            let mut next = spool.clone();
+            next.cloud_synced = true;
+            next
+        }))
+    }
+
+    pub fn delete_filaments(&self, ids: &[String]) -> Result<(), CloudApiError> {
+        let body = crate::batch_delete_body(ids);
+        let _ = self.send_json("DELETE", crate::filament_v2_batch_path(), Some(&body))?;
+        Ok(())
+    }
+
+    pub fn sync_ams_weights(&self, body: &Value) -> Result<Value, CloudApiError> {
+        self.send_json("POST", crate::filament_v2_ams_sync_path(), Some(body))
+    }
+
     pub fn login(
         region: &str,
         account: &str,

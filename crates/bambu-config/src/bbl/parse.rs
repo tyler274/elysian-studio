@@ -1206,6 +1206,60 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = text(map, "filament_colour").or_else(|| text(map, "default_filament_colour")) {
         s.filament_colour = normalize_filament_colour(&v);
     }
+    if let Some(v) = text(map, "filament_id") {
+        s.filament_id = v;
+    }
+    if let Some(v) = bool_val(map, "filament_soluble") {
+        s.filament_soluble = v;
+    }
+    if let Some(v) = bool_val(map, "filament_is_support") {
+        s.filament_is_support = v;
+    }
+    if let Some(v) = bool_val(map, "enable_pressure_advance") {
+        s.enable_pressure_advance = v;
+    }
+    if let Some(v) = num(map, "pressure_advance") {
+        s.pressure_advance = v.max(0.0);
+    }
+    if let Some(v) = num(map, "nozzle_temperature_range_low") {
+        s.nozzle_temperature_range_low = v.round().clamp(0.0, 500.0) as u16;
+    }
+    if let Some(v) = num(map, "filament_cost") {
+        s.filament_cost = v.max(0.0);
+    }
+    if let Some(v) = text(map, "filament_notes") {
+        s.filament_notes = v;
+    }
+    if let Some(v) = i32_val(map, "filament_printable") {
+        s.filament_printable = v;
+    }
+    if let Some(v) = bool_val(map, "filament_adaptive_volumetric_speed") {
+        s.filament_adaptive_volumetric_speed = v;
+    }
+    if let Some(v) = num(map, "filament_prime_volume") {
+        s.filament_prime_volume = v.max(0.0);
+    }
+    if let Some(v) = i32_val(map, "filament_flush_temp") {
+        s.filament_flush_temp = v;
+    }
+    if let Some(v) = i32_val(map, "filament_flush_temp_fast") {
+        s.filament_flush_temp_fast = v;
+    }
+    if let Some(v) = num(map, "filament_flush_volumetric_speed") {
+        s.filament_flush_volumetric_speed = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_ramming_volumetric_speed") {
+        s.filament_ramming_volumetric_speed = v;
+    }
+    if let Some(v) = num(map, "filament_ramming_travel_time") {
+        s.filament_ramming_travel_time = v.max(0.0);
+    }
+    if let Some(v) = i32_val(map, "filament_pre_cooling_temperature") {
+        s.filament_pre_cooling_temperature = v.max(0);
+    }
+    if let Some(v) = text(map, "filament_map_mode") {
+        s.filament_map_mode = crate::FilamentMapMode::from_name(&v);
+    }
     if let Some(v) = num(map, "chamber_temperatures") {
         s.chamber_temperature_c = v.round() as i32;
     }

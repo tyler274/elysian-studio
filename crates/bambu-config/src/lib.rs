@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 pub use bbl::{
     apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, clone_filament_as_user,
     config_block_gcode, delete_user_filament, flatten_bbl_profile, is_region_key,
-    json_instantiation_enabled, list_bbl_profiles, list_filament_json_dir,
+    json_instantiation_enabled, json_profile_string, list_bbl_profiles, list_filament_json_dir,
     list_instantiated_bbl_profiles, list_studio_user_filaments, load_bbl_process,
-    normalize_filament_colour, overlay_bbl_profile, patch_filament_colour, project_settings_json,
+    normalize_filament_colour, overlay_bbl_profile, patch_filament_colour,
+    patch_user_filament_settings, profile_filament_id, project_settings_json, resolve_ams_filament,
     save_user_filament, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
     BblProfileEntry, BblProfileKind, ConfigError,
 };
@@ -145,6 +146,51 @@ impl CoolingSlowdownLogic {
             Self::Uniform => "uniform_cooling",
             Self::ConsistentSurface => "consistent_surface",
         }
+    }
+}
+
+/// C++ `FilamentMapMode` (`filament_map_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FilamentMapMode {
+    #[default]
+    AutoForFlush,
+    AutoForMatch,
+    AutoForQuality,
+    Manual,
+}
+
+impl FilamentMapMode {
+    pub fn from_name(name: &str) -> Self {
+        match name.trim() {
+            "Auto For Match" | "Match" => Self::AutoForMatch,
+            "Auto For Quality" | "Quality" => Self::AutoForQuality,
+            "Manual" | "Custom" => Self::Manual,
+            _ => Self::AutoForFlush,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AutoForFlush => "Auto For Flush",
+            Self::AutoForMatch => "Auto For Match",
+            Self::AutoForQuality => "Auto For Quality",
+            Self::Manual => "Manual",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AutoForFlush => "Flush",
+            Self::AutoForMatch => "Match",
+            Self::AutoForQuality => "Quality",
+            Self::Manual => "Manual",
+        }
+    }
+}
+
+impl std::fmt::Display for FilamentMapMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
     }
 }
 
@@ -1539,6 +1585,42 @@ pub struct SliceSettings {
     pub filament_vendor: String,
     /// C++ `filament_colour` / `default_filament_colour` (`#RRGGBBAA`). Empty skips emit.
     pub filament_colour: String,
+    /// C++ `filament_id` / AMS `tray_info_idx`. Empty skips emit.
+    pub filament_id: String,
+    /// C++ `filament_soluble`.
+    pub filament_soluble: bool,
+    /// C++ `filament_is_support`.
+    pub filament_is_support: bool,
+    /// C++ `enable_pressure_advance`.
+    pub enable_pressure_advance: bool,
+    /// C++ `pressure_advance`.
+    pub pressure_advance: f64,
+    /// C++ `nozzle_temperature_range_low`.
+    pub nozzle_temperature_range_low: u16,
+    /// C++ `filament_cost` (currency units / kg).
+    pub filament_cost: f64,
+    /// C++ `filament_notes`.
+    pub filament_notes: String,
+    /// C++ `filament_printable` bitmask. 0 skips emit.
+    pub filament_printable: i32,
+    /// C++ `filament_adaptive_volumetric_speed`.
+    pub filament_adaptive_volumetric_speed: bool,
+    /// C++ `filament_prime_volume` (mm³).
+    pub filament_prime_volume: f64,
+    /// C++ `filament_flush_temp`.
+    pub filament_flush_temp: i32,
+    /// C++ `filament_flush_temp_fast`.
+    pub filament_flush_temp_fast: i32,
+    /// C++ `filament_flush_volumetric_speed`.
+    pub filament_flush_volumetric_speed: f64,
+    /// C++ `filament_ramming_volumetric_speed`. `-1` means max volumetric (skip emit).
+    pub filament_ramming_volumetric_speed: f64,
+    /// C++ `filament_ramming_travel_time` (seconds). 0 skips emit.
+    pub filament_ramming_travel_time: f64,
+    /// C++ `filament_pre_cooling_temperature`. 0 skips emit.
+    pub filament_pre_cooling_temperature: i32,
+    /// C++ `filament_map_mode`. Default flush so cube stays `filament_map = [1]`.
+    pub filament_map_mode: FilamentMapMode,
     /// C++ `chamber_temperatures` / placeholder `overall_chamber_temperature`.
     pub chamber_temperature_c: i32,
     /// C++ `temperature_vitrification`.
@@ -1934,6 +2016,24 @@ impl Default for SliceSettings {
             filament_type: String::from("PLA"),
             filament_vendor: String::from("Generic"),
             filament_colour: String::new(),
+            filament_id: String::new(),
+            filament_soluble: false,
+            filament_is_support: false,
+            enable_pressure_advance: false,
+            pressure_advance: 0.0,
+            nozzle_temperature_range_low: 0,
+            filament_cost: 0.0,
+            filament_notes: String::new(),
+            filament_printable: 0,
+            filament_adaptive_volumetric_speed: false,
+            filament_prime_volume: 0.0,
+            filament_flush_temp: 0,
+            filament_flush_temp_fast: 0,
+            filament_flush_volumetric_speed: 0.0,
+            filament_ramming_volumetric_speed: -1.0,
+            filament_ramming_travel_time: 0.0,
+            filament_pre_cooling_temperature: 0,
+            filament_map_mode: FilamentMapMode::AutoForFlush,
             chamber_temperature_c: 0,
             temperature_vitrification_c: 45,
             cooling_filter_enabled: false,

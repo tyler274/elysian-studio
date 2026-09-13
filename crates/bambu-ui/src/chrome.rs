@@ -1,4 +1,4 @@
-//! Studio notebook header: Prepare / Preview / Device plus Open / Slice / Send.
+//! Studio notebook header: Prepare / Preview / Device / Filament plus Open / Slice / Send.
 
 use iced::widget::{button, row, text};
 use iced::{Element, Fill};
@@ -11,6 +11,7 @@ impl crate::App {
             self.workspace_tab("Prepare", Workspace::Prepare),
             self.workspace_tab("Preview", Workspace::Preview),
             self.workspace_tab("Device", Workspace::Device),
+            self.workspace_tab("Filament", Workspace::Filament),
             button("Open").on_press(Message::OpenModel),
             button("Slice").on_press(Message::Slice),
             button("Send last slice").on_press(Message::Send),

@@ -2,6 +2,7 @@
 
 mod chrome;
 mod filament;
+mod inventory;
 mod monitor;
 mod sidebar;
 
@@ -12,7 +13,8 @@ use std::process::Command;
 use bambu_config::{
     clone_filament_as_user, delete_user_filament, list_bbl_profiles, list_filament_json_dir,
     list_instantiated_bbl_profiles, list_studio_user_filaments, load_bbl_process,
-    overlay_bbl_profile, patch_filament_colour, BblProfileEntry, BblProfileKind, SliceSettings,
+    overlay_bbl_profile, patch_filament_colour, patch_user_filament_settings, profile_filament_id,
+    resolve_ams_filament, BblProfileEntry, BblProfileKind, FilamentMapMode, SliceSettings,
 };
 use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
@@ -23,11 +25,11 @@ use bambu_gpu::{
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
-    describe_hms, load_cached_catalog, load_cloud_session, load_lan_codes, refresh_catalog,
-    save_cloud_session, CloudApi, CloudBackend, CloudDevice, LanBackend, LoginResult,
-    ProjectFileOpts, StudioPrinter,
+    describe_hms, load_cached_catalog, load_cloud_session, load_lan_codes, load_spools,
+    refresh_catalog, save_cloud_session, save_spools, CloudApi, CloudBackend, CloudDevice,
+    FilamentSpool, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
 };
-use bambu_slicer::check_print_path_conflicts;
+use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, shader, text};
 use iced::{Color, Element, Fill, Subscription, Task, Theme};
 
@@ -122,6 +124,11 @@ struct App {
     filament_slots: Vec<FilamentSlot>,
     active_filament: usize,
     user_preset_name: String,
+    filament_page: FilamentPage,
+    spools: Vec<FilamentSpool>,
+    spool_search: String,
+    selected_spool: Option<usize>,
+    draft_spool: FilamentSpool,
     selected_object: usize,
     selected_volume: usize,
     machine: MachineState,
@@ -236,6 +243,50 @@ enum Message {
     RefreshHms,
     HmsCatalog(Result<String, String>),
     Calibration,
+    SyncAms,
+    FilamentPage(FilamentPage),
+    FilamentMapMode(FilamentMapMode),
+    AssignSlotExtruder { slot: usize, extruder: i32 },
+    ParamSoluble(bool),
+    ParamSupport(bool),
+    ParamPaEnable(bool),
+    ParamPa(f64),
+    ParamRangeLow(f64),
+    ParamCost(f64),
+    ParamNotes(String),
+    ParamAdaptiveVol(bool),
+    ParamPrime(f64),
+    ParamFlushTemp(f64),
+    ParamFlushTempFast(f64),
+    ParamFlushVol(f64),
+    ParamRammingVol(f64),
+    ParamRammingTravel(f64),
+    ParamPrecool(f64),
+    ParamPrintable(bool),
+    ParamStartGcode(String),
+    ParamEndGcode(String),
+    ParamRetract(f64),
+    ParamWipe(bool),
+    ParamLongEc(bool),
+    CoolingFanMin(f64),
+    CoolingFanMax(f64),
+    CoolingSlowdown(f64),
+    InventorySearch(String),
+    InventoryNew,
+    InventorySelect(usize),
+    InventorySave,
+    InventoryDelete,
+    InventoryPull,
+    InventoryPush,
+    InventoryPulled(Result<Vec<FilamentSpool>, String>),
+    InventoryPushed(Result<String, String>),
+    BindSpoolToSlot,
+    SpoolBrand(String),
+    SpoolMaterial(String),
+    SpoolSeries(String),
+    SpoolColor(String),
+    SpoolFilamentId(String),
+    SpoolNote(String),
 }
 
 impl From<ViewportEvent> for Message {
@@ -280,6 +331,7 @@ enum Workspace {
     Prepare,
     Preview,
     Device,
+    Filament,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +346,41 @@ struct FilamentSlot {
     name: String,
     colour: String,
     source: FilamentSource,
+    filament_id: String,
+    filament_type: String,
+    is_support: bool,
+    ams_id: Option<u8>,
+    slot_id: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FilamentPage {
+    #[default]
+    Filament,
+    Cooling,
+    Overrides,
+    Advanced,
+    Notes,
+    Multi,
+}
+
+impl FilamentPage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Filament => "Filament",
+            Self::Cooling => "Cooling",
+            Self::Overrides => "Overrides",
+            Self::Advanced => "Advanced",
+            Self::Notes => "Notes",
+            Self::Multi => "Multi",
+        }
+    }
+}
+
+impl std::fmt::Display for FilamentPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +468,11 @@ impl App {
             filament_slots: Vec::new(),
             active_filament: 0,
             user_preset_name: String::new(),
+            filament_page: FilamentPage::Filament,
+            spools: Vec::new(),
+            spool_search: String::new(),
+            selected_spool: None,
+            draft_spool: FilamentSpool::default(),
             selected_object: 0,
             selected_volume: 0,
             machine: MachineState::default(),
@@ -408,6 +500,11 @@ impl App {
         app.init_filament_slots();
         app.sync_keep_solid();
         app.load_account_from_disk();
+        app.spools = load_spools(bambu_protocol::default_config_dir()).unwrap_or_default();
+        if let Some(first) = app.spools.first() {
+            app.draft_spool = first.clone();
+            app.selected_spool = Some(0);
+        }
         app
     }
 
@@ -1114,6 +1211,118 @@ impl App {
                 }
                 self.status = "tests/calibration_block not found".into();
             }
+            Message::SyncAms => self.sync_ams(),
+            Message::FilamentPage(page) => self.filament_page = page,
+            Message::FilamentMapMode(mode) => {
+                self.settings.filament_map_mode = mode;
+                self.apply_group_mode();
+            }
+            Message::AssignSlotExtruder { slot, extruder } => {
+                self.settings.filament_map_mode = FilamentMapMode::Manual;
+                if let Some(mapped) = self.settings.filament_map.get_mut(slot) {
+                    *mapped = extruder.clamp(1, 2);
+                }
+            }
+            Message::ParamSoluble(v) => {
+                self.settings.filament_soluble = v;
+                self.mark_active_support_flags();
+            }
+            Message::ParamSupport(v) => {
+                self.settings.filament_is_support = v;
+                if let Some(s) = self.filament_slots.get_mut(self.active_filament) {
+                    s.is_support = v;
+                }
+            }
+            Message::ParamPaEnable(v) => self.settings.enable_pressure_advance = v,
+            Message::ParamPa(v) => self.settings.pressure_advance = v.max(0.0),
+            Message::ParamRangeLow(v) => {
+                self.settings.nozzle_temperature_range_low = v.round().clamp(0.0, 500.0) as u16;
+            }
+            Message::ParamCost(v) => self.settings.filament_cost = v.max(0.0),
+            Message::ParamNotes(s) => self.settings.filament_notes = s,
+            Message::ParamAdaptiveVol(v) => self.settings.filament_adaptive_volumetric_speed = v,
+            Message::ParamPrime(v) => self.settings.filament_prime_volume = v.max(0.0),
+            Message::ParamFlushTemp(v) => self.settings.filament_flush_temp = v.round() as i32,
+            Message::ParamFlushTempFast(v) => {
+                self.settings.filament_flush_temp_fast = v.round() as i32;
+            }
+            Message::ParamFlushVol(v) => self.settings.filament_flush_volumetric_speed = v.max(0.0),
+            Message::ParamRammingVol(v) => self.settings.filament_ramming_volumetric_speed = v,
+            Message::ParamRammingTravel(v) => {
+                self.settings.filament_ramming_travel_time = v.max(0.0);
+            }
+            Message::ParamPrecool(v) => {
+                self.settings.filament_pre_cooling_temperature = v.round() as i32;
+            }
+            Message::ParamPrintable(v) => {
+                self.settings.filament_printable = if v { 1 } else { 0 };
+            }
+            Message::ParamStartGcode(s) => self.settings.filament_start_gcode = s,
+            Message::ParamEndGcode(s) => self.settings.filament_end_gcode = s,
+            Message::ParamRetract(v) => self.settings.retraction_length_mm = v.max(0.0),
+            Message::ParamWipe(v) => self.settings.wipe = v,
+            Message::ParamLongEc(v) => self.settings.long_retraction_when_ec = v,
+            Message::CoolingFanMin(v) => {
+                self.settings.fan_min_speed = v.round().clamp(0.0, 100.0) as u32;
+            }
+            Message::CoolingFanMax(v) => {
+                self.settings.fan_max_speed = v.round().clamp(0.0, 100.0) as u32;
+            }
+            Message::CoolingSlowdown(v) => self.settings.slow_down_layer_time_s = v.max(0.0),
+            Message::InventorySearch(s) => self.spool_search = s,
+            Message::InventoryNew => {
+                self.draft_spool = FilamentSpool::default();
+                self.draft_spool.spool_id = format!("local-{}", self.spools.len() + 1);
+                self.selected_spool = None;
+            }
+            Message::InventorySelect(i) => {
+                if let Some(spool) = self.spools.get(i).cloned() {
+                    self.selected_spool = Some(i);
+                    self.draft_spool = spool;
+                }
+            }
+            Message::InventorySave => self.save_draft_spool(),
+            Message::InventoryDelete => self.delete_selected_spool(),
+            Message::InventoryPull => {
+                if !self.begin_work("pulling cloud filaments…") {
+                    return Task::none();
+                }
+                return offload(pull_cloud_filaments, Message::InventoryPulled);
+            }
+            Message::InventoryPush => {
+                if !self.begin_work("pushing filaments…") {
+                    return Task::none();
+                }
+                let spools = self.spools.clone();
+                return offload(
+                    move || push_cloud_filaments(&spools),
+                    Message::InventoryPushed,
+                );
+            }
+            Message::InventoryPulled(result) => {
+                self.busy = false;
+                match result {
+                    Ok(list) => {
+                        self.merge_pulled_spools(list);
+                        self.status = format!("{} spool(s)", self.spools.len());
+                    }
+                    Err(err) => self.status = format!("pull failed: {err}"),
+                }
+            }
+            Message::InventoryPushed(result) => {
+                self.busy = false;
+                match result {
+                    Ok(msg) => self.status = msg,
+                    Err(err) => self.status = format!("push failed: {err}"),
+                }
+            }
+            Message::BindSpoolToSlot => self.bind_spool_to_active_slot(),
+            Message::SpoolBrand(s) => self.draft_spool.brand = s,
+            Message::SpoolMaterial(s) => self.draft_spool.material_type = s,
+            Message::SpoolSeries(s) => self.draft_spool.series = s,
+            Message::SpoolColor(s) => self.draft_spool.color_code = s,
+            Message::SpoolFilamentId(s) => self.draft_spool.filament_id = s,
+            Message::SpoolNote(s) => self.draft_spool.note = s,
         }
         Task::none()
     }
@@ -1121,6 +1330,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let body: Element<'_, Message> = match self.workspace {
             Workspace::Device => self.device_page(),
+            Workspace::Filament => self.inventory_page(),
             Workspace::Prepare | Workspace::Preview => {
                 let left = container(match self.workspace {
                     Workspace::Preview => self.preview_sidebar(),
@@ -1536,6 +1746,11 @@ impl App {
             name,
             colour,
             source,
+            filament_id: self.settings.filament_id.clone(),
+            filament_type: self.settings.filament_type.clone(),
+            is_support: self.settings.filament_is_support,
+            ams_id: None,
+            slot_id: None,
         }];
         self.active_filament = 0;
         self.sync_filament_map();
@@ -1578,9 +1793,15 @@ impl App {
                 name: default_filament_pick(&self.filament_profiles).0,
                 colour: String::from("#FFFFFFFF"),
                 source: FilamentSource::System,
+                filament_id: String::new(),
+                filament_type: String::from("PLA"),
+                is_support: false,
+                ams_id: None,
+                slot_id: None,
             });
         self.filament_slots.push(slot);
         self.sync_filament_map();
+        self.apply_group_mode();
         self.status = format!("{} filament slot(s)", self.filament_slots.len());
     }
 
@@ -1594,6 +1815,7 @@ impl App {
             self.select_filament_slot(self.filament_slots.len() - 1);
         }
         self.sync_filament_map();
+        self.apply_group_mode();
         self.status = format!("{} filament slot(s)", self.filament_slots.len());
     }
 
@@ -1643,6 +1865,12 @@ impl App {
                     s.name = name.clone();
                     s.source = source;
                     s.colour = colour.clone();
+                    s.filament_id = self.settings.filament_id.clone();
+                    s.filament_type = self.settings.filament_type.clone();
+                    s.is_support = self.settings.filament_is_support;
+                    if s.filament_id.is_empty() {
+                        s.filament_id = profile_filament_id(&path);
+                    }
                 }
                 self.settings.filament_colour = colour;
                 self.filament_name = Some(name);
@@ -1680,6 +1908,7 @@ impl App {
                 if !slot.colour.is_empty() {
                     let _ = patch_filament_colour(&path, &slot.colour);
                 }
+                let _ = patch_user_filament_settings(&path, &self.settings);
                 self.reload_user_filaments();
                 self.user_preset_name.clear();
                 let label = filament::filament_pick_label(FilamentSource::User, &name);
@@ -1708,6 +1937,199 @@ impl App {
             }
             Err(err) => self.status = format!("delete user filament: {err}"),
         }
+    }
+
+    fn mark_active_support_flags(&mut self) {
+        if let Some(s) = self.filament_slots.get_mut(self.active_filament) {
+            s.is_support = self.settings.filament_is_support;
+        }
+    }
+
+    fn group_slots(&self) -> Vec<GroupSlot> {
+        self.filament_slots
+            .iter()
+            .map(|s| GroupSlot {
+                filament_id: s.filament_id.clone(),
+                colour: s.colour.clone(),
+                filament_type: s.filament_type.clone(),
+                is_support: s.is_support,
+            })
+            .collect()
+    }
+
+    fn group_trays(&self) -> Vec<GroupTray> {
+        self.ams
+            .trays
+            .iter()
+            .cloned()
+            .chain(self.ams.vt_tray.clone())
+            .map(|t| GroupTray {
+                ams_id: t.ams_id,
+                tray_info_idx: t.tray_info_idx,
+                filament_type: t.filament_type,
+                color: t.color,
+            })
+            .collect()
+    }
+
+    fn apply_group_mode(&mut self) {
+        let n = self.filament_slots.len().max(1);
+        self.settings.filament_count = n;
+        if self.settings.filament_map_mode == FilamentMapMode::Manual {
+            self.sync_filament_map();
+            return;
+        }
+        self.settings.filament_map = compute_filament_map(
+            self.settings.filament_map_mode,
+            n,
+            self.settings.nozzle_count(),
+            &self.settings.flush_volumes_mm3,
+            &self.group_slots(),
+            &self.group_trays(),
+        );
+    }
+
+    fn sync_ams(&mut self) {
+        let mut trays = self.ams.trays.clone();
+        if let Some(vt) = &self.ams.vt_tray {
+            trays.push(vt.clone());
+        }
+        trays.retain(|t| {
+            !t.filament_type.is_empty() || !t.tray_info_idx.is_empty() || !t.color.is_empty()
+        });
+        if trays.is_empty() {
+            self.status = "no AMS trays — Refresh status first".into();
+            return;
+        }
+        let mut slots = Vec::new();
+        for tray in trays {
+            let resolved = resolve_ams_filament(
+                &tray.tray_info_idx,
+                &tray.filament_type,
+                &self.filament_profiles,
+            );
+            let (name, source, path) = match resolved {
+                Some(p) => (p.name, FilamentSource::System, Some(p.path)),
+                None => (
+                    if tray.filament_type.is_empty() {
+                        String::from("Generic PLA")
+                    } else {
+                        format!("Generic {}", tray.filament_type)
+                    },
+                    FilamentSource::System,
+                    None,
+                ),
+            };
+            slots.push(FilamentSlot {
+                name,
+                colour: slot_colour_hex(&tray.color),
+                source,
+                filament_id: tray.tray_info_idx,
+                filament_type: tray.filament_type,
+                is_support: false,
+                ams_id: Some(tray.ams_id),
+                slot_id: Some(tray.id),
+            });
+            if let Some(path) = path {
+                if slots.len() == 1 {
+                    let _ = overlay_bbl_profile(&mut self.settings, &path);
+                }
+            }
+        }
+        self.filament_slots = slots;
+        self.active_filament = 0;
+        if let Some(first) = self.filament_slots.first().cloned() {
+            let label = filament::filament_pick_label(first.source, &first.name);
+            self.apply_filament_slot_preset(0, &label);
+        }
+        self.sync_filament_map();
+        self.apply_group_mode();
+        self.status = format!("synced {} AMS slot(s)", self.filament_slots.len());
+    }
+
+    fn persist_spools(&mut self) {
+        if let Err(err) = save_spools(bambu_protocol::default_config_dir(), &self.spools) {
+            self.status = format!("spools.json: {err}");
+        }
+    }
+
+    fn save_draft_spool(&mut self) {
+        if self.draft_spool.spool_id.is_empty() {
+            self.draft_spool.spool_id = format!("local-{}", self.spools.len() + 1);
+        }
+        if let Some(i) = self.selected_spool {
+            if let Some(slot) = self.spools.get_mut(i) {
+                *slot = self.draft_spool.clone();
+            }
+        } else {
+            self.spools.push(self.draft_spool.clone());
+            self.selected_spool = Some(self.spools.len() - 1);
+        }
+        self.persist_spools();
+        self.status = format!("saved {}", self.draft_spool.label());
+    }
+
+    fn delete_selected_spool(&mut self) {
+        let Some(i) = self.selected_spool else {
+            self.status = "select a spool first".into();
+            return;
+        };
+        if i < self.spools.len() {
+            self.spools.remove(i);
+        }
+        self.selected_spool = None;
+        self.draft_spool = FilamentSpool::default();
+        self.persist_spools();
+        self.status = "deleted spool".into();
+    }
+
+    fn merge_pulled_spools(&mut self, pulled: Vec<FilamentSpool>) {
+        for remote in pulled {
+            if let Some(existing) = self
+                .spools
+                .iter_mut()
+                .find(|s| !remote.spool_id.is_empty() && s.spool_id == remote.spool_id)
+            {
+                *existing = remote;
+            } else {
+                self.spools.push(remote);
+            }
+        }
+        self.persist_spools();
+    }
+
+    fn bind_spool_to_active_slot(&mut self) {
+        let spool = self.draft_spool.clone();
+        if spool.filament_id.is_empty() && spool.series.is_empty() {
+            self.status = "edit a spool first".into();
+            return;
+        }
+        let resolved = resolve_ams_filament(
+            &spool.filament_id,
+            &spool.material_type,
+            &self.filament_profiles,
+        );
+        if let Some(p) = resolved {
+            let label = filament::filament_pick_label(FilamentSource::System, &p.name);
+            self.apply_filament_slot_preset(self.active_filament, &label);
+        }
+        if let Some(slot) = self.filament_slots.get_mut(self.active_filament) {
+            if !spool.color_code.is_empty() {
+                slot.colour = slot_colour_hex(&spool.color_code);
+            }
+            if !spool.filament_id.is_empty() {
+                slot.filament_id = spool.filament_id.clone();
+            }
+            if !spool.material_type.is_empty() {
+                slot.filament_type = spool.material_type.clone();
+            }
+        }
+        self.settings.filament_colour = slot_colour_hex(&spool.color_code);
+        self.status = format!(
+            "bound {} to slot {}",
+            spool.label(),
+            self.active_filament + 1
+        );
     }
 
     fn selected_vol_mut(&mut self) -> Option<&mut bambu_model::ModelVolume> {
@@ -1861,6 +2283,43 @@ fn default_filament_pick(system: &[BblProfileEntry]) -> (String, FilamentSource)
         .map(|p| p.name.clone())
         .unwrap_or_else(|| String::from("Generic PLA"));
     (name, FilamentSource::System)
+}
+
+fn pull_cloud_filaments() -> Result<Vec<FilamentSpool>, String> {
+    let dir = bambu_protocol::default_config_dir();
+    let session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
+    if !session.has_bearer() {
+        return Err("cloud_token missing".into());
+    }
+    let api = CloudApi::new(
+        &session.region,
+        &session.access_token,
+        &session.refresh_token,
+    );
+    api.list_filaments().map_err(|err| err.to_string())
+}
+
+fn push_cloud_filaments(spools: &[FilamentSpool]) -> Result<String, String> {
+    let dir = bambu_protocol::default_config_dir();
+    let session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
+    if !session.has_bearer() {
+        return Err("cloud_token missing".into());
+    }
+    let api = CloudApi::new(
+        &session.region,
+        &session.access_token,
+        &session.refresh_token,
+    );
+    let mut pushed = 0usize;
+    for spool in spools {
+        if spool.spool_id.is_empty() {
+            api.create_filament(spool).map_err(|err| err.to_string())?;
+        } else {
+            api.update_filament(spool).map_err(|err| err.to_string())?;
+        }
+        pushed += 1;
+    }
+    Ok(format!("pushed {pushed} spool(s)"))
 }
 
 fn offload<T, M>(

@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 mod clip;
+mod filament_group;
 mod fuzzy;
 mod gap_fill;
 mod infill;
@@ -46,6 +47,7 @@ pub use clip::{
     classify_floating, classify_overhang, classify_polyline, clip_polylines, point_in_polygons,
     ClassifiedPath,
 };
+pub use filament_group::{apply_filament_group, compute_filament_map, GroupSlot, GroupTray};
 pub use slice_plane::{loops_from_segments, point_from_xy_mm, slice_at_z};
 pub use slicing::{generate_object_layers, layer_plan, layer_z_values, LayerSpec};
 pub use steps::{PrintObjectStep, PrintStep};
@@ -873,6 +875,9 @@ pub fn slice_from_contours_with_assist(
     mesh: Option<&TriangleMesh>,
     assist: Option<&GpuAssist>,
 ) -> SliceResult {
+    let mut grouped = settings.clone();
+    apply_filament_group(&mut grouped, &[], &[]);
+    let settings = &grouped;
     let layers = layers
         .into_iter()
         .map(|(spec, contours)| PreparedContours {

@@ -104,6 +104,63 @@ pub fn json_instantiation_enabled(path: &Path) -> bool {
     }
 }
 
+pub fn json_profile_string(path: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    match value.get(key)? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(items) => items.first().and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    }
+}
+
+/// `filament_id` on the file or its immediate `inherits` parent.
+pub fn profile_filament_id(path: &Path) -> String {
+    if let Some(id) = json_profile_string(path, "filament_id") {
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    if let Some(parent) = json_profile_string(path, "inherits") {
+        if let Some(dir) = path.parent() {
+            if let Some(id) =
+                json_profile_string(&dir.join(format!("{parent}.json")), "filament_id")
+            {
+                return id;
+            }
+        }
+    }
+    String::new()
+}
+
+/// Map AMS `tray_info_idx` / type to a system preset (C++ `PresetBundle::sync_ams_list`).
+pub fn resolve_ams_filament(
+    tray_info_idx: &str,
+    filament_type: &str,
+    profiles: &[BblProfileEntry],
+) -> Option<BblProfileEntry> {
+    let idx = tray_info_idx.trim();
+    if !idx.is_empty() {
+        if let Some(found) = profiles
+            .iter()
+            .find(|p| profile_filament_id(&p.path) == idx)
+        {
+            return Some(found.clone());
+        }
+    }
+    let kind = filament_type.trim();
+    if !kind.is_empty() {
+        let generic = format!("Generic {kind}");
+        if let Some(found) = profiles.iter().find(|p| p.name == generic) {
+            return Some(found.clone());
+        }
+        if let Some(found) = profiles.iter().find(|p| p.name.starts_with(&generic)) {
+            return Some(found.clone());
+        }
+    }
+    None
+}
+
 /// JSON files in a user filament directory (rewrite or Studio).
 pub fn list_filament_json_dir(dir: impl AsRef<Path>) -> Vec<BblProfileEntry> {
     let dir = dir.as_ref();
@@ -160,6 +217,74 @@ pub fn patch_filament_colour(path: impl AsRef<Path>, colour: &str) -> Result<(),
     let mut value: Value = serde_json::from_str(&text)?;
     if let Value::Object(map) = &mut value {
         map.insert("filament_colour".into(), Value::String(colour.to_string()));
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+pub fn patch_user_filament_settings(
+    path: impl AsRef<Path>,
+    settings: &crate::SliceSettings,
+) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path)?;
+    let mut value: Value = serde_json::from_str(&text)?;
+    if let Value::Object(map) = &mut value {
+        if !settings.filament_colour.is_empty() {
+            map.insert(
+                "filament_colour".into(),
+                Value::String(settings.filament_colour.clone()),
+            );
+        }
+        if !settings.filament_id.is_empty() {
+            map.insert(
+                "filament_id".into(),
+                Value::String(settings.filament_id.clone()),
+            );
+        }
+        if settings.filament_soluble {
+            map.insert("filament_soluble".into(), Value::String("1".into()));
+        }
+        if settings.filament_is_support {
+            map.insert("filament_is_support".into(), Value::String("1".into()));
+        }
+        if settings.enable_pressure_advance {
+            map.insert("enable_pressure_advance".into(), Value::String("1".into()));
+        }
+        if settings.pressure_advance > 0.0 {
+            map.insert(
+                "pressure_advance".into(),
+                Value::String(settings.pressure_advance.to_string()),
+            );
+        }
+        if !settings.filament_notes.is_empty() {
+            map.insert(
+                "filament_notes".into(),
+                Value::String(settings.filament_notes.clone()),
+            );
+        }
+        if settings.filament_ramming_volumetric_speed >= 0.0 {
+            map.insert(
+                "filament_ramming_volumetric_speed".into(),
+                Value::String(settings.filament_ramming_volumetric_speed.to_string()),
+            );
+        }
+        if settings.filament_ramming_travel_time > 0.0 {
+            map.insert(
+                "filament_ramming_travel_time".into(),
+                Value::String(settings.filament_ramming_travel_time.to_string()),
+            );
+        }
+        if settings.filament_pre_cooling_temperature != 0 {
+            map.insert(
+                "filament_pre_cooling_temperature".into(),
+                Value::String(settings.filament_pre_cooling_temperature.to_string()),
+            );
+        }
+        map.insert(
+            "nozzle_temperature".into(),
+            Value::Array(vec![Value::String(settings.temperature_c.to_string())]),
+        );
     }
     std::fs::write(path, serde_json::to_vec_pretty(&value)?)?;
     Ok(())

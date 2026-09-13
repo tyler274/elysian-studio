@@ -18,9 +18,10 @@ pub use inherit::{flatten_bbl_profile, write_flattened_bbl_profile};
 pub use parse::{apply_config_pairs, is_region_key, normalize_filament_colour};
 pub use paths::{
     bbl_oracle_paths, bbl_resources_dir, delete_user_filament, json_instantiation_enabled,
-    list_bbl_profiles, list_filament_json_dir, list_instantiated_bbl_profiles,
-    list_studio_user_filaments, patch_filament_colour, save_user_filament, BblOraclePaths,
-    BblProfileEntry, BblProfileKind,
+    json_profile_string, list_bbl_profiles, list_filament_json_dir, list_instantiated_bbl_profiles,
+    list_studio_user_filaments, patch_filament_colour, patch_user_filament_settings,
+    profile_filament_id, resolve_ams_filament, save_user_filament, BblOraclePaths, BblProfileEntry,
+    BblProfileKind,
 };
 
 #[derive(Debug, Error)]

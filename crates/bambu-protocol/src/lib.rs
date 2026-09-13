@@ -12,6 +12,7 @@ mod lan_mqtt;
 mod mqtt;
 mod pack;
 mod signing;
+mod spools;
 mod ssdp;
 mod studio_import;
 mod tls;
@@ -57,6 +58,11 @@ pub use mqtt::{
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};
+pub use spools::{
+    batch_delete_body, filament_v2_ams_sync_path, filament_v2_batch_path, filament_v2_path,
+    load_spools, parse_cloud_filaments, save_spools, spool_from_cloud_json, spool_to_cloud_json,
+    spools_path, FilamentSpool,
+};
 pub use ssdp::{
     discover, parse_ssdp, printer_from_headers, DiscoveredPrinter, SsdpError, SSDP_PORT,
 };
