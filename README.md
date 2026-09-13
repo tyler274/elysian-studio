@@ -51,7 +51,17 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode --
 cargo run -p bambu-ui
 ```
 
-The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. Drag to orbit, scroll to zoom, **Open model** (STL/3MF), Slice.
+The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. The top bar is Studio-shaped:
+**Prepare** / **Preview** / **Device**, plus **Open**, **Slice**, and **Send last slice**.
+Prepare is the left plater (printer, process, filament slots, plates, paint). Preview is the
+G-code overlay after a slice. Device holds LAN/cloud, Import Studio, **Extract keys**, and the
+live monitor. Extract, slice, and mesh load run off the iced thread so orbit/scroll stay live.
+
+Prepare’s filament library is project slots (add/remove, system vs user presets, colour), not the
+cloud Filament Manager webview. User presets are `$XDG_CONFIG_HOME/bambu-studio-rs/filament/`
+(`"from": "User"`). Studio’s `~/.config/BambuStudio/user/*/filament/` is read-only. The picker
+lists only `instantiation: true` system JSON (bases such as `fdm_filament_*.json` stay hidden).
+LAN remains the default send path; this workspace still does **not** dlopen `libbambu_networking`.
 
 Load the same Bambu process JSON the C++ app uses (`inherits` is followed in-directory):
 
@@ -100,7 +110,7 @@ cargo run -p bambu-cli -- device install-cert --host 192.168.1.42 --code 1234567
 
 P1/A1 chamber JPEG is TLS `:6000`. X1/H2 use RTSPS `:322` (not this snapshot path). The UI **Chamber snapshot** button reports frame size after the same JPEG grab.
 
-The UI **Import Studio** / **Extract keys** / **Discover printers** / **Send last slice** buttons run the same paths. Send is LAN FTPS by default; pick **Cloud upload** when a Bearer is present. C++ CLI leftovers such as `result.json` are gitignored.
+The UI **Device** tab runs **Import Studio** / **Extract keys** / **Discover printers**; **Send last slice** is on the top bar (same LAN FTPS default, or **Cloud upload** when a Bearer is present). Extract and slice no longer freeze the window. C++ CLI leftovers such as `result.json` are gitignored.
 
 Nix:
 

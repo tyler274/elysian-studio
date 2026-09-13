@@ -1441,6 +1441,13 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "filament_vendor",
         settings.filament_vendor.clone(),
     );
+    if !settings.filament_colour.is_empty() {
+        insert(
+            &mut map,
+            "filament_colour",
+            settings.filament_colour.clone(),
+        );
+    }
     insert(
         &mut map,
         "chamber_temperatures",

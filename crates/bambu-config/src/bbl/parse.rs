@@ -1203,6 +1203,9 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = text(map, "filament_vendor") {
         s.filament_vendor = v;
     }
+    if let Some(v) = text(map, "filament_colour").or_else(|| text(map, "default_filament_colour")) {
+        s.filament_colour = normalize_filament_colour(&v);
+    }
     if let Some(v) = num(map, "chamber_temperatures") {
         s.chamber_temperature_c = v.round() as i32;
     }
@@ -1360,6 +1363,29 @@ fn int_from_value(v: &Value) -> Option<i32> {
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
+}
+
+/// Normalize `#RGB` / `#RRGGBB` / `#RRGGBBAA` to `#RRGGBBAA`. Empty stays empty.
+pub fn normalize_filament_colour(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let hex: String = trimmed
+        .strip_prefix('#')
+        .unwrap_or(trimmed)
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect();
+    let mut body = match hex.len() {
+        3 => hex.chars().flat_map(|c| [c, c]).collect::<String>() + "FF",
+        4 => hex.chars().flat_map(|c| [c, c]).collect::<String>(),
+        6 => format!("{hex}FF"),
+        8 => hex,
+        _ => return String::from("#FFFFFFFF"),
+    };
+    body.make_ascii_uppercase();
+    format!("#{body}")
 }
 
 pub(super) fn value_text(v: &Value) -> Option<String> {

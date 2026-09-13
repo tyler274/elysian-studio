@@ -1509,3 +1509,98 @@ fn lists_bbl_profile_trees() {
     );
     assert!(process.iter().any(|p| p.name.contains("0.20mm")));
 }
+
+#[test]
+fn instantiated_filaments_drop_bases() {
+    if bbl_resources_dir().is_none() {
+        return;
+    }
+    let all = list_bbl_profiles(BblProfileKind::Filament);
+    let inst = list_instantiated_bbl_profiles(BblProfileKind::Filament);
+    assert!(
+        inst.len() < all.len(),
+        "instantiation filter should drop bases ({} vs {})",
+        inst.len(),
+        all.len()
+    );
+    assert!(
+        inst.iter().any(|p| p.name == "Generic PLA"),
+        "Generic PLA is instantiation true"
+    );
+    assert!(
+        !inst.iter().any(|p| p.name == "Generic PLA @base"),
+        "bases stay out of the picker"
+    );
+    assert!(
+        !inst.iter().any(|p| p.name.starts_with("fdm_filament_")),
+        "fdm_filament_* bases are not instantiated"
+    );
+    assert!(inst.iter().all(|p| json_instantiation_enabled(&p.path)));
+}
+
+#[test]
+fn user_filament_json_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("bambu-rs-user-filament-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let value = serde_json::json!({
+        "type": "filament",
+        "name": "My PLA",
+        "from": "User",
+        "inherits": "Generic PLA",
+        "instantiation": "true",
+        "filament_colour": "#00FF00FF",
+        "nozzle_temperature": ["210"]
+    });
+    let path = save_user_filament(&dir, "My PLA", &value).unwrap();
+    assert!(path.is_file());
+    let listed = list_filament_json_dir(&dir);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "My PLA");
+    overlay_bbl_profile(&mut SliceSettings::default(), &path).unwrap();
+    let mut loaded = SliceSettings::default();
+    overlay_bbl_profile(&mut loaded, &path).unwrap();
+    assert_eq!(loaded.filament_colour, "#00FF00FF");
+    assert_eq!(loaded.temperature_c, 210);
+    delete_user_filament(&dir, "My PLA").unwrap();
+    assert!(list_filament_json_dir(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn filament_colour_parse_and_default() {
+    assert_eq!(normalize_filament_colour(""), "");
+    assert_eq!(normalize_filament_colour("#fff"), "#FFFFFFFF");
+    assert_eq!(normalize_filament_colour("00FF00"), "#00FF00FF");
+    assert_eq!(normalize_filament_colour("#12345678"), "#12345678");
+    assert_eq!(normalize_filament_colour("nope"), "#FFFFFFFF");
+    let s = settings_from_json(r##"{"filament_colour":["#0f0"]}"##).unwrap();
+    assert_eq!(s.filament_colour, "#00FF00FF");
+    let empty = SliceSettings::default();
+    assert!(empty.filament_colour.is_empty());
+    let baked = project_settings_json(&empty).unwrap();
+    assert!(
+        !baked.contains("filament_colour"),
+        "empty colour must not grow cube CONFIG_BLOCK"
+    );
+    let mut coloured = SliceSettings::default();
+    coloured.filament_colour = String::from("#FF0000FF");
+    let with = project_settings_json(&coloured).unwrap();
+    assert!(with.contains("filament_colour"));
+}
+
+#[test]
+fn clone_filament_as_user_writes_from_user() {
+    let Some(paths) = bbl_oracle_paths() else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("bambu-rs-clone-filament-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = clone_filament_as_user(&paths.filament, &dir, "Kitchen PLA").unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["from"], "User");
+    assert_eq!(v["name"], "Kitchen PLA");
+    assert_eq!(v["instantiation"], "true");
+    let _ = std::fs::remove_dir_all(&dir);
+}

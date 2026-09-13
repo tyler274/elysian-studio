@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod chrome;
+mod filament;
 mod monitor;
 mod sidebar;
 
@@ -8,8 +10,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use bambu_config::{
-    list_bbl_profiles, load_bbl_process, overlay_bbl_profile, BblProfileEntry, BblProfileKind,
-    SliceSettings,
+    clone_filament_as_user, delete_user_filament, list_bbl_profiles, list_filament_json_dir,
+    list_instantiated_bbl_profiles, list_studio_user_filaments, load_bbl_process,
+    overlay_bbl_profile, patch_filament_colour, BblProfileEntry, BblProfileKind, SliceSettings,
 };
 use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
@@ -92,6 +95,8 @@ fn reexec_with_vulkan_if_needed() {
 struct App {
     adapter: String,
     scene: ViewportScene,
+    workspace: Workspace,
+    busy: bool,
     status: String,
     host: String,
     access_code: String,
@@ -108,10 +113,15 @@ struct App {
     mqtt_status: String,
     process_profiles: Vec<BblProfileEntry>,
     filament_profiles: Vec<BblProfileEntry>,
+    user_filaments: Vec<BblProfileEntry>,
+    studio_filaments: Vec<BblProfileEntry>,
     machine_profiles: Vec<BblProfileEntry>,
     process_name: Option<String>,
     filament_name: Option<String>,
     machine_name: Option<String>,
+    filament_slots: Vec<FilamentSlot>,
+    active_filament: usize,
+    user_preset_name: String,
     selected_object: usize,
     selected_volume: usize,
     machine: MachineState,
@@ -139,10 +149,14 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Viewport(ViewportEvent),
+    Workspace(Workspace),
     OpenModel,
+    ModelLoaded(Result<Box<LoadedModel>, String>),
     Slice,
+    Sliced(Result<Box<SliceOutcome>, String>),
     ResetCamera,
     ExtractKeys,
+    KeysExtracted(Result<ExtractUi, String>),
     Discover,
     Discovered(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
     Host(String),
@@ -205,7 +219,15 @@ enum Message {
     ProjectLayerInspect(bool),
     ProjectTimelapse(bool),
     ProcessProfile(String),
-    FilamentProfile(String),
+    AddFilamentSlot,
+    RemoveFilamentSlot,
+    SelectFilamentSlot(usize),
+    FilamentSlotPreset { slot: usize, label: String },
+    FilamentSlotColour { slot: usize, colour: String },
+    CycleFilamentColour(usize),
+    UserPresetName(String),
+    SaveUserPreset,
+    DeleteUserPreset,
     MachineProfile(String),
     SelectObject(usize),
     SelectVolume(usize),
@@ -252,6 +274,61 @@ impl std::fmt::Display for SendVia {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Workspace {
+    #[default]
+    Prepare,
+    Preview,
+    Device,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilamentSource {
+    System,
+    User,
+    Studio,
+}
+
+#[derive(Debug, Clone)]
+struct FilamentSlot {
+    name: String,
+    colour: String,
+    source: FilamentSource,
+}
+
+#[derive(Debug, Clone)]
+struct ExtractUi {
+    can_sign: bool,
+    note: String,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedModel {
+    label: String,
+    model: Model,
+    apply_settings: bool,
+}
+
+#[derive(Debug, Clone)]
+enum SliceOutcome {
+    Single {
+        result: bambu_slicer::SliceResult,
+        backend: String,
+        settings: SliceSettings,
+    },
+    Objects {
+        results: Vec<bambu_slicer::SliceResult>,
+        settings: SliceSettings,
+    },
+}
+
+struct SliceJob {
+    settings: SliceSettings,
+    mesh: bambu_geom::TriangleMesh,
+    volumes: Option<Vec<bambu_model::ModelVolume>>,
+    objects: Option<Vec<Vec<bambu_model::ModelVolume>>>,
+}
+
 #[derive(Debug, Clone)]
 enum ChamberResult {
     Jpeg { bytes: usize, thumb: JpegThumb },
@@ -277,6 +354,8 @@ impl App {
         let mut app = Self {
             adapter,
             scene,
+            workspace: Workspace::Prepare,
+            busy: false,
             status: format!("20mm cube on {bed:.0}mm bed"),
             host: String::new(),
             access_code: String::new(),
@@ -292,11 +371,16 @@ impl App {
             brush_mm: 2.0,
             mqtt_status: String::new(),
             process_profiles: list_bbl_profiles(BblProfileKind::Process),
-            filament_profiles: list_bbl_profiles(BblProfileKind::Filament),
+            filament_profiles: list_instantiated_bbl_profiles(BblProfileKind::Filament),
+            user_filaments: Vec::new(),
+            studio_filaments: list_studio_user_filaments(),
             machine_profiles: list_bbl_profiles(BblProfileKind::Machine),
             process_name: None,
             filament_name: None,
             machine_name: None,
+            filament_slots: Vec::new(),
+            active_filament: 0,
+            user_preset_name: String::new(),
             selected_object: 0,
             selected_volume: 0,
             machine: MachineState::default(),
@@ -320,6 +404,9 @@ impl App {
             control_fan: 0,
             project_opts: ProjectFileOpts::default(),
         };
+        app.reload_user_filaments();
+        app.init_filament_slots();
+        app.sync_keep_solid();
         app.load_account_from_disk();
         app
     }
@@ -425,73 +512,79 @@ impl App {
             }) => {
                 self.paint_pick(ndc_x, ndc_y, aspect);
             }
+            Message::Workspace(workspace) => {
+                self.workspace = workspace;
+                self.sync_keep_solid();
+            }
             Message::OpenModel => {
+                if self.busy {
+                    self.status = "busy…".into();
+                    return Task::none();
+                }
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("Meshes", &["3mf", "3MF", "stl", "STL"])
                     .add_filter("3MF", &["3mf", "3MF"])
                     .add_filter("STL", &["stl", "STL"])
                     .pick_file()
                 {
-                    match load_model(&path) {
-                        Ok(model) => {
-                            if let Some(s) = model.settings.clone() {
-                                self.settings = s;
-                            }
-                            self.plate = 0;
-                            let tris = model
-                                .mesh_for_plate(0)
-                                .map(|m| m.indices.len())
-                                .unwrap_or(0);
-                            if let Some(mesh) = model.mesh_for_plate(0) {
-                                self.scene.set_mesh(mesh);
-                            }
-                            self.status = format!(
-                                "loaded {} ({} triangles, {} plates)",
-                                path.file_name().and_then(|n| n.to_str()).unwrap_or("mesh"),
-                                tris,
-                                model.plates.len().max(1)
-                            );
-                            self.model = Some(model);
-                        }
-                        Err(_) => match load_mesh(&path) {
-                            Ok(mesh) => {
-                                let tris = mesh.indices.len();
-                                self.model = Some(Model::from_mesh(
-                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("mesh"),
-                                    mesh.clone(),
-                                ));
-                                self.scene.set_mesh(mesh);
-                                self.status = format!(
-                                    "loaded {} ({} triangles)",
-                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("mesh"),
-                                    tris
-                                );
-                            }
-                            Err(err) => self.status = format!("open failed: {err}"),
-                        },
-                    }
+                    self.busy = true;
+                    self.status = "loading model…".into();
+                    return offload(move || load_model_job(path, true), Message::ModelLoaded);
+                }
+            }
+            Message::ModelLoaded(result) => {
+                self.busy = false;
+                match result {
+                    Ok(loaded) => self.apply_loaded_model(*loaded),
+                    Err(err) => self.status = format!("open failed: {err}"),
                 }
             }
             Message::Slice => return self.slice_current(),
+            Message::Sliced(result) => {
+                self.busy = false;
+                match result {
+                    Ok(outcome) => return self.apply_slice_outcome(*outcome),
+                    Err(err) => self.status = format!("slice failed: {err}"),
+                }
+            }
             Message::ResetCamera => {
                 self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(self.scene.bed_mm);
             }
-            Message::ExtractKeys => match bambu_protocol::extract_to_config_dir(None, None) {
-                Ok(report) => {
-                    let dir = bambu_protocol::default_config_dir();
-                    self.status = format!(
-                        "keys → {} · sign={} · {}",
-                        dir.display(),
-                        if report.credentials.can_sign() {
-                            "ready"
-                        } else {
-                            "missing slicer_key.pem"
-                        },
-                        report.notes.last().cloned().unwrap_or_default()
-                    );
+            Message::ExtractKeys => {
+                if !self.begin_work("extracting keys…") {
+                    return Task::none();
                 }
-                Err(err) => self.status = format!("extract failed: {err}"),
-            },
+                return offload(
+                    || {
+                        bambu_protocol::extract_to_config_dir(None, None)
+                            .map(|report| ExtractUi {
+                                can_sign: report.credentials.can_sign(),
+                                note: report.notes.last().cloned().unwrap_or_default(),
+                            })
+                            .map_err(|err| err.to_string())
+                    },
+                    Message::KeysExtracted,
+                );
+            }
+            Message::KeysExtracted(result) => {
+                self.busy = false;
+                match result {
+                    Ok(report) => {
+                        let dir = bambu_protocol::default_config_dir();
+                        self.status = format!(
+                            "keys → {} · sign={} · {}",
+                            dir.display(),
+                            if report.can_sign {
+                                "ready"
+                            } else {
+                                "missing slicer_key.pem"
+                            },
+                            report.note
+                        );
+                    }
+                    Err(err) => self.status = format!("extract failed: {err}"),
+                }
+            }
             Message::ImportStudio => {
                 self.status = "Import Studio…".into();
                 return Task::perform(
@@ -925,21 +1018,39 @@ impl App {
                         Ok(s) => {
                             self.settings = s;
                             self.process_name = Some(name);
-                            if let Some(fil) = self.filament_name.clone() {
-                                self.apply_named_profile(BblProfileKind::Filament, &fil);
+                            if let Some(slot) =
+                                self.filament_slots.get(self.active_filament).cloned()
+                            {
+                                let label = filament::filament_pick_label(slot.source, &slot.name);
+                                self.apply_filament_slot_preset(self.active_filament, &label);
                             }
                             if let Some(mac) = self.machine_name.clone() {
                                 self.apply_named_profile(BblProfileKind::Machine, &mac);
                             }
+                            self.sync_filament_map();
                             self.status = format!("process {path:?}");
                         }
                         Err(err) => self.status = format!("process profile: {err}"),
                     }
                 }
             }
-            Message::FilamentProfile(name) => {
-                self.apply_named_profile(BblProfileKind::Filament, &name);
+            Message::AddFilamentSlot => self.add_filament_slot(),
+            Message::RemoveFilamentSlot => self.remove_filament_slot(),
+            Message::SelectFilamentSlot(i) => self.select_filament_slot(i),
+            Message::FilamentSlotPreset { slot, label } => {
+                self.apply_filament_slot_preset(slot, &label);
             }
+            Message::FilamentSlotColour { slot, colour } => {
+                self.set_filament_slot_colour(slot, colour);
+            }
+            Message::CycleFilamentColour(slot) => {
+                if let Some(current) = self.filament_slots.get(slot).map(|s| s.colour.clone()) {
+                    self.set_filament_slot_colour(slot, filament::next_palette_colour(&current));
+                }
+            }
+            Message::UserPresetName(s) => self.user_preset_name = s,
+            Message::SaveUserPreset => self.save_active_as_user_preset(),
+            Message::DeleteUserPreset => self.delete_active_user_preset(),
             Message::MachineProfile(name) => {
                 self.apply_named_profile(BblProfileKind::Machine, &name);
             }
@@ -992,48 +1103,62 @@ impl App {
             }
             Message::HmsCatalog(Err(err)) => self.status = format!("HMS catalog: {err}"),
             Message::Calibration => {
-                if let Some(path) = calibration_block_path() {
-                    match load_model(&path) {
-                        Ok(model) => {
-                            self.plate = 0;
-                            if let Some(mesh) = model.mesh_for_plate(0) {
-                                self.scene.set_mesh(mesh);
-                            }
-                            self.status = format!(
-                                "calibration block ({} objects) — Slice with current settings",
-                                model.objects.len()
-                            );
-                            self.model = Some(model);
-                        }
-                        Err(err) => self.status = format!("calibration open failed: {err}"),
-                    }
-                } else {
-                    self.status = "tests/calibration_block not found".into();
+                if self.busy {
+                    self.status = "busy…".into();
+                    return Task::none();
                 }
+                if let Some(path) = calibration_block_path() {
+                    self.busy = true;
+                    self.status = "loading calibration…".into();
+                    return offload(move || load_model_job(path, false), Message::ModelLoaded);
+                }
+                self.status = "tests/calibration_block not found".into();
             }
         }
         Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let viewport = shader(&self.scene).width(Fill).height(Fill);
-        row![
-            container(self.sidebar())
+        let body: Element<'_, Message> = match self.workspace {
+            Workspace::Device => self.device_page(),
+            Workspace::Prepare | Workspace::Preview => {
+                let left = container(match self.workspace {
+                    Workspace::Preview => self.preview_sidebar(),
+                    _ => self.prepare_sidebar(),
+                })
                 .style(|_| container::Style {
                     background: Some(iced::Background::Color(Color::from_rgb(0.10, 0.11, 0.13))),
                     ..container::Style::default()
                 })
-                .height(Fill),
-            viewport,
+                .height(Fill);
+                let viewport = shader(&self.scene).width(Fill).height(Fill);
+                row![left, viewport].into()
+            }
+        };
+        column![
+            container(self.top_bar()).style(|_| container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.07, 0.08, 0.10))),
+                ..container::Style::default()
+            }),
+            body,
         ]
+        .height(Fill)
         .into()
     }
     fn slice_current(&mut self) -> Task<Message> {
+        if !self.begin_work("slicing…") {
+            return Task::none();
+        }
         self.settings.print_sequence = if self.by_object {
             String::from("by object")
         } else {
             String::from("by layer")
         };
+        let job = self.build_slice_job();
+        offload(move || run_slice_job(job), Message::Sliced)
+    }
+
+    fn build_slice_job(&self) -> SliceJob {
         let settings = self.settings.clone();
         if let Some(model) = &self.model {
             let indices: Vec<usize> = model
@@ -1042,24 +1167,16 @@ impl App {
                 .map(|p| p.object_indices.clone())
                 .unwrap_or_else(|| (0..model.objects.len()).collect());
             if settings.print_sequence_by_object() && indices.len() > 1 {
-                let mut results = Vec::new();
-                for &i in &indices {
-                    let Some(obj) = model.objects.get(i) else {
-                        continue;
-                    };
-                    match slice_volumes_with_gpu_or_cpu(&obj.volumes_or_mesh(), &settings) {
-                        Ok((result, _)) => results.push(result),
-                        Err(err) => {
-                            self.status = format!("slice failed: {err}");
-                            return Task::none();
-                        }
-                    }
-                }
-                if let Err(err) = check_print_path_conflicts(&results) {
-                    self.status = format!("slice failed: {err}");
-                    return Task::none();
-                }
-                return self.finish_objects(&settings, results);
+                let objects = indices
+                    .iter()
+                    .filter_map(|&i| model.objects.get(i).map(|obj| obj.volumes_or_mesh()))
+                    .collect();
+                return SliceJob {
+                    settings,
+                    mesh: self.scene.mesh.clone(),
+                    volumes: None,
+                    objects: Some(objects),
+                };
             }
             let vols = model.world_volumes_for_plate(self.plate);
             if vols.len() > 1
@@ -1067,21 +1184,30 @@ impl App {
                     .iter()
                     .any(bambu_model::ModelVolume::needs_volume_slice)
             {
-                return match slice_volumes_with_gpu_or_cpu(&vols, &settings) {
-                    Ok((result, backend)) => self.finish_slice(&settings, result, backend.as_str()),
-                    Err(err) => {
-                        self.status = format!("slice failed: {err}");
-                        Task::none()
-                    }
+                return SliceJob {
+                    settings,
+                    mesh: self.scene.mesh.clone(),
+                    volumes: Some(vols),
+                    objects: None,
                 };
             }
         }
-        match slice_with_gpu_or_cpu(&self.scene.mesh, &settings) {
-            Ok((result, backend)) => self.finish_slice(&settings, result, backend.as_str()),
-            Err(err) => {
-                self.status = format!("slice failed: {err}");
-                Task::none()
-            }
+        SliceJob {
+            settings,
+            mesh: self.scene.mesh.clone(),
+            volumes: None,
+            objects: None,
+        }
+    }
+
+    fn apply_slice_outcome(&mut self, outcome: SliceOutcome) -> Task<Message> {
+        match outcome {
+            SliceOutcome::Single {
+                result,
+                backend,
+                settings,
+            } => self.finish_slice(&settings, result, backend.as_str()),
+            SliceOutcome::Objects { results, settings } => self.finish_objects(&settings, results),
         }
     }
 
@@ -1115,6 +1241,8 @@ impl App {
         );
         self.scene
             .set_toolpaths(ToolpathBuffer::from_slice(&result));
+        self.workspace = Workspace::Preview;
+        self.sync_keep_solid();
         Task::none()
     }
 
@@ -1144,6 +1272,8 @@ impl App {
         );
         self.scene
             .set_toolpaths(ToolpathBuffer::from_slice(&merged));
+        self.workspace = Workspace::Preview;
+        self.sync_keep_solid();
         Task::none()
     }
 
@@ -1298,12 +1428,20 @@ impl App {
     }
 
     fn apply_named_profile(&mut self, kind: BblProfileKind, name: &str) {
-        let list = match kind {
-            BblProfileKind::Process => &self.process_profiles,
-            BblProfileKind::Filament => &self.filament_profiles,
-            BblProfileKind::Machine => &self.machine_profiles,
+        let path = match kind {
+            BblProfileKind::Process => self
+                .process_profiles
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.path.clone()),
+            BblProfileKind::Filament => self.filament_path(FilamentSource::System, name),
+            BblProfileKind::Machine => self
+                .machine_profiles
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.path.clone()),
         };
-        let Some(path) = list.iter().find(|p| p.name == name).map(|p| p.path.clone()) else {
+        let Some(path) = path else {
             self.status = format!("no {name} profile");
             return;
         };
@@ -1311,7 +1449,16 @@ impl App {
             Ok(()) => {
                 match kind {
                     BblProfileKind::Process => self.process_name = Some(name.to_string()),
-                    BblProfileKind::Filament => self.filament_name = Some(name.to_string()),
+                    BblProfileKind::Filament => {
+                        self.filament_name = Some(name.to_string());
+                        if let Some(slot) = self.filament_slots.get_mut(self.active_filament) {
+                            slot.name = name.to_string();
+                            slot.source = FilamentSource::System;
+                            if !self.settings.filament_colour.is_empty() {
+                                slot.colour = self.settings.filament_colour.clone();
+                            }
+                        }
+                    }
                     BblProfileKind::Machine => {
                         self.machine_name = Some(name.to_string());
                         self.scene.set_bed_mm(self.settings.bed_size_mm());
@@ -1320,6 +1467,246 @@ impl App {
                 self.status = format!("overlay {}", path.display());
             }
             Err(err) => self.status = format!("profile: {err}"),
+        }
+    }
+
+    fn begin_work(&mut self, status: &str) -> bool {
+        if self.busy {
+            self.status = "busy…".into();
+            false
+        } else {
+            self.busy = true;
+            self.status = status.into();
+            true
+        }
+    }
+
+    fn sync_keep_solid(&mut self) {
+        self.scene.keep_solid = self.workspace != Workspace::Preview
+            || self.paint_kind.is_some()
+            || !self.scene.paint_overlay.is_empty();
+    }
+
+    fn apply_loaded_model(&mut self, loaded: LoadedModel) {
+        if loaded.apply_settings {
+            if let Some(s) = loaded.model.settings.clone() {
+                self.settings = s;
+            }
+        }
+        self.plate = 0;
+        let tris = loaded
+            .model
+            .mesh_for_plate(0)
+            .map(|m| m.indices.len())
+            .unwrap_or(0);
+        if let Some(mesh) = loaded.model.mesh_for_plate(0) {
+            self.scene.set_mesh(mesh);
+        }
+        self.status = if loaded.apply_settings {
+            format!(
+                "loaded {} ({} triangles, {} plates)",
+                loaded.label,
+                tris,
+                loaded.model.plates.len().max(1)
+            )
+        } else {
+            format!(
+                "calibration block ({} objects) — Slice with current settings",
+                loaded.model.objects.len()
+            )
+        };
+        self.model = Some(loaded.model);
+        self.sync_keep_solid();
+    }
+
+    fn rewrite_filament_dir() -> PathBuf {
+        bambu_protocol::default_config_dir().join("filament")
+    }
+
+    fn reload_user_filaments(&mut self) {
+        self.user_filaments = list_filament_json_dir(Self::rewrite_filament_dir());
+        self.studio_filaments = list_studio_user_filaments();
+    }
+
+    fn init_filament_slots(&mut self) {
+        let (name, source) = default_filament_pick(&self.filament_profiles);
+        self.filament_name = Some(name.clone());
+        let colour = slot_colour_hex(&self.settings.filament_colour);
+        self.filament_slots = vec![FilamentSlot {
+            name,
+            colour,
+            source,
+        }];
+        self.active_filament = 0;
+        self.sync_filament_map();
+    }
+
+    fn filament_path(&self, source: FilamentSource, name: &str) -> Option<PathBuf> {
+        let list = match source {
+            FilamentSource::System => &self.filament_profiles,
+            FilamentSource::User => &self.user_filaments,
+            FilamentSource::Studio => &self.studio_filaments,
+        };
+        list.iter()
+            .find(|p| p.name == name)
+            .map(|p| p.path.clone())
+            .or_else(|| {
+                self.filament_profiles
+                    .iter()
+                    .chain(self.user_filaments.iter())
+                    .chain(self.studio_filaments.iter())
+                    .find(|p| p.name == name)
+                    .map(|p| p.path.clone())
+            })
+    }
+
+    fn sync_filament_map(&mut self) {
+        let n = self.filament_slots.len().max(1);
+        while self.settings.filament_map.len() < n {
+            self.settings.filament_map.push(1);
+        }
+        self.settings.filament_map.truncate(n);
+        self.settings.filament_count = n;
+    }
+
+    fn add_filament_slot(&mut self) {
+        let slot = self
+            .filament_slots
+            .last()
+            .cloned()
+            .unwrap_or_else(|| FilamentSlot {
+                name: default_filament_pick(&self.filament_profiles).0,
+                colour: String::from("#FFFFFFFF"),
+                source: FilamentSource::System,
+            });
+        self.filament_slots.push(slot);
+        self.sync_filament_map();
+        self.status = format!("{} filament slot(s)", self.filament_slots.len());
+    }
+
+    fn remove_filament_slot(&mut self) {
+        if self.filament_slots.len() <= 1 {
+            self.status = "keep at least one filament slot".into();
+            return;
+        }
+        self.filament_slots.pop();
+        if self.active_filament >= self.filament_slots.len() {
+            self.select_filament_slot(self.filament_slots.len() - 1);
+        }
+        self.sync_filament_map();
+        self.status = format!("{} filament slot(s)", self.filament_slots.len());
+    }
+
+    fn select_filament_slot(&mut self, i: usize) {
+        let Some(slot) = self.filament_slots.get(i).cloned() else {
+            return;
+        };
+        self.active_filament = i;
+        if let Some(path) = self.filament_path(slot.source, &slot.name) {
+            if overlay_bbl_profile(&mut self.settings, &path).is_ok() {
+                self.filament_name = Some(slot.name.clone());
+                if slot.colour.is_empty() {
+                    if let Some(s) = self.filament_slots.get_mut(i) {
+                        if !self.settings.filament_colour.is_empty() {
+                            s.colour = self.settings.filament_colour.clone();
+                        }
+                    }
+                } else {
+                    self.settings.filament_colour = slot.colour.clone();
+                }
+            }
+        }
+        self.sync_filament_map();
+    }
+
+    fn apply_filament_slot_preset(&mut self, slot: usize, label: &str) {
+        let Some((source, name)) = filament::parse_filament_pick(label) else {
+            self.status = format!("unknown preset {label}");
+            return;
+        };
+        let Some(path) = self.filament_path(source, &name) else {
+            self.status = format!("no {name} profile");
+            return;
+        };
+        self.active_filament = slot.min(self.filament_slots.len().saturating_sub(1));
+        match overlay_bbl_profile(&mut self.settings, &path) {
+            Ok(()) => {
+                let colour = if self.settings.filament_colour.is_empty() {
+                    self.filament_slots
+                        .get(slot)
+                        .map(|s| slot_colour_hex(&s.colour))
+                        .unwrap_or_else(|| String::from("#FFFFFFFF"))
+                } else {
+                    slot_colour_hex(&self.settings.filament_colour)
+                };
+                if let Some(s) = self.filament_slots.get_mut(slot) {
+                    s.name = name.clone();
+                    s.source = source;
+                    s.colour = colour.clone();
+                }
+                self.settings.filament_colour = colour;
+                self.filament_name = Some(name);
+                self.status = format!("overlay {}", path.display());
+            }
+            Err(err) => self.status = format!("profile: {err}"),
+        }
+    }
+
+    fn set_filament_slot_colour(&mut self, slot: usize, colour: String) {
+        let colour = slot_colour_hex(&colour);
+        if let Some(s) = self.filament_slots.get_mut(slot) {
+            s.colour = colour.clone();
+        }
+        if slot == self.active_filament {
+            self.settings.filament_colour = colour;
+        }
+    }
+
+    fn save_active_as_user_preset(&mut self) {
+        let name = self.user_preset_name.trim().to_string();
+        if name.is_empty() {
+            self.status = "name the user preset first".into();
+            return;
+        }
+        let Some(slot) = self.filament_slots.get(self.active_filament).cloned() else {
+            return;
+        };
+        let Some(src) = self.filament_path(slot.source, &slot.name) else {
+            self.status = "select a system or user base first".into();
+            return;
+        };
+        match clone_filament_as_user(&src, Self::rewrite_filament_dir(), &name) {
+            Ok(path) => {
+                if !slot.colour.is_empty() {
+                    let _ = patch_filament_colour(&path, &slot.colour);
+                }
+                self.reload_user_filaments();
+                self.user_preset_name.clear();
+                let label = filament::filament_pick_label(FilamentSource::User, &name);
+                self.apply_filament_slot_preset(self.active_filament, &label);
+                self.status = format!("saved {}", path.display());
+            }
+            Err(err) => self.status = format!("save user filament: {err}"),
+        }
+    }
+
+    fn delete_active_user_preset(&mut self) {
+        let Some(slot) = self.filament_slots.get(self.active_filament).cloned() else {
+            return;
+        };
+        if slot.source != FilamentSource::User {
+            self.status = "only rewrite user presets can be deleted".into();
+            return;
+        }
+        match delete_user_filament(Self::rewrite_filament_dir(), &slot.name) {
+            Ok(()) => {
+                self.reload_user_filaments();
+                let (name, source) = default_filament_pick(&self.filament_profiles);
+                let label = filament::filament_pick_label(source, &name);
+                self.apply_filament_slot_preset(self.active_filament, &label);
+                self.status = format!("deleted user preset {}", slot.name);
+            }
+            Err(err) => self.status = format!("delete user filament: {err}"),
         }
     }
 
@@ -1346,7 +1733,7 @@ impl App {
     }
 
     fn refresh_paint_overlay(&mut self) {
-        self.scene.keep_solid = self.paint_kind.is_some() || !self.scene.paint_overlay.is_empty();
+        self.sync_keep_solid();
         let mut overlay = Vec::new();
         let Some(model) = &self.model else {
             self.scene.paint_overlay = overlay;
@@ -1375,8 +1762,8 @@ impl App {
                 offset += n;
             }
         }
-        self.scene.keep_solid = self.paint_kind.is_some() || !overlay.is_empty();
         self.scene.paint_overlay = overlay;
+        self.sync_keep_solid();
     }
 
     fn refresh_monitor(&self) -> Task<Message> {
@@ -1445,6 +1832,104 @@ fn parse_temp_c(raw: &str) -> u16 {
         .parse::<f32>()
         .map(|n| n.round().clamp(0.0, 300.0) as u16)
         .unwrap_or(0)
+}
+
+fn slot_colour_hex(raw: &str) -> String {
+    let n = bambu_config::normalize_filament_colour(raw);
+    if n.is_empty() {
+        String::from("#FFFFFFFF")
+    } else {
+        n
+    }
+}
+
+fn default_filament_pick(system: &[BblProfileEntry]) -> (String, FilamentSource) {
+    if let Some(paths) = bambu_config::bbl_oracle_paths() {
+        let stem = paths
+            .filament
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Generic PLA");
+        if system.iter().any(|p| p.name == stem) {
+            return (stem.to_string(), FilamentSource::System);
+        }
+    }
+    let name = system
+        .iter()
+        .find(|p| p.name == "Generic PLA")
+        .or_else(|| system.first())
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| String::from("Generic PLA"));
+    (name, FilamentSource::System)
+}
+
+fn offload<T, M>(
+    f: impl FnOnce() -> T + Send + 'static,
+    map: impl FnOnce(T) -> M + Send + 'static,
+) -> Task<M>
+where
+    T: Send + 'static,
+    M: Send + 'static,
+{
+    Task::perform(
+        async move { tokio::task::spawn_blocking(f).await.expect("worker") },
+        map,
+    )
+}
+
+fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel>, String> {
+    let label = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("mesh")
+        .to_string();
+    let model = match load_model(&path) {
+        Ok(model) => model,
+        Err(_) => {
+            let mesh = load_mesh(&path).map_err(|err| err.to_string())?;
+            Model::from_mesh(&label, mesh)
+        }
+    };
+    Ok(Box::new(LoadedModel {
+        label,
+        model,
+        apply_settings,
+    }))
+}
+
+fn run_slice_job(job: SliceJob) -> Result<Box<SliceOutcome>, String> {
+    let SliceJob {
+        settings,
+        mesh,
+        volumes,
+        objects,
+    } = job;
+    if let Some(objects) = objects {
+        let mut results = Vec::new();
+        for vols in objects {
+            let (result, _) =
+                slice_volumes_with_gpu_or_cpu(&vols, &settings).map_err(|err| err.to_string())?;
+            results.push(result);
+        }
+        check_print_path_conflicts(&results).map_err(|err| err.to_string())?;
+        return Ok(Box::new(SliceOutcome::Objects { results, settings }));
+    }
+    if let Some(vols) = volumes {
+        let (result, backend) =
+            slice_volumes_with_gpu_or_cpu(&vols, &settings).map_err(|err| err.to_string())?;
+        return Ok(Box::new(SliceOutcome::Single {
+            result,
+            backend: backend.to_string(),
+            settings,
+        }));
+    }
+    let (result, backend) =
+        slice_with_gpu_or_cpu(&mesh, &settings).map_err(|err| err.to_string())?;
+    Ok(Box::new(SliceOutcome::Single {
+        result,
+        backend: backend.to_string(),
+        settings,
+    }))
 }
 
 fn role_legend() -> String {

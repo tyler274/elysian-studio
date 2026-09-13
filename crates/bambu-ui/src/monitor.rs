@@ -5,8 +5,10 @@ use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, Widget};
 use iced::advanced::{Layout, Renderer};
 use iced::mouse;
-use iced::widget::{button, column, row, slider, text, text_input};
-use iced::{Background, Border, Color, Element, Length, Rectangle, Size};
+use iced::widget::{
+    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
+};
+use iced::{Background, Border, Color, Element, Fill, Length, Rectangle, Size};
 
 use bambu_device::{Frame, PrinterBackend};
 use bambu_protocol::{
@@ -250,6 +252,120 @@ impl crate::App {
             button("Set fan").on_press(Message::SendFan),
             text("Chamber").size(13),
             thumb,
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    pub(crate) fn device_page(&self) -> Element<'_, Message> {
+        let device_labels: Vec<String> = self.cloud_devices.iter().map(|d| d.label()).collect();
+        let selected_device = self
+            .selected_device
+            .as_ref()
+            .and_then(|id| self.cloud_devices.iter().find(|d| &d.dev_id == id))
+            .map(|d| d.label());
+        scrollable(
+            column![
+                text("Device").size(18),
+                text(format!("GPU: {}", self.adapter)).size(12),
+                self.monitor_controls(),
+                text("HMS").size(16),
+                button("Refresh HMS catalog").on_press(Message::RefreshHms),
+                text(if self.hms_lines.is_empty() {
+                    "no HMS".into()
+                } else {
+                    self.hms_lines.join("\n")
+                })
+                .size(11),
+                row![
+                    button("HMS resume").on_press(Message::HmsResume),
+                    button("HMS ignore").on_press(Message::HmsIgnore),
+                ]
+                .spacing(6),
+                checkbox(self.live_monitor)
+                    .label("Live monitor")
+                    .on_toggle(Message::LiveMonitor),
+                button("MQTT / AMS status").on_press(Message::RefreshStatus),
+                text("Account / LAN").size(16),
+                text(format!(
+                    "region {} · user {}",
+                    if self.cloud_region.is_empty() {
+                        "us"
+                    } else {
+                        self.cloud_region.as_str()
+                    },
+                    if self.cloud_user.is_empty() {
+                        "—"
+                    } else {
+                        self.cloud_user.as_str()
+                    }
+                ))
+                .size(12),
+                text(format!(
+                    "Bearer {}",
+                    if self.has_bearer {
+                        "present"
+                    } else {
+                        "missing"
+                    }
+                ))
+                .size(12),
+                button("Import Studio").on_press(Message::ImportStudio),
+                button("Extract keys").on_press(Message::ExtractKeys),
+                button("Discover printers").on_press(Message::Discover),
+                button("Refresh devices").on_press(Message::RefreshDevices),
+                pick_list(device_labels, selected_device, Message::PickDevice)
+                    .placeholder("cloud device"),
+                pick_list(
+                    vec![SendVia::LanFtps, SendVia::CloudUpload],
+                    Some(self.send_via),
+                    Message::SendVia
+                ),
+                text_input("printer IP", &self.host).on_input(Message::Host),
+                text_input("LAN access code", &self.access_code)
+                    .secure(true)
+                    .on_input(Message::AccessCode),
+                text_input("serial (optional)", &self.serial).on_input(Message::Serial),
+                self.login_fields(),
+                checkbox(self.project_opts.bed_leveling)
+                    .label("Bed level")
+                    .on_toggle(Message::ProjectBedLevel),
+                checkbox(self.project_opts.flow_cali)
+                    .label("Flow cali")
+                    .on_toggle(Message::ProjectFlowCali),
+                checkbox(self.project_opts.vibration_cali)
+                    .label("Vibration cali")
+                    .on_toggle(Message::ProjectVibrationCali),
+                checkbox(self.project_opts.layer_inspect)
+                    .label("Layer inspect")
+                    .on_toggle(Message::ProjectLayerInspect),
+                checkbox(self.project_opts.timelapse)
+                    .label("Timelapse")
+                    .on_toggle(Message::ProjectTimelapse),
+                button("Chamber / RTSPS live").on_press(Message::Chamber),
+            ]
+            .spacing(8)
+            .padding(16)
+            .width(480),
+        )
+        .height(Fill)
+        .into()
+    }
+
+    fn login_fields(&self) -> Element<'_, Message> {
+        if self.has_bearer {
+            return text("cloud token on disk").size(11).into();
+        }
+        column![
+            text("Email login (no Bearer)").size(13),
+            text_input("account email", &self.login_account).on_input(Message::LoginAccount),
+            text_input("password", &self.login_password)
+                .secure(true)
+                .on_input(Message::LoginPassword),
+            text_input("email code (if asked)", &self.login_code)
+                .secure(true)
+                .on_input(Message::LoginCode),
+            button("Cloud login").on_press(Message::CloudLogin),
         ]
         .spacing(6)
         .into()

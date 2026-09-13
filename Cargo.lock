@@ -562,6 +562,7 @@ dependencies = [
  "bambu-config",
  "bambu-device",
  "bambu-gcode",
+ "bambu-geom",
  "bambu-gpu",
  "bambu-io",
  "bambu-model",
@@ -569,6 +570,7 @@ dependencies = [
  "bambu-slicer",
  "iced",
  "rfd",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

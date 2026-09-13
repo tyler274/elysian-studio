@@ -6,7 +6,7 @@ mod parse;
 mod paths;
 mod xy;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use thiserror::Error;
@@ -15,10 +15,12 @@ use crate::SliceSettings;
 
 pub use emit::{config_block_gcode, project_settings_json};
 pub use inherit::{flatten_bbl_profile, write_flattened_bbl_profile};
-pub use parse::{apply_config_pairs, is_region_key};
+pub use parse::{apply_config_pairs, is_region_key, normalize_filament_colour};
 pub use paths::{
-    bbl_oracle_paths, bbl_resources_dir, list_bbl_profiles, BblOraclePaths, BblProfileEntry,
-    BblProfileKind,
+    bbl_oracle_paths, bbl_resources_dir, delete_user_filament, json_instantiation_enabled,
+    list_bbl_profiles, list_filament_json_dir, list_instantiated_bbl_profiles,
+    list_studio_user_filaments, patch_filament_colour, save_user_filament, BblOraclePaths,
+    BblProfileEntry, BblProfileKind,
 };
 
 #[derive(Debug, Error)]
@@ -49,6 +51,26 @@ pub fn overlay_bbl_profile(
     let map = inherit::load_inherited(dir, path)?;
     parse::apply_map_onto(settings, &map);
     Ok(())
+}
+
+/// Flatten a system filament and write `"from": "User"` under `dest_dir`.
+pub fn clone_filament_as_user(
+    src: impl AsRef<Path>,
+    dest_dir: impl AsRef<Path>,
+    name: &str,
+) -> Result<PathBuf, ConfigError> {
+    let src = src.as_ref();
+    let mut value = flatten_bbl_profile(src)?;
+    if let Value::Object(map) = &mut value {
+        map.insert("name".into(), Value::String(name.to_string()));
+        map.insert("from".into(), Value::String("User".into()));
+        map.insert("type".into(), Value::String("filament".into()));
+        map.insert("instantiation".into(), Value::String("true".into()));
+        if let Some(stem) = src.file_stem().and_then(|s| s.to_str()) {
+            map.insert("inherits".into(), Value::String(stem.to_string()));
+        }
+    }
+    paths::save_user_filament(dest_dir, name, &value)
 }
 
 /// Parse Bambu `project_settings.config` / process JSON (no `inherits`).

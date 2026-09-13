@@ -6,9 +6,12 @@ mod placeholder;
 use serde::{Deserialize, Serialize};
 
 pub use bbl::{
-    apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, config_block_gcode,
-    flatten_bbl_profile, is_region_key, list_bbl_profiles, load_bbl_process, overlay_bbl_profile,
-    project_settings_json, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
+    apply_config_pairs, bbl_oracle_paths, bbl_resources_dir, clone_filament_as_user,
+    config_block_gcode, delete_user_filament, flatten_bbl_profile, is_region_key,
+    json_instantiation_enabled, list_bbl_profiles, list_filament_json_dir,
+    list_instantiated_bbl_profiles, list_studio_user_filaments, load_bbl_process,
+    normalize_filament_colour, overlay_bbl_profile, patch_filament_colour, project_settings_json,
+    save_user_filament, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
     BblProfileEntry, BblProfileKind, ConfigError,
 };
 pub use placeholder::{expand_placeholders, PlaceholderContext};
@@ -1534,6 +1537,8 @@ pub struct SliceSettings {
     pub filament_type: String,
     /// C++ `filament_vendor`.
     pub filament_vendor: String,
+    /// C++ `filament_colour` / `default_filament_colour` (`#RRGGBBAA`). Empty skips emit.
+    pub filament_colour: String,
     /// C++ `chamber_temperatures` / placeholder `overall_chamber_temperature`.
     pub chamber_temperature_c: i32,
     /// C++ `temperature_vitrification`.
@@ -1928,6 +1933,7 @@ impl Default for SliceSettings {
             filament_start_gcode: String::new(),
             filament_type: String::from("PLA"),
             filament_vendor: String::from("Generic"),
+            filament_colour: String::new(),
             chamber_temperature_c: 0,
             temperature_vitrification_c: 45,
             cooling_filter_enabled: false,
