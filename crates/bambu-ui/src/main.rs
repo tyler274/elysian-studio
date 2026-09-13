@@ -195,6 +195,7 @@ enum Message {
     Viewport(ViewportEvent),
     Workspace(Workspace),
     OpenModel,
+    MeshPicked(Option<PathBuf>),
     ModelLoaded(Result<Box<LoadedModel>, String>),
     Slice,
     Sliced(Result<Box<SliceOutcome>, String>),
@@ -698,16 +699,14 @@ impl App {
                     self.status = "busy…".into();
                     return Task::none();
                 }
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Meshes", &["3mf", "3MF", "stl", "STL"])
-                    .add_filter("3MF", &["3mf", "3MF"])
-                    .add_filter("STL", &["stl", "STL"])
-                    .pick_file()
-                {
-                    self.busy = true;
-                    self.status = "loading model…".into();
-                    return offload(move || load_model_job(path, true), Message::ModelLoaded);
+                return Task::perform(pick_mesh_path(), Message::MeshPicked);
+            }
+            Message::MeshPicked(None) => {}
+            Message::MeshPicked(Some(path)) => {
+                if !self.begin_work("loading model…") {
+                    return Task::none();
                 }
+                return offload(move || load_model_job(path, true), Message::ModelLoaded);
             }
             Message::ModelLoaded(result) => {
                 self.busy = false;
@@ -2652,6 +2651,16 @@ fn push_cloud_filaments(spools: &[FilamentSpool]) -> Result<String, String> {
         pushed += 1;
     }
     Ok(format!("pushed {pushed} spool(s)"))
+}
+
+async fn pick_mesh_path() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("Meshes", &["3mf", "3MF", "stl", "STL"])
+        .add_filter("3MF", &["3mf", "3MF"])
+        .add_filter("STL", &["stl", "STL"])
+        .pick_file()
+        .await
+        .map(|file| file.path().to_path_buf())
 }
 
 fn offload<T, M>(

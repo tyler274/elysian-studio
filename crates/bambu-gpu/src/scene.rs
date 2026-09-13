@@ -10,6 +10,8 @@ use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 pub const BED_MM: f32 = 256.0;
 const PLASTIC: [f32; 3] = [0.93, 0.42, 0.18];
@@ -63,7 +65,7 @@ pub struct AxisGizmo {
     pub half: Vec3,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ViewportScene {
     pub adapter_label: String,
     pub camera: OrbitCamera,
@@ -80,6 +82,16 @@ pub struct ViewportScene {
     pub paint_overlay: Vec<(usize, [f32; 3])>,
     pub tool: PlaterTool,
     pub gizmo: Option<AxisGizmo>,
+    gpu: Mutex<Option<CachedGpuMesh>>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedGpuMesh {
+    key: u64,
+    solid: Arc<[Vertex]>,
+    lines: Arc<[Vertex]>,
+    gizmos: Arc<[Vertex]>,
+    labels: Arc<[crate::label::LabelVertex]>,
 }
 
 impl Default for ViewportScene {
@@ -114,6 +126,7 @@ impl ViewportScene {
             paint_overlay: Vec::new(),
             tool: PlaterTool::Orbit,
             gizmo: None,
+            gpu: Mutex::new(None),
         }
     }
 
@@ -151,6 +164,121 @@ impl ViewportScene {
         self.preview_vertices = toolpaths.vertices.len() as u32;
         self.toolpaths = toolpaths;
     }
+
+    /// Camera is excluded: orbit/pan must not rebuild or re-upload vertex buffers.
+    fn geom_key(&self) -> u64 {
+        // `DefaultHasher` is randomly keyed on every `new()`, so the GPU cache
+        // would miss (and re-tessellate / `write_buffer`) on every iced redraw.
+        let mut hasher = FnvHasher::default();
+        self.mesh.vertices.len().hash(&mut hasher);
+        self.mesh.indices.len().hash(&mut hasher);
+        hash_vec3_samples(&mut hasher, &self.mesh.vertices);
+        self.toolpaths.vertices.len().hash(&mut hasher);
+        self.preview_layer.hash(&mut hasher);
+        self.preview_vertices.hash(&mut hasher);
+        self.hide_infill.hash(&mut hasher);
+        self.hide_support.hash(&mut hasher);
+        self.keep_solid.hash(&mut hasher);
+        self.paint_overlay.len().hash(&mut hasher);
+        if let Some((idx, color)) = self.paint_overlay.first() {
+            idx.hash(&mut hasher);
+            color[0].to_bits().hash(&mut hasher);
+        }
+        if let Some((idx, color)) = self.paint_overlay.last() {
+            idx.hash(&mut hasher);
+            color[0].to_bits().hash(&mut hasher);
+        }
+        match self.gizmo {
+            Some(g) => {
+                1u8.hash(&mut hasher);
+                hash_vec3(&mut hasher, g.origin);
+                hash_vec3(&mut hasher, g.half);
+            }
+            None => 0u8.hash(&mut hasher),
+        }
+        let (x0, y0, x1, y1) = self.bed.printable_aabb();
+        x0.to_bits().hash(&mut hasher);
+        y0.to_bits().hash(&mut hasher);
+        x1.to_bits().hash(&mut hasher);
+        y1.to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn cached_gpu_mesh(&self) -> CachedGpuMesh {
+        let key = self.geom_key();
+        let mut cache = self.gpu.lock().unwrap_or_else(|err| err.into_inner());
+        if cache.as_ref().is_none_or(|cached| cached.key != key) {
+            *cache = Some(self.tessellate(key));
+        }
+        cache.as_ref().expect("tessellate filled the cache").clone()
+    }
+
+    fn tessellate(&self, key: u64) -> CachedGpuMesh {
+        let mut lines = grid_vertices(&self.bed);
+        lines.extend(toolpath_vertices(
+            &self.toolpaths,
+            self.preview_z(),
+            self.preview_vertices as usize,
+            self.hide_infill,
+            self.hide_support,
+        ));
+        let mut solid = bed_solids(&self.bed);
+        if self.toolpaths.is_empty() || self.keep_solid {
+            solid.extend(mesh_vertices(&self.mesh, PLASTIC));
+            solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
+        }
+        let gizmos = self
+            .gizmo
+            .map(|g| gizmo_arrows(g.origin, g.half))
+            .unwrap_or_default();
+        CachedGpuMesh {
+            key,
+            solid: Arc::from(solid),
+            lines: Arc::from(lines),
+            gizmos: Arc::from(gizmos),
+            labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
+        }
+    }
+}
+
+/// Deterministic FNV-1a. `std::collections::hash_map::DefaultHasher` is not.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        for &b in bytes {
+            self.0 ^= u64::from(b);
+            self.0 = self.0.wrapping_mul(PRIME);
+        }
+    }
+}
+
+fn hash_vec3(hasher: &mut impl Hasher, v: Vec3) {
+    v.x.to_bits().hash(hasher);
+    v.y.to_bits().hash(hasher);
+    v.z.to_bits().hash(hasher);
+}
+
+fn hash_vec3_samples(hasher: &mut impl Hasher, verts: &[Vec3]) {
+    if verts.is_empty() {
+        return;
+    }
+    let step = (verts.len() / 16).max(1);
+    for v in verts.iter().step_by(step) {
+        hash_vec3(hasher, *v);
+    }
+    hash_vec3(hasher, *verts.last().expect("non-empty"));
 }
 
 #[derive(Debug, Default)]
@@ -373,29 +501,14 @@ where
         _cursor: mouse::Cursor,
         _bounds: Rectangle,
     ) -> Self::Primitive {
-        let mut lines = grid_vertices(&self.bed);
-        lines.extend(toolpath_vertices(
-            &self.toolpaths,
-            self.preview_z(),
-            self.preview_vertices as usize,
-            self.hide_infill,
-            self.hide_support,
-        ));
-        let mut solid = bed_solids(&self.bed);
-        if self.toolpaths.is_empty() || self.keep_solid {
-            solid.extend(mesh_vertices(&self.mesh, PLASTIC));
-            solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
-        }
-        let gizmos = self
-            .gizmo
-            .map(|g| gizmo_arrows(g.origin, g.half))
-            .unwrap_or_default();
+        let mesh = self.cached_gpu_mesh();
         ScenePrimitive {
             camera: self.camera,
-            solid,
-            lines,
-            gizmos,
-            labels: crate::label::plate_labels(&self.bed, LABEL),
+            geom_key: mesh.key,
+            solid: mesh.solid,
+            lines: mesh.lines,
+            gizmos: mesh.gizmos,
+            labels: mesh.labels,
         }
     }
 }
@@ -403,10 +516,11 @@ where
 #[derive(Debug)]
 pub struct ScenePrimitive {
     camera: OrbitCamera,
-    solid: Vec<Vertex>,
-    lines: Vec<Vertex>,
-    gizmos: Vec<Vertex>,
-    labels: Vec<crate::label::LabelVertex>,
+    geom_key: u64,
+    solid: Arc<[Vertex]>,
+    lines: Arc<[Vertex]>,
+    gizmos: Arc<[Vertex]>,
+    labels: Arc<[crate::label::LabelVertex]>,
 }
 
 #[repr(C)]
@@ -448,6 +562,7 @@ pub struct ScenePipeline {
     depth_view: Option<wgpu::TextureView>,
     depth_size: (u32, u32),
     _atlas: wgpu::Texture,
+    uploaded_key: u64,
 }
 
 impl shader::Pipeline for ScenePipeline {
@@ -658,6 +773,7 @@ impl ScenePipeline {
             depth_view: None,
             depth_size: (0, 0),
             _atlas: atlas_texture,
+            uploaded_key: u64::MAX,
         }
     }
 
@@ -717,43 +833,43 @@ impl shader::Primitive for ScenePrimitive {
             }),
         );
 
-        upload_vertices(
-            device,
-            queue,
-            &mut pipeline.vertex_buf,
-            &mut pipeline.vertex_capacity,
-            &self.solid,
-            "bambu-gpu-solid-verts",
-        );
+        if pipeline.uploaded_key != self.geom_key {
+            upload_vertices(
+                device,
+                queue,
+                &mut pipeline.vertex_buf,
+                &mut pipeline.vertex_capacity,
+                &self.solid,
+                "bambu-gpu-solid-verts",
+            );
+            upload_vertices(
+                device,
+                queue,
+                &mut pipeline.line_buf,
+                &mut pipeline.line_capacity,
+                &self.lines,
+                "bambu-gpu-line-verts",
+            );
+            upload_vertices(
+                device,
+                queue,
+                &mut pipeline.gizmo_buf,
+                &mut pipeline.gizmo_capacity,
+                &self.gizmos,
+                "bambu-gpu-gizmo-verts",
+            );
+            upload_labels(
+                device,
+                queue,
+                &mut pipeline.label_buf,
+                &mut pipeline.label_capacity,
+                &self.labels,
+            );
+            pipeline.uploaded_key = self.geom_key;
+        }
         pipeline.solid_count = self.solid.len() as u32;
-
-        upload_vertices(
-            device,
-            queue,
-            &mut pipeline.line_buf,
-            &mut pipeline.line_capacity,
-            &self.lines,
-            "bambu-gpu-line-verts",
-        );
         pipeline.line_count = self.lines.len() as u32;
-
-        upload_vertices(
-            device,
-            queue,
-            &mut pipeline.gizmo_buf,
-            &mut pipeline.gizmo_capacity,
-            &self.gizmos,
-            "bambu-gpu-gizmo-verts",
-        );
         pipeline.gizmo_count = self.gizmos.len() as u32;
-
-        upload_labels(
-            device,
-            queue,
-            &mut pipeline.label_buf,
-            &mut pipeline.label_capacity,
-            &self.labels,
-        );
         pipeline.label_count = self.labels.len() as u32;
     }
 
@@ -1429,5 +1545,25 @@ mod tests {
             tip(&large)
         );
         assert!(tip(&large) > 40.0 * 0.5, "tip must stick out past the AABB");
+    }
+
+    #[test]
+    fn camera_motion_does_not_change_geom_key() {
+        let mut scene = ViewportScene::with_cube("test".into());
+        assert_eq!(scene.geom_key(), scene.geom_key());
+        let before = scene.geom_key();
+        scene.camera.orbit(12.0, -4.0);
+        scene.camera.pan_xy(5.0, -3.0);
+        scene.camera.zoom(-1.0);
+        assert_eq!(before, scene.geom_key());
+        let first = scene.cached_gpu_mesh();
+        scene.camera.orbit(-3.0, 1.0);
+        let second = scene.cached_gpu_mesh();
+        assert!(
+            Arc::ptr_eq(&first.solid, &second.solid) && Arc::ptr_eq(&first.lines, &second.lines),
+            "orbit must reuse tessellated GPU meshes"
+        );
+        scene.set_mesh(TriangleMesh::cube(24.0));
+        assert_ne!(before, scene.geom_key());
     }
 }
