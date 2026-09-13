@@ -3,9 +3,9 @@
 pub use crate::camera::OrbitCamera;
 
 use bambu_config::{BedRect, BedShape};
-use bambu_geom::TriangleMesh;
+use bambu_geom::{Aabb3, TriangleMesh};
 use bambu_preview::{ExtrusionRole, ToolpathBuffer};
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
@@ -41,6 +41,16 @@ const SUPPORT: [f32; 3] = [0.18, 0.82, 0.42];
 const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
 const IRONING: [f32; 3] = [0.92, 0.88, 0.98];
 
+const SAMPLE_COUNT: u32 = 4;
+
+fn msaa_state() -> wgpu::MultisampleState {
+    wgpu::MultisampleState {
+        count: SAMPLE_COUNT,
+        mask: !0,
+        alpha_to_coverage_enabled: false,
+    }
+}
+
 /// Prepare-tab pointer mode. Right-drag orbits; middle-drag pans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlaterTool {
@@ -65,6 +75,76 @@ pub struct AxisGizmo {
     pub half: Vec3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GizmoAxis {
+    X,
+    Y,
+    Z,
+}
+
+impl AxisGizmo {
+    pub fn pick_axis(self, origin: Vec3, dir: Vec3) -> Option<GizmoAxis> {
+        let dir = dir.normalize_or_zero();
+        if dir.length_squared() < 1e-12 {
+            return None;
+        }
+        let inv = Vec3::new(
+            if dir.x.abs() > 1e-8 {
+                1.0 / dir.x
+            } else {
+                f32::INFINITY
+            },
+            if dir.y.abs() > 1e-8 {
+                1.0 / dir.y
+            } else {
+                f32::INFINITY
+            },
+            if dir.z.abs() > 1e-8 {
+                1.0 / dir.z
+            } else {
+                f32::INFINITY
+            },
+        );
+        let mut best = f32::MAX;
+        let mut hit = None;
+        for (axis, unit, half) in [
+            (GizmoAxis::X, Vec3::X, self.half.x),
+            (GizmoAxis::Y, Vec3::Y, self.half.y),
+            (GizmoAxis::Z, Vec3::Z, self.half.z),
+        ] {
+            let len = axis_len(half);
+            let radius = (len * 0.08).clamp(2.0, 10.0);
+            let tip = self.origin + unit * len;
+            let aabb = Aabb3 {
+                min: self.origin.min(tip) - Vec3::splat(radius),
+                max: self.origin.max(tip) + Vec3::splat(radius),
+            };
+            if aabb.intersects_ray(origin, inv) {
+                let t = (self.origin - origin).dot(dir);
+                if t > 0.0 && t < best {
+                    best = t;
+                    hit = Some(axis);
+                }
+            }
+        }
+        hit
+    }
+}
+
+/// One printable volume in world space, clustered for Fast raster.
+#[derive(Debug, Clone)]
+pub struct SceneSolid {
+    pub mesh: TriangleMesh,
+    pub meshlets: Vec<crate::meshlet::Meshlet>,
+}
+
+impl SceneSolid {
+    pub fn from_mesh(mesh: TriangleMesh) -> Self {
+        let meshlets = crate::meshlet::clusterize(&mesh);
+        Self { mesh, meshlets }
+    }
+}
+
 #[derive(Debug)]
 pub struct ViewportScene {
     pub adapter_label: String,
@@ -82,7 +162,18 @@ pub struct ViewportScene {
     pub paint_overlay: Vec<(usize, [f32; 3])>,
     pub tool: PlaterTool,
     pub gizmo: Option<AxisGizmo>,
+    /// Per-volume world meshes (not flattened).
+    pub solids: Vec<SceneSolid>,
+    /// Hardware `ray_query` shading when the iced device has RT.
+    pub realistic: bool,
     gpu: Mutex<Option<CachedGpuMesh>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MeshletDraw {
+    start: u32,
+    count: u32,
+    aabb: Aabb3,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +183,13 @@ struct CachedGpuMesh {
     lines: Arc<[Vertex]>,
     gizmos: Arc<[Vertex]>,
     labels: Arc<[crate::label::LabelVertex]>,
+    meshlets: Arc<[MeshletDraw]>,
+    bed_verts: u32,
+    overlay_start: u32,
+    overlay_count: u32,
+    rt_positions: Arc<[[f32; 4]]>,
+    rt_indices: Arc<[u32]>,
+    rt_instances: Arc<[crate::rt::RtInstance]>,
 }
 
 impl Default for ViewportScene {
@@ -126,6 +224,8 @@ impl ViewportScene {
             paint_overlay: Vec::new(),
             tool: PlaterTool::Orbit,
             gizmo: None,
+            solids: vec![SceneSolid::from_mesh(TriangleMesh::cube(20.0))],
+            realistic: false,
             gpu: Mutex::new(None),
         }
     }
@@ -143,7 +243,21 @@ impl ViewportScene {
 
     /// Replace the solid mesh in world space. Does not recenter or move the camera.
     pub fn set_mesh(&mut self, mesh: TriangleMesh) {
+        self.solids = vec![SceneSolid::from_mesh(mesh.clone())];
         self.mesh = mesh;
+        self.toolpaths = ToolpathBuffer::default();
+        self.preview_layer = 0;
+        self.preview_vertices = 0;
+        self.paint_overlay.clear();
+    }
+
+    /// Replace plate volumes without merging them into one GPU mesh.
+    pub fn set_solids(&mut self, meshes: Vec<TriangleMesh>) {
+        self.solids = meshes.into_iter().map(SceneSolid::from_mesh).collect();
+        self.mesh = TriangleMesh::default();
+        for solid in &self.solids {
+            self.mesh.append(&solid.mesh);
+        }
         self.toolpaths = ToolpathBuffer::default();
         self.preview_layer = 0;
         self.preview_vertices = 0;
@@ -179,6 +293,13 @@ impl ViewportScene {
         self.hide_infill.hash(&mut hasher);
         self.hide_support.hash(&mut hasher);
         self.keep_solid.hash(&mut hasher);
+        self.solids.len().hash(&mut hasher);
+        for solid in &self.solids {
+            solid.mesh.vertices.len().hash(&mut hasher);
+            solid.mesh.indices.len().hash(&mut hasher);
+            hash_vec3_samples(&mut hasher, &solid.mesh.vertices);
+            solid.meshlets.len().hash(&mut hasher);
+        }
         self.paint_overlay.len().hash(&mut hasher);
         if let Some((idx, color)) = self.paint_overlay.first() {
             idx.hash(&mut hasher);
@@ -223,21 +344,103 @@ impl ViewportScene {
             self.hide_support,
         ));
         let mut solid = bed_solids(&self.bed);
-        if self.toolpaths.is_empty() || self.keep_solid {
-            solid.extend(mesh_vertices(&self.mesh, PLASTIC));
+        let bed_verts = solid.len() as u32;
+        let mut meshlets = Vec::new();
+        let show_solids = self.toolpaths.is_empty() || self.keep_solid;
+        if show_solids {
+            for s in &self.solids {
+                if s.meshlets.is_empty() {
+                    let start = solid.len() as u32;
+                    let verts = mesh_vertices(&s.mesh, PLASTIC);
+                    let count = verts.len() as u32;
+                    solid.extend(verts);
+                    meshlets.push(MeshletDraw {
+                        start,
+                        count,
+                        aabb: s.mesh.aabb().unwrap_or(Aabb3::empty()),
+                    });
+                } else {
+                    for m in &s.meshlets {
+                        let start = solid.len() as u32;
+                        let verts = mesh_vertices_range(&s.mesh, m.first_tri, m.tri_count, PLASTIC);
+                        let count = verts.len() as u32;
+                        solid.extend(verts);
+                        meshlets.push(MeshletDraw {
+                            start,
+                            count,
+                            aabb: m.aabb,
+                        });
+                    }
+                }
+            }
+        }
+        let overlay_start = solid.len() as u32;
+        if show_solids {
             solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
         }
+        let overlay_count = solid.len() as u32 - overlay_start;
         let gizmos = self
             .gizmo
             .map(|g| gizmo_arrows(g.origin, g.half))
             .unwrap_or_default();
+        let (rt_positions, rt_indices, rt_instances) = self.rt_geometry();
         CachedGpuMesh {
             key,
             solid: Arc::from(solid),
             lines: Arc::from(lines),
             gizmos: Arc::from(gizmos),
             labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
+            meshlets: Arc::from(meshlets),
+            bed_verts,
+            overlay_start,
+            overlay_count,
+            rt_positions: Arc::from(rt_positions),
+            rt_indices: Arc::from(rt_indices),
+            rt_instances: Arc::from(rt_instances),
         }
+    }
+
+    fn rt_geometry(&self) -> (Vec<[f32; 4]>, Vec<u32>, Vec<crate::rt::RtInstance>) {
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        let mut instances = Vec::new();
+        let (x0, y0, x1, y1) = self.bed.printable_aabb();
+        let base = positions.len() as u32;
+        positions.extend([
+            [x0, y0, 0.0, 1.0],
+            [x1, y0, 0.0, 1.0],
+            [x1, y1, 0.0, 1.0],
+            [x0, y1, 0.0, 1.0],
+        ]);
+        let first = indices.len() as u32;
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        instances.push(crate::rt::RtInstance {
+            first_index: first,
+            index_count: 6,
+        });
+        if self.toolpaths.is_empty() || self.keep_solid {
+            let room = crate::rt::MAX_INSTANCES.saturating_sub(instances.len() as u32) as usize;
+            for solid in self.solids.iter().take(room) {
+                if solid.mesh.indices.is_empty() {
+                    continue;
+                }
+                let base = positions.len() as u32;
+                for v in &solid.mesh.vertices {
+                    positions.push([v.x, v.y, v.z, 1.0]);
+                }
+                let first = indices.len() as u32;
+                for tri in &solid.mesh.indices {
+                    indices.push(base + tri[0]);
+                    indices.push(base + tri[1]);
+                    indices.push(base + tri[2]);
+                }
+                instances.push(crate::rt::RtInstance {
+                    first_index: first,
+                    index_count: (solid.mesh.indices.len() * 3) as u32,
+                });
+            }
+        }
+        (positions, indices, instances)
     }
 }
 
@@ -509,6 +712,14 @@ where
             lines: mesh.lines,
             gizmos: mesh.gizmos,
             labels: mesh.labels,
+            meshlets: mesh.meshlets,
+            bed_verts: mesh.bed_verts,
+            overlay_start: mesh.overlay_start,
+            overlay_count: mesh.overlay_count,
+            rt_positions: mesh.rt_positions,
+            rt_indices: mesh.rt_indices,
+            rt_instances: mesh.rt_instances,
+            realistic: self.realistic,
         }
     }
 }
@@ -521,6 +732,14 @@ pub struct ScenePrimitive {
     lines: Arc<[Vertex]>,
     gizmos: Arc<[Vertex]>,
     labels: Arc<[crate::label::LabelVertex]>,
+    meshlets: Arc<[MeshletDraw]>,
+    bed_verts: u32,
+    overlay_start: u32,
+    overlay_count: u32,
+    rt_positions: Arc<[[f32; 4]]>,
+    rt_indices: Arc<[u32]>,
+    rt_instances: Arc<[crate::rt::RtInstance]>,
+    realistic: bool,
 }
 
 #[repr(C)]
@@ -559,10 +778,15 @@ pub struct ScenePipeline {
     line_count: u32,
     gizmo_count: u32,
     label_count: u32,
+    color_format: wgpu::TextureFormat,
+    msaa_view: Option<wgpu::TextureView>,
     depth_view: Option<wgpu::TextureView>,
     depth_size: (u32, u32),
+    _msaa: Option<wgpu::Texture>,
+    _depth: Option<wgpu::Texture>,
     _atlas: wgpu::Texture,
     uploaded_key: u64,
+    rt: Mutex<Option<crate::rt::RtGpu>>,
 }
 
 impl shader::Pipeline for ScenePipeline {
@@ -667,7 +891,7 @@ impl ScenePipeline {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: msaa_state(),
             multiview: None,
             cache: None,
         });
@@ -703,7 +927,7 @@ impl ScenePipeline {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: msaa_state(),
             multiview: None,
             cache: None,
         });
@@ -739,7 +963,7 @@ impl ScenePipeline {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: msaa_state(),
             multiview: None,
             cache: None,
         });
@@ -770,34 +994,56 @@ impl ScenePipeline {
             line_count: 0,
             gizmo_count: 0,
             label_count: 0,
+            color_format: format,
+            msaa_view: None,
             depth_view: None,
             depth_size: (0, 0),
+            _msaa: None,
+            _depth: None,
             _atlas: atlas_texture,
             uploaded_key: u64::MAX,
+            rt: Mutex::new(crate::rt::RtGpu::try_new(device, format, SAMPLE_COUNT)),
         }
     }
 
-    fn ensure_depth(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    fn ensure_targets(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
-        if self.depth_size == (width, height) && self.depth_view.is_some() {
+        if self.depth_size == (width, height)
+            && self.depth_view.is_some()
+            && self.msaa_view.is_some()
+        {
             return;
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("bambu-gpu-depth"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let msaa = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bambu-gpu-msaa"),
+            size,
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bambu-gpu-depth"),
+            size,
+            mip_level_count: 1,
+            sample_count: SAMPLE_COUNT,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth32Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        self.depth_view = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.msaa_view = Some(msaa.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.depth_view = Some(depth.create_view(&wgpu::TextureViewDescriptor::default()));
+        self._msaa = Some(msaa);
+        self._depth = Some(depth);
         self.depth_size = (width, height);
     }
 }
@@ -814,13 +1060,13 @@ impl shader::Primitive for ScenePrimitive {
         viewport: &Viewport,
     ) {
         let size = viewport.physical_size();
-        pipeline.ensure_depth(device, size.width, size.height);
+        pipeline.ensure_targets(device, size.width, size.height);
 
         // Match the pane we `set_viewport` to in `render`, not the full window.
         let aspect = pane_aspect(*bounds);
-        let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
+        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
         let view = self.camera.view_matrix();
-        let model = glam::Mat4::IDENTITY;
+        let model = Mat4::IDENTITY;
         let mvp = proj * view * model;
         let light = (self.camera.eye() - self.camera.target).normalize();
         queue.write_buffer(
@@ -871,6 +1117,26 @@ impl shader::Primitive for ScenePrimitive {
         pipeline.line_count = self.lines.len() as u32;
         pipeline.gizmo_count = self.gizmos.len() as u32;
         pipeline.label_count = self.labels.len() as u32;
+
+        if self.realistic {
+            let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(rt) = rt.as_mut() {
+                let scale = viewport.scale_factor();
+                let rw = (bounds.width * scale).round().max(1.0) as u32;
+                let rh = (bounds.height * scale).round().max(1.0) as u32;
+                rt.resize(device, rw, rh);
+                rt.write_camera(queue, view, proj, light, self.camera.eye());
+                rt.upload_geom(
+                    device,
+                    queue,
+                    self.geom_key,
+                    &self.rt_positions,
+                    &self.rt_indices,
+                    &self.rt_instances,
+                );
+                rt.ensure_bind_group(device);
+            }
+        }
     }
 
     fn draw(&self, _pipeline: &ScenePipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
@@ -884,15 +1150,28 @@ impl shader::Primitive for ScenePrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
+        let Some(msaa_view) = pipeline.msaa_view.as_ref() else {
+            return;
+        };
         let Some(depth_view) = pipeline.depth_view.as_ref() else {
             return;
         };
 
+        let pane_w = clip_bounds.width.max(1);
+        let pane_h = clip_bounds.height.max(1);
+        let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
+        if self.realistic {
+            if let Some(gpu) = rt.as_mut() {
+                gpu.build_and_trace(encoder, &self.rt_instances, pane_w, pane_h);
+            }
+        }
+        let do_rt = self.realistic && rt.as_ref().is_some_and(|gpu| gpu.is_ready());
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("bambu-gpu-viewport"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
+                view: msaa_view,
+                resolve_target: Some(target),
                 depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -901,14 +1180,14 @@ impl shader::Primitive for ScenePrimitive {
                         b: 0.09,
                         a: 1.0,
                     }),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: None,
             }),
@@ -918,8 +1197,8 @@ impl shader::Primitive for ScenePrimitive {
 
         // iced's `draw()` path already sets this; our depth pass does not.
         // Without it, NDC maps to the full window and the cube looks stretched.
-        let vp_w = clip_bounds.width.max(1) as f32;
-        let vp_h = clip_bounds.height.max(1) as f32;
+        let vp_w = pane_w as f32;
+        let vp_h = pane_h as f32;
         pass.set_viewport(
             clip_bounds.x as f32,
             clip_bounds.y as f32,
@@ -928,18 +1207,43 @@ impl shader::Primitive for ScenePrimitive {
             0.0,
             1.0,
         );
-        pass.set_scissor_rect(
-            clip_bounds.x,
-            clip_bounds.y,
-            clip_bounds.width.max(1),
-            clip_bounds.height.max(1),
-        );
+        pass.set_scissor_rect(clip_bounds.x, clip_bounds.y, pane_w, pane_h);
 
-        if pipeline.solid_count > 0 {
+        if do_rt {
+            if let Some(gpu) = rt.as_ref() {
+                gpu.blit(&mut pass);
+            }
+            if self.overlay_count > 0 {
+                pass.set_pipeline(&pipeline.pipeline);
+                pass.set_bind_group(0, &pipeline.bind_group, &[]);
+                pass.set_vertex_buffer(0, pipeline.vertex_buf.slice(..));
+                pass.draw(
+                    self.overlay_start..self.overlay_start + self.overlay_count,
+                    0..1,
+                );
+            }
+        } else if pipeline.solid_count > 0 {
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
             pass.set_vertex_buffer(0, pipeline.vertex_buf.slice(..));
-            pass.draw(0..pipeline.solid_count, 0..1);
+            if self.bed_verts > 0 {
+                pass.draw(0..self.bed_verts, 0..1);
+            }
+            let aspect = (vp_w / vp_h.max(1.0)).max(0.1);
+            let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
+            let planes = crate::meshlet::frustum_planes(proj * self.camera.view_matrix());
+            for meshlet in self.meshlets.iter() {
+                if meshlet.count == 0 || !crate::meshlet::aabb_in_frustum(meshlet.aabb, &planes) {
+                    continue;
+                }
+                pass.draw(meshlet.start..meshlet.start + meshlet.count, 0..1);
+            }
+            if self.overlay_count > 0 {
+                pass.draw(
+                    self.overlay_start..self.overlay_start + self.overlay_count,
+                    0..1,
+                );
+            }
         }
         if pipeline.line_count > 0 {
             pass.set_pipeline(&pipeline.line_pipeline);
@@ -1181,7 +1485,7 @@ fn label_gpu(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: msaa_state(),
         multiview: None,
         cache: None,
     });
@@ -1242,9 +1546,20 @@ pub fn outward_triangle(a: Vec3, b: Vec3, c: Vec3, center: Vec3) -> ([Vec3; 3], 
 }
 
 fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {
+    mesh_vertices_range(mesh, 0, mesh.indices.len() as u32, color)
+}
+
+fn mesh_vertices_range(
+    mesh: &TriangleMesh,
+    first_tri: u32,
+    tri_count: u32,
+    color: [f32; 3],
+) -> Vec<Vertex> {
     let center = mesh_center(mesh);
-    let mut out = Vec::with_capacity(mesh.indices.len() * 3);
-    for idx in &mesh.indices {
+    let start = first_tri as usize;
+    let end = (start + tri_count as usize).min(mesh.indices.len());
+    let mut out = Vec::with_capacity(end.saturating_sub(start) * 3);
+    for idx in &mesh.indices[start..end] {
         let [a, b, c] = mesh.triangle(*idx);
         let (pts, n) = outward_triangle(a, b, c, center);
         let n = [n.x, n.y, n.z];
@@ -1565,5 +1880,29 @@ mod tests {
         );
         scene.set_mesh(TriangleMesh::cube(24.0));
         assert_ne!(before, scene.geom_key());
+    }
+
+    #[test]
+    fn gizmo_pick_hits_x_shaft() {
+        let g = AxisGizmo {
+            origin: Vec3::ZERO,
+            half: Vec3::splat(10.0),
+        };
+        let origin = Vec3::new(axis_len(10.0) * 0.5, 40.0, 0.0);
+        let dir = Vec3::new(0.0, -1.0, 0.0);
+        assert_eq!(g.pick_axis(origin, dir), Some(GizmoAxis::X));
+        let miss = Vec3::new(80.0, 40.0, 80.0);
+        assert_eq!(g.pick_axis(miss, dir), None);
+    }
+
+    #[test]
+    fn tessellate_emits_meshlets_for_cube() {
+        let scene = ViewportScene::with_cube("test".into());
+        let mesh = scene.cached_gpu_mesh();
+        assert!(!mesh.meshlets.is_empty());
+        let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
+        assert!(covered > 0);
+        assert!(!mesh.rt_instances.is_empty());
+        assert!(mesh.bed_verts > 0);
     }
 }

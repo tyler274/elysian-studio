@@ -2,7 +2,7 @@
 
 use bambu_config::BedShape;
 use bambu_geom::Aabb3;
-use bambu_gpu::PlaterTool;
+use bambu_gpu::{GizmoAxis, PlaterTool};
 use bambu_model::{
     auto_orient_instance, drop_instance_to_bed, lay_instance_on_normal, Instance, Model,
 };
@@ -252,6 +252,10 @@ impl crate::App {
                     .camera
                     .hit_z0(ndc_x, ndc_y, aspect)
                     .map(|p| (p.x, p.y));
+                self.drag_axis = self.scene.gizmo.and_then(|gizmo| {
+                    let (origin, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
+                    gizmo.pick_axis(origin, dir)
+                });
             }
             ViewportEvent::Drag {
                 ndc_x,
@@ -261,6 +265,7 @@ impl crate::App {
             ViewportEvent::DragEnd => {
                 self.drag_last_ndc = None;
                 self.drag_last_bed = None;
+                self.drag_axis = None;
             }
         }
     }
@@ -268,6 +273,19 @@ impl crate::App {
     fn apply_tool_drag(&mut self, ndc_x: f32, ndc_y: f32, aspect: f32) {
         match self.scene.tool {
             PlaterTool::Move => {
+                if self.drag_axis == Some(GizmoAxis::Z) {
+                    let Some((_, ly)) = self.drag_last_ndc else {
+                        self.drag_last_ndc = Some((ndc_x, ndc_y));
+                        return;
+                    };
+                    let dz = (ndc_y - ly) * self.scene.camera.distance * 0.25;
+                    if let Some(inst) = self.selected_instance_mut() {
+                        inst.offset.z += dz;
+                    }
+                    self.drag_last_ndc = Some((ndc_x, ndc_y));
+                    self.sync_scene_mesh();
+                    return;
+                }
                 let Some(hit) = self.scene.camera.hit_z0(ndc_x, ndc_y, aspect) else {
                     return;
                 };
@@ -275,20 +293,36 @@ impl crate::App {
                     self.drag_last_bed = Some((hit.x, hit.y));
                     return;
                 };
+                let mut dx = hit.x - lx;
+                let mut dy = hit.y - ly;
+                match self.drag_axis {
+                    Some(GizmoAxis::X) => dy = 0.0,
+                    Some(GizmoAxis::Y) => dx = 0.0,
+                    Some(GizmoAxis::Z) | None => {}
+                }
                 if let Some(inst) = self.selected_instance_mut() {
-                    inst.offset.x += hit.x - lx;
-                    inst.offset.y += hit.y - ly;
+                    inst.offset.x += dx;
+                    inst.offset.y += dy;
                 }
                 self.drag_last_bed = Some((hit.x, hit.y));
                 self.sync_scene_mesh();
             }
             PlaterTool::Rotate => {
-                let Some((lx, _)) = self.drag_last_ndc else {
+                let Some((lx, ly)) = self.drag_last_ndc else {
                     self.drag_last_ndc = Some((ndc_x, ndc_y));
                     return;
                 };
+                let delta = match self.drag_axis {
+                    Some(GizmoAxis::Y) => (ndc_y - ly) * 90.0,
+                    _ => (ndc_x - lx) * 90.0,
+                };
+                let axis = self.drag_axis;
                 if let Some(inst) = self.selected_instance_mut() {
-                    inst.rotation_deg.z += (ndc_x - lx) * 90.0;
+                    match axis {
+                        Some(GizmoAxis::X) => inst.rotation_deg.x += delta,
+                        Some(GizmoAxis::Y) => inst.rotation_deg.y += delta,
+                        Some(GizmoAxis::Z) | None => inst.rotation_deg.z += delta,
+                    }
                 }
                 self.drag_last_ndc = Some((ndc_x, ndc_y));
                 self.sync_scene_mesh();
@@ -299,12 +333,15 @@ impl crate::App {
                     return;
                 };
                 let factor = (1.0 + (ndc_x - lx) * 0.8).clamp(0.5, 1.5);
-                let uniform = self.uniform_scale;
+                let axis = self.drag_axis;
+                let uniform = self.uniform_scale && axis.is_none();
                 if let Some(inst) = self.selected_instance_mut() {
-                    if uniform {
-                        inst.scale *= factor;
-                    } else {
-                        inst.scale.x *= factor;
+                    match axis {
+                        Some(GizmoAxis::X) => inst.scale.x *= factor,
+                        Some(GizmoAxis::Y) => inst.scale.y *= factor,
+                        Some(GizmoAxis::Z) => inst.scale.z *= factor,
+                        None if uniform => inst.scale *= factor,
+                        None => inst.scale.x *= factor,
                     }
                     inst.scale = inst.scale.clamp(Vec3::splat(0.05), Vec3::splat(20.0));
                 }

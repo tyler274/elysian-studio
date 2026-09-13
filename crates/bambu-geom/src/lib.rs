@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod arc_fitter;
+mod bvh;
 mod clipper;
 mod mesh;
 mod point;
@@ -14,6 +15,7 @@ pub use arc_fitter::{
     calc_arc_length_mm, douglas_peucker, fit_arcs_and_simplify, ArcDir, ArcSegment, PathFit,
     PathFitKind,
 };
+pub use bvh::Bvh;
 pub use clipper::{
     difference_polygons, intersect_polygons, offset_polygons, offset_polygons_square,
     union_polygons,

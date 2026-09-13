@@ -2,6 +2,8 @@
 
 use glam::{Mat4, Vec3};
 
+const LEAF_LINEAR: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb3 {
     pub min: Vec3,
@@ -9,6 +11,13 @@ pub struct Aabb3 {
 }
 
 impl Aabb3 {
+    pub fn empty() -> Self {
+        Self {
+            min: Vec3::splat(f32::MAX),
+            max: Vec3::splat(f32::MIN),
+        }
+    }
+
     pub fn from_points(points: impl IntoIterator<Item = Vec3>) -> Option<Self> {
         let mut iter = points.into_iter();
         let first = iter.next()?;
@@ -23,6 +32,55 @@ impl Aabb3 {
 
     pub fn size(self) -> Vec3 {
         self.max - self.min
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    pub fn longest_axis(self) -> usize {
+        let s = self.size();
+        if s.x >= s.y && s.x >= s.z {
+            0
+        } else if s.y >= s.z {
+            1
+        } else {
+            2
+        }
+    }
+
+    pub fn surface_area(self) -> f32 {
+        let s = self.size().max(Vec3::ZERO);
+        2.0 * (s.x * s.y + s.y * s.z + s.z * s.x)
+    }
+
+    pub fn intersects_sphere(self, center: Vec3, radius: f32) -> bool {
+        let q = center.clamp(self.min, self.max);
+        q.distance_squared(center) <= radius * radius
+    }
+
+    /// Slab test. `inv_dir` is `1 / ray_dir` per axis (inf if parallel).
+    pub fn intersects_ray(self, origin: Vec3, inv_dir: Vec3) -> bool {
+        let mut tmin = 0.0f32;
+        let mut tmax = f32::MAX;
+        for i in 0..3 {
+            let o = origin[i];
+            let inv = inv_dir[i];
+            let mut t0 = (self.min[i] - o) * inv;
+            let mut t1 = (self.max[i] - o) * inv;
+            if t0 > t1 {
+                std::mem::swap(&mut t0, &mut t1);
+            }
+            tmin = tmin.max(t0);
+            tmax = tmax.min(t1);
+            if tmax < tmin {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -47,6 +105,14 @@ impl TriangleMesh {
 
     /// Closest triangle along a world-space ray, or `None`.
     pub fn pick_triangle(&self, origin: Vec3, dir: Vec3) -> Option<usize> {
+        if self.indices.len() > LEAF_LINEAR {
+            crate::bvh::Bvh::build(self).pick_triangle(self, origin, dir)
+        } else {
+            self.pick_triangle_linear(origin, dir)
+        }
+    }
+
+    pub fn pick_triangle_linear(&self, origin: Vec3, dir: Vec3) -> Option<usize> {
         let dir = dir.normalize_or_zero();
         if dir.length_squared() < 1e-12 {
             return None;
@@ -67,6 +133,14 @@ impl TriangleMesh {
 
     /// Triangle indices whose centroids lie within `radius` of `point`.
     pub fn triangles_near(&self, point: Vec3, radius: f32) -> Vec<usize> {
+        if self.indices.len() > LEAF_LINEAR {
+            crate::bvh::Bvh::build(self).triangles_near(self, point, radius)
+        } else {
+            self.triangles_near_linear(point, radius)
+        }
+    }
+
+    pub fn triangles_near_linear(&self, point: Vec3, radius: f32) -> Vec<usize> {
         let r2 = radius.max(0.0) * radius.max(0.0);
         self.indices
             .iter()
@@ -266,7 +340,7 @@ impl TriangleMesh {
     }
 }
 
-fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+pub(crate) fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     const EPS: f32 = 1e-8;
     let e1 = b - a;
     let e2 = c - a;

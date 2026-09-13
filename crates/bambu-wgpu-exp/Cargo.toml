@@ -1,0 +1,14 @@
+[package]
+name = "bambu-wgpu-exp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Isolated opt-in for wgpu experimental ray-query features"
+
+# Workspace `unsafe_code` is deny; this crate is the one allowed exception.
+[lints.rust]
+unsafe_code = "allow"
+
+[dependencies]
+wgpu.workspace = true

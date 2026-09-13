@@ -12,7 +12,7 @@ repository = "https://github.com/bambulab/BambuStudio"
 authors = ["Bambu Studio Rust rewrite contributors"]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [workspace.dependencies]
 bambu-geom = { path = "crates/bambu-geom" }
@@ -26,6 +26,7 @@ bambu-gpu = { path = "crates/bambu-gpu" }
 bambu-device = { path = "crates/bambu-device" }
 bambu-protocol = { path = "crates/bambu-protocol" }
 bambu-alloc = { path = "crates/bambu-alloc" }
+bambu-wgpu-exp = { path = "crates/bambu-wgpu-exp" }
 # Sibling checkout of the mimalloc Rust rewrite (`../mimalloc`).
 mimalloc-core = { path = "../mimalloc/rust/crates/mimalloc-core" }
 

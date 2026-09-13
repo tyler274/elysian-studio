@@ -160,6 +160,7 @@ struct App {
     selected_volume: usize,
     drag_last_bed: Option<(f32, f32)>,
     drag_last_ndc: Option<(f32, f32)>,
+    drag_axis: Option<bambu_gpu::GizmoAxis>,
     machine: MachineState,
     ams: AmsState,
     hms_lines: Vec<String>,
@@ -219,6 +220,7 @@ enum Message {
     PreviewLayer(u32),
     HideInfill(bool),
     HideSupport(bool),
+    Realistic(bool),
     ByObject(bool),
     PaintSupport,
     PaintSeam,
@@ -555,6 +557,7 @@ impl App {
             selected_volume: 0,
             drag_last_bed: None,
             drag_last_ndc: None,
+            drag_axis: None,
             machine: MachineState::default(),
             ams: AmsState::default(),
             hms_lines: Vec::new(),
@@ -1078,6 +1081,7 @@ impl App {
             }
             Message::HideInfill(v) => self.scene.hide_infill = v,
             Message::HideSupport(v) => self.scene.hide_support = v,
+            Message::Realistic(v) => self.scene.realistic = v,
             Message::ByObject(v) => self.by_object = v,
             Message::PaintSupport => {
                 self.paint_kind = Some(PaintKind::Support);
@@ -2457,15 +2461,19 @@ impl App {
     }
 
     fn sync_scene_mesh(&mut self) {
-        let Some(mesh) = self
-            .model
-            .as_ref()
-            .and_then(|m| m.mesh_for_plate(self.plate))
-        else {
+        let Some(model) = self.model.as_ref() else {
             return;
         };
+        let meshes: Vec<bambu_geom::TriangleMesh> = model
+            .world_volumes_for_plate(self.plate)
+            .into_iter()
+            .map(|vol| vol.mesh)
+            .collect();
+        if meshes.is_empty() {
+            return;
+        }
         let keep = self.scene.keep_solid;
-        self.scene.set_mesh(mesh);
+        self.scene.set_solids(meshes);
         self.scene.keep_solid = keep;
         self.refresh_paint_overlay();
         self.sync_gizmo();

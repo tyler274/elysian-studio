@@ -120,6 +120,9 @@ impl crate::App {
                 button("Reset camera")
                     .padding([3, 8])
                     .on_press(Message::ResetCamera),
+                checkbox(self.scene.realistic)
+                    .label("Realistic preview")
+                    .on_toggle(Message::Realistic),
                 text("Right-drag: orbit · Middle-drag: pan · Scroll: zoom · Left: tool / paint")
                     .size(12),
             ]
@@ -176,6 +179,9 @@ impl crate::App {
                 checkbox(self.scene.hide_support)
                     .label("Hide support")
                     .on_toggle(Message::HideSupport),
+                checkbox(self.scene.realistic)
+                    .label("Realistic preview")
+                    .on_toggle(Message::Realistic),
                 button("Reset camera")
                     .padding([3, 8])
                     .on_press(Message::ResetCamera),

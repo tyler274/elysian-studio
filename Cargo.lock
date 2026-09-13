@@ -455,6 +455,7 @@ dependencies = [
  "bambu-model",
  "bambu-preview",
  "bambu-slicer",
+ "bambu-wgpu-exp",
  "bytemuck",
  "glam 0.29.3",
  "iced",
@@ -552,6 +553,13 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bambu-wgpu-exp"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
 ]
 
 [[package]]
