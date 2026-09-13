@@ -252,6 +252,7 @@ fn scarf_external_ramps_z_on_later_outer_walls() {
     settings.override_filament_scarf_seam_setting = true;
     settings.seam_slope_type = SeamScarfType::External;
     settings.seam_slope_inner_walls = false;
+    settings.seam_slope_conditional = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     let layer0 = layer_block(&gcode, 0).expect("layer 0");
@@ -291,6 +292,7 @@ fn process_scarf_type_needs_filament_override() {
     settings.retract_when_changing_layer = false;
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.seam_slope_type = SeamScarfType::External;
+    settings.seam_slope_conditional = false;
     let gcode = write_gcode(&settings, &sliced).unwrap();
     let layer1 = layer_block(&gcode, 1).expect("layer 1");
     assert!(
@@ -303,6 +305,126 @@ fn process_scarf_type_needs_filament_override() {
     assert!(
         feature_has_ze(layer1, "Outer wall"),
         "override should apply process scarf type\n{layer1}"
+    );
+}
+
+fn scarf_test_settings() -> SliceSettings {
+    let mut settings = SliceSettings::default();
+    settings.enable_arc_fitting = false;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.seam_slope_conditional = false;
+    settings
+}
+
+fn scarf_square(clockwise: bool) -> Vec<bambu_geom::Point> {
+    let pts = vec![
+        bambu_geom::Point::from_mm(0.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 10.0),
+        bambu_geom::Point::from_mm(0.0, 10.0),
+    ];
+    if clockwise {
+        let mut rev = pts;
+        rev.reverse();
+        rev
+    } else {
+        pts
+    }
+}
+
+fn sliced_outer_wall(path: Vec<bambu_geom::Point>) -> bambu_slicer::SliceResult {
+    let layer0 = empty_gcode_layer(0, 0.2);
+    let mut layer1 = empty_gcode_layer(1, 0.4);
+    layer1.outer_walls = vec![path];
+    bambu_slicer::SliceResult {
+        layers: vec![layer0, layer1],
+    }
+}
+
+#[test]
+fn filament_scarf_height_length_apply_without_override() {
+    let sliced = sliced_outer_wall(scarf_square(false));
+    let mut settings = scarf_test_settings();
+    settings.filament_scarf_seam_type = SeamScarfType::External;
+    settings.filament_scarf_length_mm = 8.0;
+    settings.filament_scarf_height = 20.0;
+    settings.filament_scarf_height_is_percent = true;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        feature_has_ze(layer1, "Outer wall"),
+        "filament scarf type/length should ramp without override\n{layer1}"
+    );
+}
+
+#[test]
+fn seam_slope_conditional_skips_sharp_cube_corners() {
+    let sliced = sliced_outer_wall(scarf_square(false));
+    let mut settings = scarf_test_settings();
+    settings.override_filament_scarf_seam_setting = true;
+    settings.seam_slope_type = SeamScarfType::External;
+    settings.seam_slope_conditional = true;
+    settings.scarf_angle_threshold_deg = 155;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        !feature_has_ze(layer1, "Outer wall"),
+        "90° cube corners are below the 155° scarf threshold\n{layer1}"
+    );
+}
+
+#[test]
+fn external_scarf_skips_hole_loops() {
+    let sliced = sliced_outer_wall(scarf_square(true));
+    let mut settings = scarf_test_settings();
+    settings.override_filament_scarf_seam_setting = true;
+    settings.seam_slope_type = SeamScarfType::External;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    assert!(
+        !feature_has_ze(layer1, "Outer wall"),
+        "C++ elrPerimeterHole skips External scarf\n{layer1}"
+    );
+}
+
+#[test]
+fn scarf_overlap_ends_retrace_at_layer_z() {
+    let sliced = sliced_outer_wall(scarf_square(false));
+    let mut settings = scarf_test_settings();
+    settings.override_filament_scarf_seam_setting = true;
+    settings.seam_slope_type = SeamScarfType::External;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    let layer1 = layer_block(&gcode, 1).expect("layer 1");
+    let mut in_feat = false;
+    let mut saw_ze = false;
+    let mut saw_overlap = false;
+    for line in layer1.lines() {
+        if let Some(rest) = line.strip_prefix("; FEATURE: ") {
+            in_feat = rest == "Outer wall";
+            continue;
+        }
+        if !in_feat || !line.starts_with("G1 ") {
+            continue;
+        }
+        let has_z = line
+            .split_whitespace()
+            .any(|tok| tok.starts_with('Z') && tok.len() > 1);
+        let has_e = line
+            .split_whitespace()
+            .any(|tok| tok.starts_with('E') && tok.len() > 1);
+        let has_xy = line.contains(" X") && line.contains(" Y");
+        if has_z && has_e {
+            saw_ze = true;
+        } else if saw_ze && has_e && has_xy && !has_z {
+            saw_overlap = true;
+        }
+    }
+    assert!(
+        saw_overlap,
+        "C++ ExtrusionLoopSloped::ends retrace at print Z\n{layer1}"
     );
 }
 
@@ -350,6 +472,59 @@ fn spiral_mode_skips_seam_gap() {
     assert!(
         last.0.abs() < 0.02 && last.1.abs() < 0.02,
         "spiral vase should still close the loop, got {last:?}\n{gcode}"
+    );
+}
+
+#[test]
+fn spiral_mode_ramps_z_along_perimeter() {
+    let path = vec![
+        bambu_geom::Point::from_mm(0.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 0.0),
+        bambu_geom::Point::from_mm(10.0, 10.0),
+        bambu_geom::Point::from_mm(0.0, 10.0),
+    ];
+    let mut layer0 = empty_gcode_layer(0, 0.2);
+    layer0.outer_walls = vec![path.clone()];
+    let mut layer1 = empty_gcode_layer(1, 0.4);
+    layer1.outer_walls = vec![path];
+    let sliced = bambu_slicer::SliceResult {
+        layers: vec![layer0, layer1],
+    };
+    let mut settings = SliceSettings::default();
+    settings.spiral_mode = true;
+    settings.enable_arc_fitting = false;
+    settings.wipe = false;
+    settings.slow_down_for_layer_cooling = false;
+    settings.retract_when_changing_layer = false;
+    settings.filament_max_volumetric_speed_mm3_s = 0.0;
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    let gcode = write_gcode(&settings, &sliced).unwrap();
+    assert!(
+        gcode.lines().any(|line| {
+            line.starts_with("G1 X")
+                && line.contains(" Y")
+                && line.contains(" Z")
+                && line.contains(" E")
+        }),
+        "SpiralVase should emit XYZ E ramps\n{gcode}"
+    );
+}
+
+#[test]
+fn write_gcode_for_objects_concatenates_by_object() {
+    let mesh = TriangleMesh::cube(8.0);
+    let mut settings = SliceSettings::default();
+    settings.print_sequence = String::from("by object");
+    settings.skirt_loops = 0;
+    settings.brim_width_mm = 0.0;
+    settings.slow_down_for_layer_cooling = false;
+    let a = slice_mesh(&mesh, &settings).unwrap();
+    let one = write_gcode(&settings, &a).unwrap();
+    let two = write_gcode_for_objects(&settings, &[a.clone(), a]).unwrap();
+    assert!(
+        two.len() > one.len(),
+        "by-object export should concatenate both objects"
     );
 }
 

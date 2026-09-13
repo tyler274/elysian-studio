@@ -59,6 +59,107 @@ pub fn generate(
         InfillPattern::Lightning => Vec::new(),
         // Octree is built from the mesh in `prepare_infill`.
         InfillPattern::AdaptiveCubic | InfillPattern::SupportCubic => Vec::new(),
+        InfillPattern::Lattice2D => {
+            let mut lines =
+                fill_at_angle(region, settings.sparse_infill_lattice_angle_1_deg, |r| {
+                    rectilinear(r, spacing, layer_index, 0.0)
+                });
+            lines.extend(fill_at_angle(
+                region,
+                settings.sparse_infill_lattice_angle_2_deg,
+                |r| rectilinear(r, spacing, layer_index, 0.0),
+            ));
+            lines
+        }
+        InfillPattern::LockedZag => {
+            let mut lines = concentric(
+                region,
+                spacing,
+                settings.nozzle_diameter_mm * LOOP_CLIPPING_OVER_NOZZLE,
+            );
+            if lines.len() > 1 {
+                lines.truncate(1);
+            }
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                layer_index,
+                settings.infill_direction_deg,
+            ));
+            lines
+        }
+        InfillPattern::Cubic => {
+            let angles = [0.0, 60.0, 120.0];
+            rectilinear(
+                region,
+                spacing,
+                layer_index,
+                settings.infill_direction_deg + angles[layer_index % 3],
+            )
+        }
+        InfillPattern::Triangles => {
+            let mut lines = rectilinear(region, spacing, 0, settings.infill_direction_deg);
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                0,
+                settings.infill_direction_deg + 60.0,
+            ));
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                0,
+                settings.infill_direction_deg + 120.0,
+            ));
+            lines
+        }
+        InfillPattern::Stars => {
+            let mut lines = rectilinear(region, spacing, 0, settings.infill_direction_deg);
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                0,
+                settings.infill_direction_deg + 60.0,
+            ));
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                0,
+                settings.infill_direction_deg + 120.0,
+            ));
+            lines.extend(rectilinear(
+                region,
+                spacing * 2.0,
+                1,
+                settings.infill_direction_deg + 90.0,
+            ));
+            lines
+        }
+        InfillPattern::CrossHatch => {
+            let mut lines =
+                rectilinear(region, spacing, layer_index, settings.infill_direction_deg);
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                layer_index.saturating_add(1),
+                settings.infill_direction_deg + 90.0,
+            ));
+            lines
+        }
+        InfillPattern::Hilbert => hilbert(region, spacing),
+        InfillPattern::Archimedean => archimedean(region, spacing),
+        InfillPattern::Octagram => octagram(region, spacing, layer_index),
+        InfillPattern::CrossZag => {
+            let mut lines =
+                rectilinear(region, spacing, layer_index, settings.infill_direction_deg);
+            lines.extend(rectilinear(
+                region,
+                spacing,
+                layer_index.saturating_add(1),
+                settings.infill_direction_deg + 45.0,
+            ));
+            lines
+        }
     };
     apply_sparse_multiline(paths, settings)
 }
@@ -577,6 +678,88 @@ pub(crate) fn clip_to_region(paths: Vec<Polyline>, region: &[Polygon]) -> Vec<Po
     clip_polylines(&paths, region)
 }
 
+fn hilbert(region: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
+    let Some((min, max)) = bbox(region) else {
+        return Vec::new();
+    };
+    let (x0, y0) = min.to_mm();
+    let (x1, y1) = max.to_mm();
+    let span = (x1 - x0).max(y1 - y0).max(spacing_mm);
+    let cells = ((span / spacing_mm.max(0.2)).ceil() as u32)
+        .clamp(2, 64)
+        .next_power_of_two();
+    let n = cells as usize;
+    let mut pts = Vec::with_capacity(n * n);
+    for d in 0..(n * n) as u32 {
+        let (ix, iy) = hilbert_d_to_xy(cells, d);
+        let x = x0 + f64::from(ix) * span / f64::from(cells.saturating_sub(1).max(1));
+        let y = y0 + f64::from(iy) * span / f64::from(cells.saturating_sub(1).max(1));
+        pts.push(Point::from_mm(x, y));
+    }
+    clip_to_region(vec![pts], region)
+}
+
+fn hilbert_d_to_xy(n: u32, mut d: u32) -> (u32, u32) {
+    let mut x = 0u32;
+    let mut y = 0u32;
+    let mut s = 1u32;
+    while s < n {
+        let rx = 1 & (d / 2);
+        let ry = 1 & (d ^ rx);
+        if ry == 0 {
+            if rx == 1 {
+                x = s.saturating_sub(1).saturating_sub(x);
+                y = s.saturating_sub(1).saturating_sub(y);
+            }
+            std::mem::swap(&mut x, &mut y);
+        }
+        x += s * rx;
+        y += s * ry;
+        d /= 4;
+        s *= 2;
+    }
+    (x, y)
+}
+
+fn archimedean(region: &[Polygon], spacing_mm: f64) -> Vec<Polyline> {
+    let Some((min, max)) = bbox(region) else {
+        return Vec::new();
+    };
+    let (x0, y0) = min.to_mm();
+    let (x1, y1) = max.to_mm();
+    let cx = 0.5 * (x0 + x1);
+    let cy = 0.5 * (y0 + y1);
+    let rmax = ((x1 - x0).hypot(y1 - y0) * 0.5).max(spacing_mm);
+    let step = 0.35_f64;
+    let mut pts = Vec::new();
+    let mut a = 0.0;
+    loop {
+        let r = spacing_mm.max(0.2) * a / std::f64::consts::TAU;
+        if r > rmax {
+            break;
+        }
+        pts.push(Point::from_mm(cx + r * a.cos(), cy + r * a.sin()));
+        a += step;
+        if pts.len() > 20_000 {
+            break;
+        }
+    }
+    clip_to_region(vec![pts], region)
+}
+
+fn octagram(region: &[Polygon], spacing_mm: f64, layer_index: usize) -> Vec<Polyline> {
+    let mut lines = Vec::new();
+    for k in 0..4 {
+        lines.extend(rectilinear(
+            region,
+            spacing_mm,
+            layer_index,
+            45.0 * f64::from(k),
+        ));
+    }
+    lines
+}
+
 #[cfg(test)]
 fn collect_scanline_us_scalar(edges: &[ScanEdge], v: i64) -> Vec<i64> {
     let mut us = Vec::new();
@@ -862,5 +1045,32 @@ mod tests {
             (gap - clip).abs() < 0.02,
             "C++ loop_clipping is 0.15×nozzle, got {gap} want {clip}"
         );
+    }
+
+    #[test]
+    fn remaining_infill_patterns_cover_a_square() {
+        let region = square_mm(20.0);
+        let mut settings = SliceSettings::default();
+        settings.infill_density = 0.2;
+        for pattern in [
+            InfillPattern::Lattice2D,
+            InfillPattern::LockedZag,
+            InfillPattern::Cubic,
+            InfillPattern::Triangles,
+            InfillPattern::Stars,
+            InfillPattern::CrossHatch,
+            InfillPattern::Hilbert,
+            InfillPattern::Archimedean,
+            InfillPattern::Octagram,
+            InfillPattern::CrossZag,
+        ] {
+            settings.infill_pattern = pattern;
+            let paths = generate(&region, &settings, 1, 1.0);
+            assert!(
+                !paths.is_empty(),
+                "{} should hatch a 20mm square",
+                pattern.as_str()
+            );
+        }
     }
 }

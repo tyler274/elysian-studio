@@ -8,6 +8,8 @@
 //! `SupportSpotsSearch`, `EstimateCurledExtrusions`, and
 //! `CalculateOverhangingPerimeters` (not run yet). Bambu keeps
 //! `DetectOverhangsForLift` and wall/infill/support simplify steps.
+//!
+//! [`PrintStep::ConflictCheck`] is [`crate::check_print_object_conflicts`].
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrintStep {

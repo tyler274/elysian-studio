@@ -95,9 +95,12 @@ impl<'a> Writer<'a> {
     }
 
     pub(crate) fn set_print_role(&mut self, kind: PrintAccel) {
-        self.state.print_accel = self
+        let base = self
             .settings
             .print_acceleration_mm_s2(self.state.first_layer, kind);
+        self.state.print_accel = self
+            .settings
+            .height_slowdown_acc_mm_s2(self.state.layer_print_z_mm, base);
         self.state.short_travel_role = kind == PrintAccel::OuterWall;
         self.state.dest_is_perimeter =
             matches!(kind, PrintAccel::OuterWall | PrintAccel::InnerWall);
@@ -404,6 +407,7 @@ impl<'a> Writer<'a> {
             return vec![dest];
         }
         let mut boundaries = self.state.layer_contours.clone();
+        boundaries.extend(self.state.wall_paths.iter().cloned());
         if self.settings.avoid_crossing_wall_includes_support {
             boundaries.extend(self.state.support_islands.iter().cloned());
         }
@@ -483,7 +487,7 @@ impl<'a> Writer<'a> {
         if closed && pts.first() != pts.last() {
             pts.push(pts[0]);
         }
-        let scarf = self.should_scarf(closed, external_perimeter);
+        let scarf = self.should_scarf(&pts, closed, external_perimeter);
         // C++ `GCode::extrude_loop`: clip `seam_gap` unless spiral vase or a scarf
         // seam is active (`clip_length = 0` when `enable_seam_slope`).
         if closed && !self.settings.spiral_mode && !scarf {
@@ -507,6 +511,8 @@ impl<'a> Writer<'a> {
         };
         if scarf {
             self.emit_scarfed_linear_path(&pts, e_per_mm, print_f, marker)?;
+        } else if self.settings.spiral_mode && closed && self.state.dest_is_perimeter {
+            self.emit_spiral_vase_path(&pts, e_per_mm, print_f, marker)?;
         } else if self.settings.enable_arc_fitting && !self.settings.spiral_mode {
             // C++ `LayerRegion::simplify_path`: arc-fit when enabled, else Douglas-Peucker
             // with `resolution` (including spiral mode, which cannot emit G2/G3).
@@ -522,15 +528,23 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// C++ `enable_seam_slope` without hole / conditional-angle gating.
-    pub(crate) fn should_scarf(&self, closed: bool, external_perimeter: bool) -> bool {
+    /// C++ `enable_seam_slope`: type/role, hole skip, conditional seam angle.
+    pub(crate) fn should_scarf(
+        &self,
+        path: &[Point],
+        closed: bool,
+        external_perimeter: bool,
+    ) -> bool {
         closed
             && !self.state.first_layer
             && !self.settings.spiral_mode
             && self.state.dest_is_perimeter
-            && self.settings.seam_slope_min_length_mm > TRAVEL_EPS_MM
+            && self.settings.effective_scarf_length_mm() > TRAVEL_EPS_MM
             && self.state.layer_height_mm > TRAVEL_EPS_MM
-            && self.settings.scarf_applies_to_wall(external_perimeter)
+            && self
+                .settings
+                .scarf_applies_to_wall(external_perimeter, closed_loop_is_hole(path))
+            && self.settings.scarf_angle_allows(seam_interior_deg(path))
     }
 
     /// C++ `ExtrusionLoopSloped` start ramp: Z from `start_ratio` to 1 over
@@ -549,7 +563,7 @@ impl<'a> Writer<'a> {
         let scarf_len = if self.settings.seam_slope_entire_loop {
             loop_len
         } else {
-            self.settings.seam_slope_min_length_mm.min(loop_len)
+            self.settings.effective_scarf_length_mm().min(loop_len)
         };
         if scarf_len < TRAVEL_EPS_MM {
             return self.emit_linear_path(pts, e_per_mm, print_f, marker);
@@ -559,6 +573,10 @@ impl<'a> Writer<'a> {
         let start_ratio = self.settings.scarf_start_ratio(self.state.layer_height_mm);
         let height = self.state.layer_height_mm;
         let print_z = self.state.layer_print_z_mm;
+        let gap = self.settings.effective_scarf_gap_mm();
+        // C++ `clip_slope`: `clip_front(gap*2)` on the ramp, `clip_end(gap)` on `ends`.
+        let start_skip = (gap * 2.0).min(scarf_len);
+        let overlap_len = (scarf_len - gap.max(self.settings.seam_gap_mm())).max(0.0);
         let start_z = lerp(print_z - height, print_z, start_ratio);
         if (self.state.z - start_z).abs() > TRAVEL_EPS_MM {
             writeln!(
@@ -591,6 +609,21 @@ impl<'a> Writer<'a> {
                 walked += take;
                 remaining -= take;
                 from = dest;
+                if walked <= start_skip + TRAVEL_EPS_MM {
+                    if (self.state.last != Some(dest))
+                        || (self.state.z - start_z).abs() > TRAVEL_EPS_MM
+                    {
+                        writeln!(
+                            self.out,
+                            "G1 X{:.3} Y{:.3} Z{:.3} F{:.0}",
+                            dest.0, dest.1, start_z, print_f
+                        )?;
+                        self.state.last = Some(dest);
+                        self.state.z = start_z;
+                        trail.push(dest);
+                    }
+                    continue;
+                }
                 let ratio = lerp(start_ratio, 1.0, (walked / scarf_len).min(1.0));
                 let z = lerp(print_z - height, print_z, ratio);
                 self.push_extrude_xyz(
@@ -602,6 +635,76 @@ impl<'a> Writer<'a> {
                     &mut trail,
                 )?;
             }
+        }
+        if overlap_len > TRAVEL_EPS_MM {
+            if (self.state.z - print_z).abs() > TRAVEL_EPS_MM {
+                writeln!(
+                    self.out,
+                    "G1 Z{:.3} F{:.0}",
+                    print_z,
+                    self.settings.z_travel_speed_mm_s() * 60.0
+                )?;
+                self.state.z = print_z;
+            }
+            let mut overlapped = 0.0;
+            for window in pts.windows(2) {
+                if overlapped + TRAVEL_EPS_MM >= overlap_len {
+                    break;
+                }
+                let b = xy(window[1]);
+                let dist = xy_dist(xy(window[0]), b);
+                if dist < TRAVEL_EPS_MM {
+                    continue;
+                }
+                let mut remaining = dist;
+                let mut from = xy(window[0]);
+                while remaining > TRAVEL_EPS_MM && overlapped + TRAVEL_EPS_MM < overlap_len {
+                    let take = remaining.min(overlap_len - overlapped).min(max_seg);
+                    let t = take / remaining;
+                    let dest = (from.0 + (b.0 - from.0) * t, from.1 + (b.1 - from.1) * t);
+                    overlapped += take;
+                    remaining -= take;
+                    from = dest;
+                    let e_ratio = lerp(1.0 - start_ratio, 0.0, (overlapped / scarf_len).min(1.0));
+                    self.push_extrude_xy(
+                        dest,
+                        take * e_per_mm * e_ratio.max(0.0),
+                        print_f,
+                        marker,
+                        &mut trail,
+                    )?;
+                }
+            }
+        }
+        self.state.wipe = trail.into_iter().rev().collect();
+        Ok(())
+    }
+
+    /// C++ `SpiralVase::process_layer`: Z ramps from the previous slab to `print_z`.
+    fn emit_spiral_vase_path(
+        &mut self,
+        pts: &[Point],
+        e_per_mm: f64,
+        print_f: f64,
+        marker: &str,
+    ) -> Result<(), GcodeError> {
+        let loop_len: f64 = pts.windows(2).map(|w| xy_dist(xy(w[0]), xy(w[1]))).sum();
+        if loop_len < TRAVEL_EPS_MM {
+            return Ok(());
+        }
+        let start_z = self.state.z;
+        let end_z = self.state.layer_print_z_mm;
+        let mut walked = 0.0;
+        let mut trail = vec![xy(pts[0])];
+        for window in pts.windows(2) {
+            let b = xy(window[1]);
+            let dist = xy_dist(xy(window[0]), b);
+            if dist < TRAVEL_EPS_MM {
+                continue;
+            }
+            walked += dist;
+            let z = lerp(start_z, end_z, (walked / loop_len).min(1.0));
+            self.push_extrude_xyz(b, z, dist * e_per_mm, print_f, marker, &mut trail)?;
         }
         self.state.wipe = trail.into_iter().rev().collect();
         Ok(())
@@ -900,6 +1003,50 @@ pub(crate) fn lift_overhangs_in_window(layers: &[Layer], print_z: f64) -> Vec<Po
 
 fn xy(p: Point) -> (f64, f64) {
     (unscale(p.x), unscale(p.y))
+}
+
+fn closed_vertex_count_pts(path: &[Point]) -> usize {
+    let n = path.len();
+    if n >= 2 && path[0] == path[n - 1] {
+        n - 1
+    } else {
+        n
+    }
+}
+
+/// C++ `elrPerimeterHole`: clockwise loops are holes under Clipper CCW-outer.
+fn closed_loop_is_hole(path: &[Point]) -> bool {
+    let n = closed_vertex_count_pts(path);
+    if n < 3 {
+        return false;
+    }
+    let mut area = 0.0;
+    for i in 0..n {
+        let a = path[i];
+        let b = path[(i + 1) % n];
+        area += (a.x as f64) * (b.y as f64) - (b.x as f64) * (a.y as f64);
+    }
+    area < 0.0
+}
+
+/// Interior angle (degrees) at the seam (first vertex of the closed loop).
+fn seam_interior_deg(path: &[Point]) -> f64 {
+    let n = closed_vertex_count_pts(path);
+    if n < 3 {
+        return 180.0;
+    }
+    let prev = xy(path[n - 1]);
+    let curr = xy(path[0]);
+    let next = xy(path[1]);
+    let v1 = (prev.0 - curr.0, prev.1 - curr.1);
+    let v2 = (next.0 - curr.0, next.1 - curr.1);
+    let n1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt();
+    let n2 = (v2.0 * v2.0 + v2.1 * v2.1).sqrt();
+    if n1 < TRAVEL_EPS_MM || n2 < TRAVEL_EPS_MM {
+        return 180.0;
+    }
+    let dot = ((v1.0 * v2.0 + v1.1 * v2.1) / (n1 * n2)).clamp(-1.0, 1.0);
+    dot.acos().to_degrees()
 }
 
 fn hops_length(start: (f64, f64), hops: &[(f64, f64)]) -> f64 {

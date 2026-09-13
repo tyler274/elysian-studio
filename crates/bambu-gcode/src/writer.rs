@@ -11,6 +11,31 @@ use crate::motion::{lift_overhangs_in_window, Writer};
 use crate::paths::{overhang_rings, Extrude};
 use crate::GcodeError;
 
+/// Sequential by-object export concatenates each object's layers (C++ `print_sequence`).
+pub fn write_gcode_for_objects(
+    settings: &SliceSettings,
+    objects: &[SliceResult],
+) -> Result<String, GcodeError> {
+    match objects {
+        [] => write_gcode(settings, &SliceResult { layers: Vec::new() }),
+        [one] => write_gcode(settings, one),
+        many if settings.print_sequence_by_object() => {
+            let mut layers = Vec::new();
+            for (oi, obj) in many.iter().enumerate() {
+                let mut obj_layers = obj.layers.clone();
+                if !settings.skirt_per_object && oi > 0 {
+                    for layer in &mut obj_layers {
+                        layer.skirt.clear();
+                    }
+                }
+                layers.extend(obj_layers);
+            }
+            write_gcode(settings, &SliceResult { layers })
+        }
+        many => write_gcode(settings, &many[0]),
+    }
+}
+
 pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<String, GcodeError> {
     let max_z = sliced.layers.last().map(|l| l.print_z_mm).unwrap_or(0.0);
     let mut w = Writer::new(settings);
@@ -60,10 +85,12 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
         w.state.first_layer = first;
         w.state.layer_height_mm = layer.height_mm;
         w.state.layer_print_z_mm = layer.print_z_mm;
-        w.emit_accel(settings.travel_acceleration_for_layer(first))?;
-        writeln!(w.out, "G1 Z{:.3} F600", layer.print_z_mm)?;
-        w.state.z = layer.print_z_mm;
-        w.state.lifted = 0.0;
+        if !(settings.spiral_mode && layer_i > 0) {
+            w.emit_accel(settings.travel_acceleration_for_layer(first))?;
+            writeln!(w.out, "G1 Z{:.3} F600", layer.print_z_mm)?;
+            w.state.z = layer.print_z_mm;
+            w.state.lifted = 0.0;
+        }
         w.emit_layer_change_gcode(layer_i, layer.print_z_mm, sliced.layers.len(), max_z)?;
         if layer_i == 1 && !settings.layer_change_gcode.is_empty() {
             writeln!(w.out, "; open powerlost recovery")?;
@@ -78,7 +105,7 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
 
         let object_first = layer_i == settings.raft_layers as usize;
         let flow_h = layer.height_mm;
-        let feeds = LayerFeeds::for_layer(settings, first);
+        let feeds = LayerFeeds::for_layer(settings, first, layer.print_z_mm);
         let support_polys = if layer_i == 0 {
             None
         } else {
@@ -121,6 +148,16 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 first,
             ),
         )?;
+        if settings.prime_tower_lift_height_mm > 0.0 && !layer.prime_tower.is_empty() {
+            let lift = layer.print_z_mm + settings.prime_tower_lift_height_mm;
+            writeln!(
+                w.out,
+                "G1 Z{:.3} F{:.0}",
+                lift,
+                settings.prime_tower_lift_speed_mm_s.max(1.0) * 60.0
+            )?;
+            w.state.z = lift;
+        }
         w.emit_role(
             "Prime tower",
             PrintAccel::Default,
@@ -132,6 +169,15 @@ pub fn write_gcode(settings: &SliceSettings, sliced: &SliceResult) -> Result<Str
                 first,
             ),
         )?;
+        if settings.prime_tower_lift_height_mm > 0.0 && !layer.prime_tower.is_empty() {
+            writeln!(
+                w.out,
+                "G1 Z{:.3} F{:.0}",
+                layer.print_z_mm,
+                settings.prime_tower_lift_speed_mm_s.max(1.0) * 60.0
+            )?;
+            w.state.z = layer.print_z_mm;
+        }
         if settings.support_filament > 0 && !layer.support.is_empty() {
             w.emit_toolchange(settings.support_filament)?;
         }
@@ -593,9 +639,26 @@ impl Writer<'_> {
         if self.state.current_tool == Some(t) {
             return Ok(());
         }
-        self.retract()?;
+        if !self.settings.flush_into_objects
+            && !self.settings.flush_into_infill
+            && !(self.settings.flush_into_support && self.state.dest_is_support)
+        {
+            self.retract()?;
+        }
+        if self.settings.ooze_prevention
+            && self.settings.filament_count > 1
+            && self.settings.standby_temperature_delta_c != 0
+        {
+            let park = (i32::from(self.settings.temperature_c)
+                + self.settings.standby_temperature_delta_c)
+                .max(0);
+            writeln!(self.out, "M104 S{park}")?;
+        }
         writeln!(self.out, "T{t}")?;
         self.state.current_tool = Some(t);
+        if !self.settings.flush_into_objects {
+            self.unretract()?;
+        }
         Ok(())
     }
 
@@ -628,63 +691,64 @@ struct LayerFeeds {
 }
 
 impl LayerFeeds {
-    fn for_layer(settings: &SliceSettings, first: bool) -> Self {
+    fn for_layer(settings: &SliceSettings, first: bool, print_z_mm: f64) -> Self {
         let first_f = settings.first_layer_speed_mm_s * 60.0;
+        let slow = |mm_s: f64| settings.height_slowdown_speed_mm_s(print_z_mm, mm_s) * 60.0;
         Self {
             wall: if first {
                 first_f
             } else {
-                settings.print_speed_mm_s * 60.0
+                slow(settings.print_speed_mm_s)
             },
             inner: if first {
                 first_f
             } else {
-                settings.inner_wall_speed_mm_s * 60.0
+                slow(settings.inner_wall_speed_mm_s)
             },
             sparse: if first {
                 settings.first_layer_infill_speed_mm_s * 60.0
             } else {
-                settings.infill_speed_mm_s * 60.0
+                slow(settings.infill_speed_mm_s)
             },
             gap: if first {
                 first_f
             } else {
-                settings.gap_infill_speed_mm_s * 60.0
+                slow(settings.gap_infill_speed_mm_s)
             },
             solid: if first {
                 first_f
             } else {
-                settings.solid_infill_speed_mm_s * 60.0
+                slow(settings.solid_infill_speed_mm_s)
             },
             vertical_shell: if first {
                 first_f
             } else {
-                settings.vertical_shell_speed_mm_s() * 60.0
+                slow(settings.vertical_shell_speed_mm_s())
             },
             support: if first {
                 first_f
             } else {
-                settings.support_speed_mm_s * 60.0
+                slow(settings.support_speed_mm_s)
             },
             support_interface: if first {
                 first_f
             } else {
-                settings.support_interface_speed_mm_s * 60.0
+                slow(settings.support_interface_speed_mm_s)
             },
             prime_tower: if first {
                 first_f
             } else {
-                settings.prime_tower_max_speed_mm_s * 60.0
+                slow(settings.prime_tower_max_speed_mm_s)
             },
             bridge: if first {
                 first_f
             } else {
-                settings.bridge_speed_mm_s * 60.0
+                slow(settings.effective_bridge_speed_mm_s())
             },
             top: if first {
                 first_f
             } else {
-                settings.top_surface_speed_mm_s * 60.0
+                slow(settings.top_surface_speed_mm_s)
             },
         }
     }

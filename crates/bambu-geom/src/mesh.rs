@@ -58,6 +58,18 @@ impl TriangleMesh {
         }
     }
 
+    /// C++ `filament_shrink` XY scale (100% → identity).
+    pub fn scale_xy(&mut self, factor: f64) {
+        if (factor - 1.0).abs() < 1e-12 {
+            return;
+        }
+        let f = factor as f32;
+        for v in &mut self.vertices {
+            v.x *= f;
+            v.y *= f;
+        }
+    }
+
     /// Move the mesh so it sits on z=0 and is centered on a square bed.
     pub fn place_on_bed(&mut self, bed_mm: f32) {
         let Some(aabb) = self.aabb() else {

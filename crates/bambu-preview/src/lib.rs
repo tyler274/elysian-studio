@@ -31,13 +31,16 @@ pub struct ToolpathVertex {
 #[derive(Debug, Clone, Default)]
 pub struct ToolpathBuffer {
     pub vertices: Vec<ToolpathVertex>,
+    pub layer_zs: Vec<f32>,
 }
 
 impl ToolpathBuffer {
     pub fn from_slice(sliced: &SliceResult) -> Self {
         let mut vertices = Vec::new();
+        let mut layer_zs = Vec::with_capacity(sliced.layers.len());
         for layer in &sliced.layers {
             let z = layer.print_z_mm as f32;
+            layer_zs.push(z);
             emit_paths(&mut vertices, &layer.skirt, z, ExtrusionRole::Skirt, true);
             emit_paths(&mut vertices, &layer.brim, z, ExtrusionRole::Brim, true);
             emit_paths(
@@ -139,11 +142,21 @@ impl ToolpathBuffer {
                 false,
             );
         }
-        Self { vertices }
+        Self { vertices, layer_zs }
     }
 
     pub fn is_empty(&self) -> bool {
         self.vertices.is_empty()
+    }
+
+    pub fn visible(
+        &self,
+        max_z: f32,
+        hide: impl Fn(ExtrusionRole) -> bool,
+    ) -> impl Iterator<Item = &ToolpathVertex> {
+        self.vertices
+            .iter()
+            .filter(move |v| v.position.z <= max_z + 1e-4 && !hide(v.role))
     }
 }
 

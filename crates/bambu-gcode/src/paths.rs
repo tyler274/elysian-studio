@@ -102,7 +102,7 @@ impl Writer<'_> {
             }
             // C++ `GCode::extrude_loop` scarfs the closed loop before overhang
             // speed splits; a split run is no longer a loop (`closed && single`).
-            if job.closed && self.should_scarf(true, external) {
+            if job.closed && self.should_scarf(path, true, external) {
                 if current_feature != Some(supported_feature) {
                     self.emit_feature(supported_feature, job.width_mm)?;
                     current_feature = Some(supported_feature);
@@ -205,13 +205,7 @@ fn overhang_feed(settings: &SliceSettings, degree: u8, print_f: f64) -> f64 {
     if !settings.enable_overhang_speed || degree == 0 {
         return print_f;
     }
-    let band = match degree {
-        1 => settings.overhang_1_4_speed_mm_s,
-        2 => settings.overhang_2_4_speed_mm_s,
-        3 => settings.overhang_3_4_speed_mm_s,
-        4 => settings.overhang_4_4_speed_mm_s,
-        _ => settings.overhang_speed_mm_s,
-    };
+    let band = settings.overhang_band_speed_mm_s(degree);
     if band <= 0.0 {
         print_f
     } else {

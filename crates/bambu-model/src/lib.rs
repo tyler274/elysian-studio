@@ -182,7 +182,7 @@ pub struct ModelVolume {
     pub triangle_seam: Vec<TrianglePaint>,
     /// `paint_fuzzy_skin` (`Enforcer`/`Blocker` both mean painted fuzzy).
     pub triangle_fuzzy_skin: Vec<TrianglePaint>,
-    /// Raw `paint_color` hex per triangle (MMU; ignored at slice time).
+    /// Raw `paint_color` hex per triangle (MMU; sliced into extra regions).
     pub triangle_color: Vec<String>,
     /// Extra `<metadata key>` on this part (`volume.config` in C++).
     pub config: BTreeMap<String, String>,
@@ -250,6 +250,7 @@ impl ModelVolume {
             || self.has_support_paint()
             || self.has_seam_paint()
             || self.has_fuzzy_paint()
+            || self.has_color_paint()
             || (self.volume_type.is_modifier() && self.has_region_config())
             || (self.volume_type.is_model_part() && self.has_region_config())
     }

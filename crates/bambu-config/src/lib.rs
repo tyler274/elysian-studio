@@ -39,6 +39,26 @@ pub enum InfillPattern {
     AdaptiveCubic,
     /// Bambu / PrusaSlicer `ipSupportCubic` (octree densified under overhangs).
     SupportCubic,
+    /// Bambu `ip2DLattice`.
+    Lattice2D,
+    /// Bambu `ipLockedZag`.
+    LockedZag,
+    /// Bambu `ipCubic` (axis-aligned 3D cubic slices).
+    Cubic,
+    /// Bambu `ipTriangles`.
+    Triangles,
+    /// Bambu `ipStars`.
+    Stars,
+    /// Bambu `ipCrossHatch`.
+    CrossHatch,
+    /// Bambu `ipHilbertCurve`.
+    Hilbert,
+    /// Bambu `ipArchimedeanChords`.
+    Archimedean,
+    /// Bambu `ipOctagramSpiral`.
+    Octagram,
+    /// Bambu `ipCrossZag`.
+    CrossZag,
 }
 
 impl InfillPattern {
@@ -56,6 +76,16 @@ impl InfillPattern {
             }
             "supportcubic" | "support_cubic" | "support cubic" => Self::SupportCubic,
             "zigzag" | "zig-zag" => Self::Rectilinear,
+            "2dlattice" | "2d lattice" | "lattice" => Self::Lattice2D,
+            "lockedzag" | "locked zag" | "locked-zag" => Self::LockedZag,
+            "cubic" => Self::Cubic,
+            "triangles" => Self::Triangles,
+            "stars" => Self::Stars,
+            "crosshatch" | "cross-hatch" | "crosshatchinfill" => Self::CrossHatch,
+            "hilbertcurve" | "hilbert" | "hilbertcurveinfill" => Self::Hilbert,
+            "archimedeanchords" | "archimedean" | "archimedean_chords" => Self::Archimedean,
+            "octagramspiral" | "octagram" | "octagram_spiral" => Self::Octagram,
+            "crosszag" | "cross-zag" | "cross_zag" => Self::CrossZag,
             _ => return None,
         })
     }
@@ -71,12 +101,47 @@ impl InfillPattern {
             Self::Lightning => "lightning",
             Self::AdaptiveCubic => "adaptivecubic",
             Self::SupportCubic => "supportcubic",
+            Self::Lattice2D => "2dlattice",
+            Self::LockedZag => "lockedzag",
+            Self::Cubic => "cubic",
+            Self::Triangles => "triangles",
+            Self::Stars => "stars",
+            Self::CrossHatch => "crosshatch",
+            Self::Hilbert => "hilbertcurve",
+            Self::Archimedean => "archimedeanchords",
+            Self::Octagram => "octagramspiral",
+            Self::CrossZag => "crosszag",
         }
     }
 
     /// C++ `Fill.cpp` patterns that honor `fill_multiline` on sparse infill.
     pub fn supports_multiline(self) -> bool {
         !matches!(self, Self::Concentric)
+    }
+}
+
+/// C++ `CoolingSlowdownLogicType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CoolingSlowdownLogic {
+    #[default]
+    Uniform,
+    ConsistentSurface,
+}
+
+impl CoolingSlowdownLogic {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "uniform_cooling" | "uniform" => Self::Uniform,
+            "consistent_surface" | "consistent" => Self::ConsistentSurface,
+            _ => return None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Uniform => "uniform_cooling",
+            Self::ConsistentSurface => "consistent_surface",
+        }
     }
 }
 
@@ -941,6 +1006,18 @@ pub struct SliceSettings {
     pub infill_combination: bool,
     /// C++ `infill_direction` (degrees). Sparse/solid scanlines, gyroid, and honeycomb rotate by this.
     pub infill_direction_deg: f64,
+    /// C++ `sparse_infill_lattice_angle_1`. BBL `-45`.
+    pub sparse_infill_lattice_angle_1_deg: f64,
+    /// C++ `sparse_infill_lattice_angle_2`. BBL `45`.
+    pub sparse_infill_lattice_angle_2_deg: f64,
+    /// C++ `sparse_infill_anchor` (mm or percent of sparse width).
+    pub sparse_infill_anchor: f64,
+    pub sparse_infill_anchor_is_percent: bool,
+    /// C++ `sparse_infill_anchor_max`.
+    pub sparse_infill_anchor_max: f64,
+    pub sparse_infill_anchor_max_is_percent: bool,
+    /// C++ `embedding_wall_into_infill`.
+    pub embedding_wall_into_infill: bool,
     /// C++ `bridge_angle` (degrees). `0` keeps auto / infill direction; `> 0`
     /// forces that angle on bridged bottoms (`LayerRegion.cpp` `custom_angle > 0`).
     pub bridge_angle_deg: f64,
@@ -978,6 +1055,20 @@ pub struct SliceSettings {
     pub seam_slope_steps: u32,
     /// C++ `seam_slope_inner_walls`. Scarf inner walls when the type is on.
     pub seam_slope_inner_walls: bool,
+    /// C++ `seam_slope_conditional`. Default true; cube corners skip scarf.
+    pub seam_slope_conditional: bool,
+    /// C++ `scarf_angle_threshold` (degrees). BBL `155`.
+    pub scarf_angle_threshold_deg: i32,
+    /// C++ `apply_scarf_seam_on_circles`.
+    pub apply_scarf_seam_on_circles: bool,
+    /// C++ `filament_scarf_height` (mm or percent of layer height).
+    pub filament_scarf_height: f64,
+    pub filament_scarf_height_is_percent: bool,
+    /// C++ `filament_scarf_gap` (mm or percent of nozzle).
+    pub filament_scarf_gap: f64,
+    pub filament_scarf_gap_is_percent: bool,
+    /// C++ `filament_scarf_length` (mm).
+    pub filament_scarf_length_mm: f64,
     pub wall_generator: WallGenerator,
     /// C++ `detect_thin_wall`. Open centerlines for islands that cannot hold
     /// two line widths. BBL `"0"`.
@@ -994,6 +1085,18 @@ pub struct SliceSettings {
     pub min_feature_size: f64,
     /// C++ `min_bead_width` as a fraction of nozzle diameter (default 85%).
     pub min_bead_width: f64,
+    /// C++ `wall_transition_length` as a fraction of nozzle (default 100%).
+    pub wall_transition_length: f64,
+    /// C++ `wall_transition_filter_deviation` as a fraction of nozzle (25%).
+    pub wall_transition_filter_deviation: f64,
+    /// C++ `wall_transition_angle` (degrees). Default 10.
+    pub wall_transition_angle_deg: f64,
+    /// C++ `wall_distribution_count`. Default 1.
+    pub wall_distribution_count: u32,
+    /// C++ `top_area_threshold` as a fraction of perimeter width (200%).
+    pub top_area_threshold: f64,
+    /// C++ `enable_circle_compensation`. BBL `"0"`.
+    pub enable_circle_compensation: bool,
     /// C++ `fuzzy_skin` (BBL default is `none`).
     pub fuzzy_skin: FuzzySkinType,
     pub fuzzy_skin_thickness_mm: f64,
@@ -1062,6 +1165,24 @@ pub struct SliceSettings {
     pub overhang_4_4_speed_mm_s: f64,
     /// C++ `overhang_totally_speed` (100% overhang / degree 5).
     pub overhang_speed_mm_s: f64,
+    /// C++ `override_process_overhang_speed`.
+    pub override_process_overhang_speed: bool,
+    /// C++ `filament_enable_overhang_speed`. Default true.
+    pub filament_enable_overhang_speed: bool,
+    pub filament_overhang_1_4_speed_mm_s: f64,
+    pub filament_overhang_2_4_speed_mm_s: f64,
+    pub filament_overhang_3_4_speed_mm_s: f64,
+    pub filament_overhang_4_4_speed_mm_s: f64,
+    pub filament_overhang_speed_mm_s: f64,
+    pub filament_bridge_speed_mm_s: f64,
+    /// C++ `enable_height_slowdown`.
+    pub enable_height_slowdown: bool,
+    pub slowdown_start_height_mm: f64,
+    pub slowdown_start_speed_mm_s: f64,
+    pub slowdown_start_acc_mm_s2: f64,
+    pub slowdown_end_height_mm: f64,
+    pub slowdown_end_speed_mm_s: f64,
+    pub slowdown_end_acc_mm_s2: f64,
     /// C++ `bridge_speed`.
     pub bridge_speed_mm_s: f64,
     /// C++ `bridge_flow` (PrintConfig default 1). Scales bridge extrusion volume.
@@ -1304,6 +1425,10 @@ pub struct SliceSettings {
     pub slow_down_for_layer_cooling: bool,
     /// C++ `no_slow_down_for_cooling_on_outwalls`.
     pub no_slow_down_for_cooling_on_outwalls: bool,
+    /// C++ `cooling_slowdown_logic`. BBL `uniform_cooling`.
+    pub cooling_slowdown_logic: CoolingSlowdownLogic,
+    /// C++ `cooling_perimeter_transition_distance` (mm).
+    pub cooling_perimeter_transition_distance_mm: f64,
     /// C++ `slow_down_min_speed` (mm/s). 0 means no floor.
     pub slow_down_min_speed_mm_s: f64,
     /// C++ `reduce_fan_stop_start_freq` (keep fan at least at min speed).
@@ -1455,6 +1580,14 @@ pub struct SliceSettings {
     pub printer_structure: String,
     /// C++ `print_sequence` (`by layer` / `by object`).
     pub print_sequence: String,
+    /// C++ `skirt_per_object`. Default true; only sequential by-object uses it.
+    pub skirt_per_object: bool,
+    /// C++ `standby_temperature_delta`. BBL `-5`.
+    pub standby_temperature_delta_c: i32,
+    /// C++ `independent_support_layer_height`. Default true; invalid with wipe tower.
+    pub independent_support_layer_height: bool,
+    /// C++ `filament_shrink` percent (100 = no compensation).
+    pub filament_shrink_percent: f64,
     /// C++ `printable_height` (placeholder `max_print_height`).
     pub printable_height_mm: f64,
     /// C++ `printable_area` polygon (mm). Empty falls back to the bed AABB.
@@ -1480,6 +1613,20 @@ pub struct SliceSettings {
     /// C++ `wipe_tower_no_sparse_layers`. Skip the tower on layers with no
     /// toolchange (not smooth timelapse / wrapping). BBL `"0"`.
     pub wipe_tower_no_sparse_layers: bool,
+    /// C++ `enable_tower_interface_features`. Off in common; H2C Standard `"1"`.
+    pub enable_tower_interface_features: bool,
+    /// C++ `prime_tower_lift_height`. BBL `-1` disables.
+    pub prime_tower_lift_height_mm: f64,
+    /// C++ `prime_tower_lift_speed`. Default 90 mm/s.
+    pub prime_tower_lift_speed_mm_s: f64,
+    /// C++ `prime_tower_enable_framework`.
+    pub prime_tower_enable_framework: bool,
+    /// C++ `prime_tower_flat_ironing`.
+    pub prime_tower_flat_ironing: bool,
+    /// C++ `flush_into_objects` / infill / support.
+    pub flush_into_objects: bool,
+    pub flush_into_infill: bool,
+    pub flush_into_support: bool,
     /// C++ `filament_diameter.values.size()`.
     pub filament_count: usize,
 }
@@ -1513,6 +1660,13 @@ impl Default for SliceSettings {
             fill_multiline: 1,
             infill_combination: false,
             infill_direction_deg: 45.0,
+            sparse_infill_lattice_angle_1_deg: -45.0,
+            sparse_infill_lattice_angle_2_deg: 45.0,
+            sparse_infill_anchor: 600.0,
+            sparse_infill_anchor_is_percent: true,
+            sparse_infill_anchor_max: 0.0,
+            sparse_infill_anchor_max_is_percent: false,
+            embedding_wall_into_infill: false,
             bridge_angle_deg: 0.0,
             symmetric_infill_y_axis: false,
             minimum_sparse_infill_area_mm2: 15.0,
@@ -1531,6 +1685,14 @@ impl Default for SliceSettings {
             seam_slope_entire_loop: false,
             seam_slope_steps: 10,
             seam_slope_inner_walls: true,
+            seam_slope_conditional: true,
+            scarf_angle_threshold_deg: 155,
+            apply_scarf_seam_on_circles: false,
+            filament_scarf_height: 10.0,
+            filament_scarf_height_is_percent: true,
+            filament_scarf_gap: 0.0,
+            filament_scarf_gap_is_percent: true,
+            filament_scarf_length_mm: 10.0,
             wall_generator: WallGenerator::Classic,
             detect_thin_wall: false,
             wall_sequence: WallSequence::InnerOuter,
@@ -1538,6 +1700,12 @@ impl Default for SliceSettings {
             is_infill_first: false,
             min_feature_size: 0.25,
             min_bead_width: 0.85,
+            wall_transition_length: 1.0,
+            wall_transition_filter_deviation: 0.25,
+            wall_transition_angle_deg: 10.0,
+            wall_distribution_count: 1,
+            top_area_threshold: 2.0,
+            enable_circle_compensation: false,
             fuzzy_skin: FuzzySkinType::None,
             fuzzy_skin_thickness_mm: 0.3,
             fuzzy_skin_point_distance_mm: 0.8,
@@ -1575,6 +1743,21 @@ impl Default for SliceSettings {
             overhang_3_4_speed_mm_s: 30.0,
             overhang_4_4_speed_mm_s: 10.0,
             overhang_speed_mm_s: 10.0,
+            override_process_overhang_speed: false,
+            filament_enable_overhang_speed: true,
+            filament_overhang_1_4_speed_mm_s: 0.0,
+            filament_overhang_2_4_speed_mm_s: 50.0,
+            filament_overhang_3_4_speed_mm_s: 30.0,
+            filament_overhang_4_4_speed_mm_s: 10.0,
+            filament_overhang_speed_mm_s: 10.0,
+            filament_bridge_speed_mm_s: 25.0,
+            enable_height_slowdown: false,
+            slowdown_start_height_mm: 0.0,
+            slowdown_start_speed_mm_s: 0.0,
+            slowdown_start_acc_mm_s2: 0.0,
+            slowdown_end_height_mm: 0.0,
+            slowdown_end_speed_mm_s: 0.0,
+            slowdown_end_acc_mm_s2: 0.0,
             bridge_speed_mm_s: 25.0,
             bridge_flow: 1.0,
             thick_bridges: false,
@@ -1686,6 +1869,8 @@ impl Default for SliceSettings {
             slow_down_layer_time_s: 8.0,
             slow_down_for_layer_cooling: false,
             no_slow_down_for_cooling_on_outwalls: false,
+            cooling_slowdown_logic: CoolingSlowdownLogic::Uniform,
+            cooling_perimeter_transition_distance_mm: 0.0,
             slow_down_min_speed_mm_s: 10.0,
             reduce_fan_stop_start_freq: false,
             auxiliary_fan: false,
@@ -1764,6 +1949,10 @@ impl Default for SliceSettings {
             scan_first_layer: false,
             printer_structure: String::from("undefine"),
             print_sequence: String::from("by layer"),
+            skirt_per_object: true,
+            standby_temperature_delta_c: -5,
+            independent_support_layer_height: true,
+            filament_shrink_percent: 100.0,
             printable_height_mm: 250.0,
             printable_area: Vec::new(),
             extruder_printable_areas: Vec::new(),
@@ -1776,6 +1965,14 @@ impl Default for SliceSettings {
             prime_tower_brim_width_mm: 3.0,
             prime_tower_max_speed_mm_s: 90.0,
             wipe_tower_no_sparse_layers: false,
+            enable_tower_interface_features: false,
+            prime_tower_lift_height_mm: -1.0,
+            prime_tower_lift_speed_mm_s: 90.0,
+            prime_tower_enable_framework: false,
+            prime_tower_flat_ironing: false,
+            flush_into_objects: false,
+            flush_into_infill: false,
+            flush_into_support: false,
             filament_count: 1,
         }
     }
@@ -1891,20 +2088,152 @@ impl SliceSettings {
     /// C++ scarf start as a 0–1 fraction of the current layer height.
     pub fn scarf_start_ratio(&self, layer_height_mm: f64) -> f64 {
         let h = layer_height_mm.max(1e-9);
-        let mm = if self.seam_slope_start_height_is_percent {
-            h * self.seam_slope_start_height / 100.0
+        let (value, is_percent) = if self.override_filament_scarf_seam_setting {
+            (
+                self.seam_slope_start_height,
+                self.seam_slope_start_height_is_percent,
+            )
         } else {
-            self.seam_slope_start_height
+            (
+                self.filament_scarf_height,
+                self.filament_scarf_height_is_percent,
+            )
         };
+        let mm = if is_percent { h * value / 100.0 } else { value };
         (mm / h).clamp(0.0, 1.0)
     }
 
+    /// C++ `seam_slope_min_length` vs `filament_scarf_length`.
+    pub fn effective_scarf_length_mm(&self) -> f64 {
+        if self.override_filament_scarf_seam_setting {
+            self.seam_slope_min_length_mm
+        } else {
+            self.filament_scarf_length_mm
+        }
+    }
+
+    /// C++ `seam_slope_gap.get_abs_value(nozzle)` vs filament scarf gap.
+    pub fn effective_scarf_gap_mm(&self) -> f64 {
+        let nozzle = self.nozzle_diameter_mm.max(0.0);
+        let (value, is_percent) = if self.override_filament_scarf_seam_setting {
+            (self.seam_slope_gap, self.seam_slope_gap_is_percent)
+        } else {
+            (self.filament_scarf_gap, self.filament_scarf_gap_is_percent)
+        };
+        if is_percent {
+            nozzle * value / 100.0
+        } else {
+            value
+        }
+        .max(0.0)
+    }
+
+    /// C++ turning angle at the seam vs `scarf_angle_threshold`.
+    pub fn scarf_angle_allows(&self, seam_interior_deg: f64) -> bool {
+        if !self.seam_slope_conditional {
+            return true;
+        }
+        seam_interior_deg + 1e-6 >= f64::from(self.scarf_angle_threshold_deg)
+    }
+
     /// C++ `enable_seam_slope` role/type gate without hole detection.
-    pub fn scarf_applies_to_wall(&self, external_perimeter: bool) -> bool {
-        match self.effective_seam_slope_type() {
+    pub fn scarf_applies_to_wall(&self, external_perimeter: bool, is_hole: bool) -> bool {
+        let ty = self.effective_seam_slope_type();
+        let type_ok = match ty {
             SeamScarfType::None => false,
-            SeamScarfType::External => external_perimeter,
-            SeamScarfType::All => external_perimeter || self.seam_slope_inner_walls,
+            SeamScarfType::External => !is_hole,
+            SeamScarfType::All => true,
+        };
+        type_ok && (external_perimeter || self.seam_slope_inner_walls)
+    }
+
+    /// C++ filament overhang bands when `override_process_overhang_speed`.
+    pub fn uses_filament_overhang_speed(&self) -> bool {
+        self.override_process_overhang_speed && self.filament_enable_overhang_speed
+    }
+
+    pub fn overhang_band_speed_mm_s(&self, degree: u8) -> f64 {
+        if self.uses_filament_overhang_speed() {
+            match degree {
+                1 => self.filament_overhang_1_4_speed_mm_s,
+                2 => self.filament_overhang_2_4_speed_mm_s,
+                3 => self.filament_overhang_3_4_speed_mm_s,
+                4 => self.filament_overhang_4_4_speed_mm_s,
+                _ => self.filament_overhang_speed_mm_s,
+            }
+        } else {
+            match degree {
+                1 => self.overhang_1_4_speed_mm_s,
+                2 => self.overhang_2_4_speed_mm_s,
+                3 => self.overhang_3_4_speed_mm_s,
+                4 => self.overhang_4_4_speed_mm_s,
+                _ => self.overhang_speed_mm_s,
+            }
+        }
+    }
+
+    pub fn effective_bridge_speed_mm_s(&self) -> f64 {
+        if self.uses_filament_overhang_speed() && self.filament_bridge_speed_mm_s > 0.0 {
+            self.filament_bridge_speed_mm_s
+        } else {
+            self.bridge_speed_mm_s
+        }
+    }
+
+    /// C++ height slowdown lerp between start/end height. 1.0 when disabled.
+    pub fn height_slowdown_t(&self, print_z_mm: f64) -> f64 {
+        if !self.enable_height_slowdown {
+            return 0.0;
+        }
+        let span = self.slowdown_end_height_mm - self.slowdown_start_height_mm;
+        if span.abs() < 1e-9 {
+            return 0.0;
+        }
+        ((print_z_mm - self.slowdown_start_height_mm) / span).clamp(0.0, 1.0)
+    }
+
+    pub fn height_slowdown_speed_mm_s(&self, print_z_mm: f64, base_mm_s: f64) -> f64 {
+        if !self.enable_height_slowdown {
+            return base_mm_s;
+        }
+        let t = self.height_slowdown_t(print_z_mm);
+        let start = if self.slowdown_start_speed_mm_s > 0.0 {
+            self.slowdown_start_speed_mm_s
+        } else {
+            base_mm_s
+        };
+        let end = if self.slowdown_end_speed_mm_s > 0.0 {
+            self.slowdown_end_speed_mm_s
+        } else {
+            base_mm_s
+        };
+        start + (end - start) * t
+    }
+
+    pub fn height_slowdown_acc_mm_s2(&self, print_z_mm: f64, base_acc: f64) -> f64 {
+        if !self.enable_height_slowdown {
+            return base_acc;
+        }
+        let t = self.height_slowdown_t(print_z_mm);
+        let start = if self.slowdown_start_acc_mm_s2 > 0.0 {
+            self.slowdown_start_acc_mm_s2
+        } else {
+            base_acc
+        };
+        let end = if self.slowdown_end_acc_mm_s2 > 0.0 {
+            self.slowdown_end_acc_mm_s2
+        } else {
+            base_acc
+        };
+        start + (end - start) * t
+    }
+
+    /// C++ `filament_shrink` as an XY scale (100% → 1.0).
+    pub fn filament_xy_shrink_scale(&self) -> f64 {
+        if self.filament_shrink_percent <= 1e-9 {
+            1.0
+        } else {
+            100.0 / self.filament_shrink_percent
         }
     }
 

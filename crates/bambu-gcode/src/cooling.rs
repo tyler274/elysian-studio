@@ -165,13 +165,16 @@ fn slowdown_layer(layer: &str, settings: &SliceSettings, head: &mut Head) -> Str
         };
         let feed_mm_s = f_mm_min / 60.0;
         let has_e = parse_axis(&upper, b'E').is_some();
+        let is_external = line.contains("_EXTERNAL_PERIMETER");
+        let skip_external = settings.no_slow_down_for_cooling_on_outwalls
+            || settings.cooling_slowdown_logic
+                == bambu_config::CoolingSlowdownLogic::ConsistentSurface;
         let is_adj = is_g1
             && has_e
             && length > 1e-9
             && feed_mm_s > 1e-9
             && !line.contains("_WIPE")
-            && !(settings.no_slow_down_for_cooling_on_outwalls
-                && line.contains("_EXTERNAL_PERIMETER"));
+            && !(skip_external && is_external);
         if is_adj {
             adjustable.push(AdjMove {
                 idx,

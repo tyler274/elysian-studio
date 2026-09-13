@@ -12,6 +12,8 @@ use crate::tls::{lan_client_config, server_name, TlsError};
 use bambu_device::Frame;
 
 pub const LAN_CAMERA_PORT: u16 = 6000;
+/// X1 / H2 chamber is RTSPS on TCP 322 (not the P1/A1 JPEG port).
+pub const LAN_RTSPS_PORT: u16 = 322;
 
 #[derive(Debug, Error)]
 pub enum CameraError {
@@ -107,6 +109,60 @@ pub fn snapshot_frame(host: &str, access_code: &str) -> Result<Frame, CameraErro
     jpeg_to_frame(&snapshot_jpeg(host, access_code)?)
 }
 
+/// C++ `rtsps://bblp:<code>@<ip>:322/streaming/live/1`.
+pub fn rtsps_url(host: &str, access_code: &str) -> String {
+    format!("rtsps://{LAN_MQTT_USER}:{access_code}@{host}:{LAN_RTSPS_PORT}/streaming/live/1")
+}
+
+/// TLS OPTIONS on :322. Does not decode H.264 and never ships Bambu PEMs.
+pub fn probe_rtsps(host: &str, access_code: &str) -> Result<String, CameraError> {
+    if access_code.is_empty() {
+        return Err(CameraError::Message("LAN access code is empty".into()));
+    }
+    let config = lan_client_config()?;
+    let tcp = TcpStream::connect((host, LAN_RTSPS_PORT))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(8)))?;
+    tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let name = server_name(host)?;
+    let conn =
+        ClientConnection::new(config, name).map_err(|err| CameraError::Message(err.to_string()))?;
+    let mut tls = StreamOwned::new(conn, tcp);
+    let req = format!(
+        "OPTIONS rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
+    );
+    tls.write_all(req.as_bytes())?;
+    tls.flush()?;
+    let mut buf = [0u8; 1024];
+    let n = tls.read(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+    if text.is_empty() {
+        return Err(CameraError::Message("empty RTSPS OPTIONS response".into()));
+    }
+    Ok(text)
+}
+
+#[derive(Debug)]
+pub enum ChamberCapture {
+    Jpeg(Vec<u8>),
+    Rtsps { url: String, options: String },
+}
+
+/// P1/A1 JPEG :6000, then X1/H2 RTSPS :322 probe.
+pub fn capture_chamber(host: &str, access_code: &str) -> Result<ChamberCapture, CameraError> {
+    match snapshot_jpeg(host, access_code) {
+        Ok(jpeg) => Ok(ChamberCapture::Jpeg(jpeg)),
+        Err(jpeg_err) => match probe_rtsps(host, access_code) {
+            Ok(options) => Ok(ChamberCapture::Rtsps {
+                url: rtsps_url(host, access_code),
+                options,
+            }),
+            Err(rtsps_err) => Err(CameraError::Message(format!(
+                "JPEG :{LAN_CAMERA_PORT}: {jpeg_err}; RTSPS :{LAN_RTSPS_PORT}: {rtsps_err}"
+            ))),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +176,12 @@ mod tests {
         assert_eq!(&p[48..56], b"12345678");
         assert_eq!(p[20], 0);
         assert_eq!(p[56], 0);
+    }
+
+    #[test]
+    fn rtsps_url_uses_lan_user_and_port_322() {
+        let url = rtsps_url("192.168.1.10", "12345678");
+        assert!(url.starts_with("rtsps://bblp:12345678@192.168.1.10:322/"));
+        assert!(url.contains("/streaming/live/1"));
     }
 }

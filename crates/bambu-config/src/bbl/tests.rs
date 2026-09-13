@@ -303,6 +303,18 @@ fn upstream_fdm_process_0_20() {
     assert!(!s.seam_slope_entire_loop);
     assert_eq!(s.seam_slope_steps, 10);
     assert!(s.seam_slope_inner_walls);
+    assert!(s.seam_slope_conditional);
+    assert_eq!(s.scarf_angle_threshold_deg, 155);
+    assert!(!s.apply_scarf_seam_on_circles);
+    assert!(s.filament_scarf_height_is_percent);
+    assert!((s.filament_scarf_height - 10.0).abs() < 1e-9);
+    assert!(s.filament_scarf_gap_is_percent);
+    assert!(s.filament_scarf_gap.abs() < 1e-9);
+    assert!((s.filament_scarf_length_mm - 10.0).abs() < 1e-9);
+    assert!(crate::is_region_key("vertical_shell_speed"));
+    assert!(crate::is_region_key("filter_out_gap_fill"));
+    assert!(crate::is_region_key("seam_slope_conditional"));
+    assert!(!crate::is_region_key("filament_scarf_height"));
     assert_eq!(s.effective_seam_slope_type(), crate::SeamScarfType::None);
     assert!((s.min_feature_size - 0.25).abs() < 1e-9);
     assert!((s.min_bead_width - 0.85).abs() < 1e-9);

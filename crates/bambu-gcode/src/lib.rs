@@ -25,7 +25,7 @@ pub use parse::{
     GcodeReport, LayerStats,
 };
 pub use processor::{format_time_dhms, process_gcode, ProcessorResult};
-pub use writer::write_gcode;
+pub use writer::{write_gcode, write_gcode_for_objects};
 
 #[derive(Debug, Error)]
 pub enum GcodeError {

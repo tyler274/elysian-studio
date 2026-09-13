@@ -9,7 +9,8 @@
 //! lands on the object top. PrusaSlicer 3.0 leaves a FIXME for that align.
 //! With a raft, the first object slab uses `layer_height` (the bed first-print
 //! height is the raft flange). Raft layers and the G-code Z lift are applied
-//! after contours exist. Z shrinkage compensation is not applied yet.
+//! after contours exist. `filament_shrink` scales XY before contours (C++
+//! `slice_volumes`); Z layering is unscaled.
 
 use bambu_config::SliceSettings;
 use bambu_geom::TriangleMesh;

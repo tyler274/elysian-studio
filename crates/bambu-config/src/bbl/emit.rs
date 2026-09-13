@@ -138,6 +138,39 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "infill_direction",
         num_str(settings.infill_direction_deg),
     );
+    insert(
+        &mut map,
+        "sparse_infill_lattice_angle_1",
+        num_str(settings.sparse_infill_lattice_angle_1_deg),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_lattice_angle_2",
+        num_str(settings.sparse_infill_lattice_angle_2_deg),
+    );
+    insert(
+        &mut map,
+        "sparse_infill_anchor",
+        if settings.sparse_infill_anchor_is_percent {
+            format!("{}%", num_str(settings.sparse_infill_anchor))
+        } else {
+            num_str(settings.sparse_infill_anchor)
+        },
+    );
+    insert(
+        &mut map,
+        "sparse_infill_anchor_max",
+        if settings.sparse_infill_anchor_max_is_percent {
+            format!("{}%", num_str(settings.sparse_infill_anchor_max))
+        } else {
+            num_str(settings.sparse_infill_anchor_max)
+        },
+    );
+    insert_bool(
+        &mut map,
+        "embedding_wall_into_infill",
+        settings.embedding_wall_into_infill,
+    );
     insert(&mut map, "bridge_angle", num_str(settings.bridge_angle_deg));
     insert_bool(
         &mut map,
@@ -214,6 +247,44 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "seam_slope_inner_walls",
         settings.seam_slope_inner_walls,
     );
+    insert_bool(
+        &mut map,
+        "seam_slope_conditional",
+        settings.seam_slope_conditional,
+    );
+    insert(
+        &mut map,
+        "scarf_angle_threshold",
+        settings.scarf_angle_threshold_deg.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "apply_scarf_seam_on_circles",
+        settings.apply_scarf_seam_on_circles,
+    );
+    insert(
+        &mut map,
+        "filament_scarf_height",
+        if settings.filament_scarf_height_is_percent {
+            format!("{}%", num_str(settings.filament_scarf_height))
+        } else {
+            num_str(settings.filament_scarf_height)
+        },
+    );
+    insert(
+        &mut map,
+        "filament_scarf_gap",
+        if settings.filament_scarf_gap_is_percent {
+            format!("{}%", num_str(settings.filament_scarf_gap))
+        } else {
+            num_str(settings.filament_scarf_gap)
+        },
+    );
+    insert(
+        &mut map,
+        "filament_scarf_length",
+        num_str(settings.filament_scarf_length_mm),
+    );
     insert(&mut map, "wall_generator", settings.wall_generator.as_str());
     insert_bool(&mut map, "detect_thin_wall", settings.detect_thin_wall);
     insert(&mut map, "wall_sequence", settings.wall_sequence.as_str());
@@ -225,6 +296,36 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         pct_str(settings.min_feature_size),
     );
     insert(&mut map, "min_bead_width", pct_str(settings.min_bead_width));
+    insert(
+        &mut map,
+        "wall_transition_length",
+        pct_str(settings.wall_transition_length),
+    );
+    insert(
+        &mut map,
+        "wall_transition_filter_deviation",
+        pct_str(settings.wall_transition_filter_deviation),
+    );
+    insert(
+        &mut map,
+        "wall_transition_angle",
+        num_str(settings.wall_transition_angle_deg),
+    );
+    insert(
+        &mut map,
+        "wall_distribution_count",
+        settings.wall_distribution_count.to_string(),
+    );
+    insert(
+        &mut map,
+        "top_area_threshold",
+        pct_str(settings.top_area_threshold),
+    );
+    insert_bool(
+        &mut map,
+        "enable_circle_compensation",
+        settings.enable_circle_compensation,
+    );
     insert(&mut map, "fuzzy_skin", settings.fuzzy_skin.as_str());
     insert(
         &mut map,
@@ -606,6 +707,81 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "overhang_4_4_speed",
         num_str(settings.overhang_4_4_speed_mm_s),
     );
+    insert_bool(
+        &mut map,
+        "override_process_overhang_speed",
+        settings.override_process_overhang_speed,
+    );
+    insert_bool(
+        &mut map,
+        "filament_enable_overhang_speed",
+        settings.filament_enable_overhang_speed,
+    );
+    insert(
+        &mut map,
+        "filament_overhang_1_4_speed",
+        num_str(settings.filament_overhang_1_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_overhang_2_4_speed",
+        num_str(settings.filament_overhang_2_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_overhang_3_4_speed",
+        num_str(settings.filament_overhang_3_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_overhang_4_4_speed",
+        num_str(settings.filament_overhang_4_4_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_overhang_totally_speed",
+        num_str(settings.filament_overhang_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "filament_bridge_speed",
+        num_str(settings.filament_bridge_speed_mm_s),
+    );
+    insert_bool(
+        &mut map,
+        "enable_height_slowdown",
+        settings.enable_height_slowdown,
+    );
+    insert(
+        &mut map,
+        "slowdown_start_height",
+        num_str(settings.slowdown_start_height_mm),
+    );
+    insert(
+        &mut map,
+        "slowdown_start_speed",
+        num_str(settings.slowdown_start_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "slowdown_start_acc",
+        num_str(settings.slowdown_start_acc_mm_s2),
+    );
+    insert(
+        &mut map,
+        "slowdown_end_height",
+        num_str(settings.slowdown_end_height_mm),
+    );
+    insert(
+        &mut map,
+        "slowdown_end_speed",
+        num_str(settings.slowdown_end_speed_mm_s),
+    );
+    insert(
+        &mut map,
+        "slowdown_end_acc",
+        num_str(settings.slowdown_end_acc_mm_s2),
+    );
     insert(
         &mut map,
         "bridge_speed",
@@ -965,6 +1141,16 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
     );
     insert(
         &mut map,
+        "cooling_slowdown_logic",
+        settings.cooling_slowdown_logic.as_str(),
+    );
+    insert(
+        &mut map,
+        "cooling_perimeter_transition_distance",
+        num_str(settings.cooling_perimeter_transition_distance_mm),
+    );
+    insert(
+        &mut map,
         "slow_down_min_speed",
         num_str(settings.slow_down_min_speed_mm_s),
     );
@@ -1134,6 +1320,34 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         "wipe_tower_no_sparse_layers",
         settings.wipe_tower_no_sparse_layers,
     );
+    insert_bool(
+        &mut map,
+        "enable_tower_interface_features",
+        settings.enable_tower_interface_features,
+    );
+    insert(
+        &mut map,
+        "prime_tower_lift_height",
+        num_str(settings.prime_tower_lift_height_mm),
+    );
+    insert(
+        &mut map,
+        "prime_tower_lift_speed",
+        num_str(settings.prime_tower_lift_speed_mm_s),
+    );
+    insert_bool(
+        &mut map,
+        "prime_tower_enable_framework",
+        settings.prime_tower_enable_framework,
+    );
+    insert_bool(
+        &mut map,
+        "prime_tower_flat_ironing",
+        settings.prime_tower_flat_ironing,
+    );
+    insert_bool(&mut map, "flush_into_objects", settings.flush_into_objects);
+    insert_bool(&mut map, "flush_into_infill", settings.flush_into_infill);
+    insert_bool(&mut map, "flush_into_support", settings.flush_into_support);
     insert(
         &mut map,
         "filament_diameter",
@@ -1180,6 +1394,22 @@ pub fn project_settings_json(settings: &SliceSettings) -> Result<String, ConfigE
         settings.printer_structure.clone(),
     );
     insert(&mut map, "print_sequence", settings.print_sequence.clone());
+    insert_bool(&mut map, "skirt_per_object", settings.skirt_per_object);
+    insert(
+        &mut map,
+        "standby_temperature_delta",
+        settings.standby_temperature_delta_c.to_string(),
+    );
+    insert_bool(
+        &mut map,
+        "independent_support_layer_height",
+        settings.independent_support_layer_height,
+    );
+    insert(
+        &mut map,
+        "filament_shrink",
+        format!("{}%", num_str(settings.filament_shrink_percent)),
+    );
     insert(
         &mut map,
         "printable_height",

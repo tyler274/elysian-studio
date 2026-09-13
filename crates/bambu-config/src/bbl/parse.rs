@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::{
-    BrimType, EnsureVerticalShellThickness, FilamentMetalStickiness, FuzzySkinType, InfillPattern,
-    IroningPattern, IroningType, OverhangFanThreshold, ReduceInfillRetractionMode, SeamPosition,
-    SeamScarfType, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
-    SurfacePattern, TopOneWallType, WallGenerator, WallSequence, ZHopType,
+    BrimType, CoolingSlowdownLogic, EnsureVerticalShellThickness, FilamentMetalStickiness,
+    FuzzySkinType, InfillPattern, IroningPattern, IroningType, OverhangFanThreshold,
+    ReduceInfillRetractionMode, SeamPosition, SeamScarfType, SliceSettings, SupportBasePattern,
+    SupportInterfacePattern, SupportType, SurfacePattern, TopOneWallType, WallGenerator,
+    WallSequence, ZHopType,
 };
 
 /// C++ `PrintRegionConfig` keys (volume / modifier metadata). Object-level
@@ -45,7 +46,23 @@ pub fn is_region_key(key: &str) -> bool {
             | "seam_slope_entire_loop"
             | "seam_slope_steps"
             | "seam_slope_inner_walls"
+            | "seam_slope_conditional"
+            | "scarf_angle_threshold"
+            | "apply_scarf_seam_on_circles"
             | "override_filament_scarf_seam_setting"
+            | "vertical_shell_speed"
+            | "filter_out_gap_fill"
+            | "wall_transition_length"
+            | "wall_transition_filter_deviation"
+            | "wall_transition_angle"
+            | "wall_distribution_count"
+            | "top_area_threshold"
+            | "sparse_infill_anchor"
+            | "sparse_infill_anchor_max"
+            | "embedding_wall_into_infill"
+            | "sparse_infill_lattice_angle_1"
+            | "sparse_infill_lattice_angle_2"
+            | "enable_circle_compensation"
             | "wall_generator"
             | "detect_thin_wall"
             | "wall_sequence"
@@ -251,6 +268,23 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "infill_direction") {
         s.infill_direction_deg = v.rem_euclid(360.0);
     }
+    if let Some(v) = num(map, "sparse_infill_lattice_angle_1") {
+        s.sparse_infill_lattice_angle_1_deg = v;
+    }
+    if let Some(v) = num(map, "sparse_infill_lattice_angle_2") {
+        s.sparse_infill_lattice_angle_2_deg = v;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "sparse_infill_anchor") {
+        s.sparse_infill_anchor = v.max(0.0);
+        s.sparse_infill_anchor_is_percent = is_percent;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "sparse_infill_anchor_max") {
+        s.sparse_infill_anchor_max = v.max(0.0);
+        s.sparse_infill_anchor_max_is_percent = is_percent;
+    }
+    if let Some(v) = bool_val(map, "embedding_wall_into_infill") {
+        s.embedding_wall_into_infill = v;
+    }
     if let Some(v) = num(map, "bridge_angle") {
         s.bridge_angle_deg = v.max(0.0);
     }
@@ -307,6 +341,26 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "seam_slope_inner_walls") {
         s.seam_slope_inner_walls = v;
     }
+    if let Some(v) = bool_val(map, "seam_slope_conditional") {
+        s.seam_slope_conditional = v;
+    }
+    if let Some(v) = i32_val(map, "scarf_angle_threshold") {
+        s.scarf_angle_threshold_deg = v.clamp(0, 180);
+    }
+    if let Some(v) = bool_val(map, "apply_scarf_seam_on_circles") {
+        s.apply_scarf_seam_on_circles = v;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "filament_scarf_height") {
+        s.filament_scarf_height = v.max(0.0);
+        s.filament_scarf_height_is_percent = is_percent;
+    }
+    if let Some((v, is_percent)) = float_or_percent(map, "filament_scarf_gap") {
+        s.filament_scarf_gap = v.max(0.0);
+        s.filament_scarf_gap_is_percent = is_percent;
+    }
+    if let Some(v) = num(map, "filament_scarf_length") {
+        s.filament_scarf_length_mm = v.max(0.0);
+    }
     if let Some(name) = text(map, "wall_generator") {
         if let Some(g) = WallGenerator::from_name(&name) {
             s.wall_generator = g;
@@ -341,6 +395,24 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = percent(map, "min_bead_width") {
         s.min_bead_width = v.max(0.0);
+    }
+    if let Some(v) = percent(map, "wall_transition_length") {
+        s.wall_transition_length = v.max(0.0);
+    }
+    if let Some(v) = percent(map, "wall_transition_filter_deviation") {
+        s.wall_transition_filter_deviation = v.max(0.0);
+    }
+    if let Some(v) = num(map, "wall_transition_angle") {
+        s.wall_transition_angle_deg = v.max(0.0);
+    }
+    if let Some(v) = u32_val(map, "wall_distribution_count") {
+        s.wall_distribution_count = v.max(1);
+    }
+    if let Some(v) = percent(map, "top_area_threshold") {
+        s.top_area_threshold = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "enable_circle_compensation") {
+        s.enable_circle_compensation = v;
     }
     if let Some(name) = text(map, "fuzzy_skin") {
         if let Some(t) = FuzzySkinType::from_name(&name) {
@@ -626,6 +698,51 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = num(map, "overhang_4_4_speed") {
         s.overhang_4_4_speed_mm_s = v.max(0.0);
     }
+    if let Some(v) = bool_val(map, "override_process_overhang_speed") {
+        s.override_process_overhang_speed = v;
+    }
+    if let Some(v) = bool_val(map, "filament_enable_overhang_speed") {
+        s.filament_enable_overhang_speed = v;
+    }
+    if let Some(v) = num(map, "filament_overhang_1_4_speed") {
+        s.filament_overhang_1_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_overhang_2_4_speed") {
+        s.filament_overhang_2_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_overhang_3_4_speed") {
+        s.filament_overhang_3_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_overhang_4_4_speed") {
+        s.filament_overhang_4_4_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_overhang_totally_speed") {
+        s.filament_overhang_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "filament_bridge_speed") {
+        s.filament_bridge_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "enable_height_slowdown") {
+        s.enable_height_slowdown = v;
+    }
+    if let Some(v) = num(map, "slowdown_start_height") {
+        s.slowdown_start_height_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slowdown_start_speed") {
+        s.slowdown_start_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slowdown_start_acc") {
+        s.slowdown_start_acc_mm_s2 = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slowdown_end_height") {
+        s.slowdown_end_height_mm = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slowdown_end_speed") {
+        s.slowdown_end_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = num(map, "slowdown_end_acc") {
+        s.slowdown_end_acc_mm_s2 = v.max(0.0);
+    }
     if let Some(v) = num(map, "bridge_speed") {
         s.bridge_speed_mm_s = v.max(0.0);
     }
@@ -878,6 +995,14 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "no_slow_down_for_cooling_on_outwalls") {
         s.no_slow_down_for_cooling_on_outwalls = v;
     }
+    if let Some(name) = text(map, "cooling_slowdown_logic") {
+        if let Some(logic) = CoolingSlowdownLogic::from_name(&name) {
+            s.cooling_slowdown_logic = logic;
+        }
+    }
+    if let Some(v) = num(map, "cooling_perimeter_transition_distance") {
+        s.cooling_perimeter_transition_distance_mm = v.max(0.0);
+    }
     if let Some(v) = num(map, "slow_down_min_speed") {
         s.slow_down_min_speed_mm_s = v.max(0.0);
     }
@@ -986,6 +1111,30 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     if let Some(v) = bool_val(map, "wipe_tower_no_sparse_layers") {
         s.wipe_tower_no_sparse_layers = v;
     }
+    if let Some(v) = bool_val(map, "enable_tower_interface_features") {
+        s.enable_tower_interface_features = v;
+    }
+    if let Some(v) = num(map, "prime_tower_lift_height") {
+        s.prime_tower_lift_height_mm = v;
+    }
+    if let Some(v) = num(map, "prime_tower_lift_speed") {
+        s.prime_tower_lift_speed_mm_s = v.max(0.0);
+    }
+    if let Some(v) = bool_val(map, "prime_tower_enable_framework") {
+        s.prime_tower_enable_framework = v;
+    }
+    if let Some(v) = bool_val(map, "prime_tower_flat_ironing") {
+        s.prime_tower_flat_ironing = v;
+    }
+    if let Some(v) = bool_val(map, "flush_into_objects") {
+        s.flush_into_objects = v;
+    }
+    if let Some(v) = bool_val(map, "flush_into_infill") {
+        s.flush_into_infill = v;
+    }
+    if let Some(v) = bool_val(map, "flush_into_support") {
+        s.flush_into_support = v;
+    }
     if let Some(v) = nums(map, "filament_diameter") {
         s.filament_count = v.len().max(1);
         if let Some(&d) = v.first() {
@@ -1009,6 +1158,18 @@ pub(super) fn apply_map_onto(s: &mut SliceSettings, map: &serde_json::Map<String
     }
     if let Some(v) = text(map, "print_sequence") {
         s.print_sequence = v;
+    }
+    if let Some(v) = bool_val(map, "skirt_per_object") {
+        s.skirt_per_object = v;
+    }
+    if let Some(v) = i32_val(map, "standby_temperature_delta") {
+        s.standby_temperature_delta_c = v;
+    }
+    if let Some(v) = bool_val(map, "independent_support_layer_height") {
+        s.independent_support_layer_height = v;
+    }
+    if let Some(v) = percent(map, "filament_shrink") {
+        s.filament_shrink_percent = (v * 100.0).max(0.0);
     }
     if let Some(v) = num(map, "printable_height") {
         s.printable_height_mm = v.max(0.0);

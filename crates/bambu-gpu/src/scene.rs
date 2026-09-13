@@ -34,6 +34,9 @@ pub struct ViewportScene {
     pub camera: OrbitCamera,
     pub mesh: TriangleMesh,
     pub toolpaths: ToolpathBuffer,
+    pub preview_layer: u32,
+    pub hide_infill: bool,
+    pub hide_support: bool,
 }
 
 impl Default for ViewportScene {
@@ -51,6 +54,9 @@ impl ViewportScene {
             camera: OrbitCamera::looking_at_bed(BED_MM),
             mesh,
             toolpaths: ToolpathBuffer::default(),
+            preview_layer: 0,
+            hide_infill: false,
+            hide_support: false,
         }
     }
 
@@ -58,10 +64,21 @@ impl ViewportScene {
         mesh.place_on_bed(BED_MM);
         self.mesh = mesh;
         self.toolpaths = ToolpathBuffer::default();
+        self.preview_layer = 0;
         self.camera = OrbitCamera::looking_at_bed(BED_MM);
     }
 
+    pub fn preview_z(&self) -> f32 {
+        self.toolpaths
+            .layer_zs
+            .get(self.preview_layer as usize)
+            .copied()
+            .or_else(|| self.toolpaths.layer_zs.last().copied())
+            .unwrap_or(f32::MAX)
+    }
+
     pub fn set_toolpaths(&mut self, toolpaths: ToolpathBuffer) {
+        self.preview_layer = toolpaths.layer_zs.len().saturating_sub(1) as u32;
         self.toolpaths = toolpaths;
     }
 }
@@ -146,7 +163,12 @@ where
         bounds: Rectangle,
     ) -> Self::Primitive {
         let mut lines = grid_vertices(BED_MM);
-        lines.extend(toolpath_vertices(&self.toolpaths));
+        lines.extend(toolpath_vertices(
+            &self.toolpaths,
+            self.preview_z(),
+            self.hide_infill,
+            self.hide_support,
+        ));
         let solid = if self.toolpaths.is_empty() {
             solid_vertices(&self.mesh)
         } else {
@@ -591,31 +613,39 @@ fn grid_vertices(bed: f32) -> Vec<Vertex> {
     out
 }
 
-fn toolpath_vertices(buf: &ToolpathBuffer) -> Vec<Vertex> {
+fn toolpath_vertices(
+    buf: &ToolpathBuffer,
+    max_z: f32,
+    hide_infill: bool,
+    hide_support: bool,
+) -> Vec<Vertex> {
     let n = [0.0, 0.0, 1.0];
-    buf.vertices
-        .iter()
-        .map(|v| Vertex {
-            position: [v.position.x, v.position.y, v.position.z + 0.08],
-            normal: n,
-            color: match v.role {
-                ExtrusionRole::OuterWall => OUTER_WALL,
-                ExtrusionRole::InnerWall => INNER_WALL,
-                ExtrusionRole::Infill => INFILL,
-                ExtrusionRole::SolidInfill => SOLID_INFILL,
-                ExtrusionRole::FloatingVerticalShell => FLOATING_VERTICAL_SHELL,
-                ExtrusionRole::TopSurface => TOP_SURFACE,
-                ExtrusionRole::BottomSurface => BOTTOM_SURFACE,
-                ExtrusionRole::Bridge => BRIDGE,
-                ExtrusionRole::Skirt => SKIRT,
-                ExtrusionRole::Brim => BRIM,
-                ExtrusionRole::PrimeTower => PRIME_TOWER,
-                ExtrusionRole::Support => SUPPORT,
-                ExtrusionRole::SupportInterface => SUPPORT_INTERFACE,
-                ExtrusionRole::Ironing => IRONING,
-            },
-        })
-        .collect()
+    buf.visible(max_z, |role| match role {
+        ExtrusionRole::Infill | ExtrusionRole::SolidInfill if hide_infill => true,
+        ExtrusionRole::Support | ExtrusionRole::SupportInterface if hide_support => true,
+        _ => false,
+    })
+    .map(|v| Vertex {
+        position: [v.position.x, v.position.y, v.position.z + 0.08],
+        normal: n,
+        color: match v.role {
+            ExtrusionRole::OuterWall => OUTER_WALL,
+            ExtrusionRole::InnerWall => INNER_WALL,
+            ExtrusionRole::Infill => INFILL,
+            ExtrusionRole::SolidInfill => SOLID_INFILL,
+            ExtrusionRole::FloatingVerticalShell => FLOATING_VERTICAL_SHELL,
+            ExtrusionRole::TopSurface => TOP_SURFACE,
+            ExtrusionRole::BottomSurface => BOTTOM_SURFACE,
+            ExtrusionRole::Bridge => BRIDGE,
+            ExtrusionRole::Skirt => SKIRT,
+            ExtrusionRole::Brim => BRIM,
+            ExtrusionRole::PrimeTower => PRIME_TOWER,
+            ExtrusionRole::Support => SUPPORT,
+            ExtrusionRole::SupportInterface => SUPPORT_INTERFACE,
+            ExtrusionRole::Ironing => IRONING,
+        },
+    })
+    .collect()
 }
 
 fn push_line(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], normal: [f32; 3], color: [f32; 3]) {

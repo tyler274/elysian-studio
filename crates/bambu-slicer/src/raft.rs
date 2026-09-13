@@ -3,7 +3,7 @@
 //! Mesh slice planes stay object-relative. G-code / preview `print_z` is raised
 //! by `object_print_z_min` (raft stack + `raft_contact_distance`). Brim is
 //! skipped; the first raft layer is the bed flange (C++ `Brim.cpp` skips rafted
-//! objects). Classic support columns are not merged into the raft yet.
+//! objects). Layer-0 support columns are unioned into the raft outline.
 
 use bambu_config::SliceSettings;
 use bambu_geom::{offset_polygons, union_polygons, Polygon, Polyline};
@@ -173,7 +173,11 @@ pub fn apply(layers: &mut Vec<Layer>, settings: &SliceSettings) {
         layer.print_z_mm += z_off;
     }
 
-    let object_outline = layers[0].contours.clone();
+    let mut object_outline = layers[0].contours.clone();
+    if !layers[0].support_region.is_empty() {
+        object_outline.extend(layers[0].support_region.iter().cloned());
+        object_outline = union_polygons(&object_outline);
+    }
     let body = expand(&object_outline, settings.raft_expansion_mm.max(0.0));
     let flange = expand(&object_outline, first_layer_expansion_mm(settings));
     let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);

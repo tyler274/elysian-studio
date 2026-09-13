@@ -6,7 +6,7 @@
 //! subtype, and volume matrices are applied. `Metadata/project_settings.config`
 //! carries process settings. Writers emit both files so plates, parts, and
 //! settings round-trip. Triangle `paint_supports` / `paint_seam` /
-//! `paint_fuzzy_skin` are applied; `paint_color` is stored. AMS stays ignored.
+//! `paint_fuzzy_skin` are applied; `paint_color` splits AMS regions at slice time.
 
 mod flatten;
 mod parse;

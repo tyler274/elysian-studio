@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeMap;
+
 mod clip;
 mod fuzzy;
 mod gap_fill;
@@ -53,6 +55,33 @@ pub enum SlicerError {
     EmptyMesh,
     #[error("mesh has no bounding box")]
     EmptyBounds,
+    #[error("print objects collide on the plate")]
+    ObjectConflict,
+}
+
+/// Conservative XY/Z AABB overlap (C++ `ConflictCheck`).
+pub fn objects_conflict(a: &TriangleMesh, b: &TriangleMesh) -> bool {
+    let (Some(aa), Some(bb)) = (a.aabb(), b.aabb()) else {
+        return false;
+    };
+    aa.max.x >= bb.min.x
+        && bb.max.x >= aa.min.x
+        && aa.max.y >= bb.min.y
+        && bb.max.y >= aa.min.y
+        && aa.max.z >= bb.min.z
+        && bb.max.z >= aa.min.z
+}
+
+/// Print-level `PrintStep::ConflictCheck` before sequential or merged export.
+pub fn check_print_object_conflicts(meshes: &[TriangleMesh]) -> Result<(), SlicerError> {
+    for (i, a) in meshes.iter().enumerate() {
+        for b in meshes.iter().skip(i + 1) {
+            if objects_conflict(a, b) {
+                return Err(SlicerError::ObjectConflict);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Per-region fill snapshots (`LayerRegion` infill roles).
@@ -216,6 +245,20 @@ pub fn slice_mesh(
     mesh: &TriangleMesh,
     settings: &SliceSettings,
 ) -> Result<SliceResult, SlicerError> {
+    let scaled;
+    let mesh = {
+        let scale = settings.filament_xy_shrink_scale();
+        if (scale - 1.0).abs() < 1e-9 {
+            mesh
+        } else {
+            scaled = {
+                let mut copy = mesh.clone();
+                copy.scale_xy(scale);
+                copy
+            };
+            &scaled
+        }
+    };
     let plan = layer_plan(mesh, settings)?;
     let contours = plan
         .par_iter()
@@ -420,13 +463,71 @@ fn split_volume_regions(
 ) -> (Vec<Vec<Polygon>>, Vec<SliceSettings>) {
     let (mut slots, mut cfgs) = if !part_cfgs.is_empty() {
         split_model_part_regions(part_vols, negatives, part_cfgs, z, settings)
-    } else if modifiers.is_empty() {
+    } else if modifiers.is_empty()
+        && !part_vols
+            .iter()
+            .any(|v| v.triangle_color.iter().any(|c| !c.is_empty() && c != "0"))
+    {
         return (Vec::new(), Vec::new());
     } else {
         (vec![contours.to_vec()], vec![settings.clone()])
     };
     apply_modifiers(&mut slots, &mut cfgs, modifiers, z, settings);
+    apply_paint_color_regions(&mut slots, &mut cfgs, part_vols, z, settings);
     (slots, cfgs)
+}
+
+fn apply_paint_color_regions(
+    slots: &mut Vec<Vec<Polygon>>,
+    cfgs: &mut Vec<SliceSettings>,
+    part_vols: &[&ModelVolume],
+    z: f32,
+    settings: &SliceSettings,
+) {
+    let mut by_color: BTreeMap<String, TriangleMesh> = BTreeMap::new();
+    for vol in part_vols {
+        if vol.triangle_color.is_empty() {
+            continue;
+        }
+        for (i, idx) in vol.mesh.indices.iter().enumerate() {
+            let hex = vol.triangle_color.get(i).cloned().unwrap_or_default();
+            if hex.is_empty() || hex == "0" {
+                continue;
+            }
+            let [a, b, c] = vol.mesh.triangle(*idx);
+            let mesh = by_color.entry(hex).or_default();
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.extend([a, b, c]);
+            mesh.indices.push([base, base + 1, base + 2]);
+        }
+    }
+    if by_color.is_empty() {
+        return;
+    }
+    if slots.is_empty() {
+        slots.push(Vec::new());
+        cfgs.push(settings.clone());
+    }
+    for (hex, mesh) in by_color {
+        let painted = union_polygons(&slice_at_z(&mesh, z));
+        if painted.is_empty() {
+            continue;
+        }
+        let mut cfg = settings.clone();
+        let filament = hex
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<i32>()
+            .unwrap_or(1)
+            .max(1);
+        cfg.wall_filament = filament;
+        cfg.sparse_infill_filament = filament;
+        cfg.solid_infill_filament = filament;
+        cfg.clamp_print_filaments();
+        slots.push(painted);
+        cfgs.push(cfg);
+    }
 }
 
 fn split_model_part_regions(
@@ -856,6 +957,9 @@ fn prepare_layer_contours(
         settings.xy_contour_compensation_mm,
         settings.xy_hole_compensation_mm,
     );
+    if settings.enable_circle_compensation {
+        contours = compensate_circles(&contours, 0.05 * settings.nozzle_diameter_mm);
+    }
     if spec.index == 0 && settings.elephant_foot_mm > 1e-9 {
         let shrunk = offset_polygons(&contours, -settings.elephant_foot_mm);
         if !shrunk.is_empty() {
@@ -904,7 +1008,48 @@ fn compensate_xy(polygons: &[Polygon], contour_mm: f64, hole_mm: f64) -> Vec<Pol
     union_polygons(&acc)
 }
 
-pub fn contour_area_mm2(poly: &Polygon) -> f64 {
+fn compensate_circles(polygons: &[Polygon], extra_mm: f64) -> Vec<Polygon> {
+    if extra_mm.abs() < 1e-9 {
+        return polygons.to_vec();
+    }
+    let mut holes = Vec::new();
+    let mut outers = Vec::new();
+    for poly in polygons {
+        if signed_contour_area_mm2(poly) < 0.0 && ring_is_circular(poly) {
+            holes.push(poly.clone());
+        } else {
+            outers.push(poly.clone());
+        }
+    }
+    if holes.is_empty() {
+        return polygons.to_vec();
+    }
+    let grown = offset_polygons(&holes, extra_mm);
+    difference_polygons(&outers, &grown)
+}
+
+fn ring_is_circular(poly: &Polygon) -> bool {
+    if poly.len() < 8 {
+        return false;
+    }
+    let n = poly.len() as f64;
+    let cx = poly.iter().map(|p| p.to_mm().0).sum::<f64>() / n;
+    let cy = poly.iter().map(|p| p.to_mm().1).sum::<f64>() / n;
+    let radii: Vec<f64> = poly
+        .iter()
+        .map(|p| {
+            let (x, y) = p.to_mm();
+            ((x - cx).powi(2) + (y - cy).powi(2)).sqrt()
+        })
+        .collect();
+    let mean = radii.iter().sum::<f64>() / radii.len() as f64;
+    if mean < 0.4 {
+        return false;
+    }
+    radii.iter().all(|r| (r - mean).abs() <= 0.08 * mean)
+}
+
+pub(crate) fn contour_area_mm2(poly: &Polygon) -> f64 {
     signed_contour_area_mm2(poly).abs()
 }
 
@@ -3782,6 +3927,35 @@ mod tests {
         assert!(
             paint_n > open_n * 4,
             "painted fuzzy should densify walls: open={open_n} painted={paint_n}"
+        );
+    }
+
+    #[test]
+    fn overlapping_cubes_conflict() {
+        let a = TriangleMesh::cube(20.0);
+        let mut b = TriangleMesh::cube(20.0);
+        assert!(objects_conflict(&a, &b));
+        assert!(check_print_object_conflicts(std::slice::from_ref(&a)).is_ok());
+        assert!(check_print_object_conflicts(&[a.clone(), b.clone()]).is_err());
+        b.translate(glam::Vec3::new(40.0, 0.0, 0.0));
+        assert!(!objects_conflict(&a, &b));
+        check_print_object_conflicts(&[a, b]).unwrap();
+    }
+
+    #[test]
+    fn paint_color_adds_region_settings() {
+        let mesh = TriangleMesh::cube(20.0);
+        let mut settings = SliceSettings::default();
+        settings.filament_count = 2;
+        settings.infill_pattern = InfillPattern::Rectilinear;
+        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        part.triangle_color = mesh.indices.iter().map(|_| String::from("8")).collect();
+        let sliced = slice_volumes(&[part], &settings).unwrap();
+        let mid = &sliced.layers[sliced.layers.len() / 2];
+        assert!(
+            mid.region_settings.len() >= 2,
+            "paint_color should split an AMS region, got {}",
+            mid.region_settings.len()
         );
     }
 }

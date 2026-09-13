@@ -1,10 +1,10 @@
 //! Classic offset perimeters (`PerimeterGenerator::process_classic`) and
-//! Arachne-lite leftover centerlines (`wall_generator: arachne`).
+//! Arachne leftover beads (`wall_generator: arachne`).
 //!
-//! Full C++ Arachne (`SkeletalTrapezoidation` + variable bead width) is a later
-//! phase. This pass keeps constant extrusion width: fit as many full-width
-//! onions as possible, then drop a centerline into leftover thinner than one
-//! wall so features classic drops still print.
+//! Full Cura `SkeletalTrapezoidation` Voronoi is not ported. This pass keeps
+//! constant extrusion width: fit as many full-width onions as possible, then
+//! drop [`SliceSettings::wall_distribution_count`] centerlines into leftover
+//! thinner than one wall (`wall_transition_length` / `top_area_threshold`).
 //!
 //! Classic leftover between onions uses C++ gap collapse (`opening_ex` minus
 //! too-wide `offset2_ex`) and an open midline for thin corridors. Variable-width
@@ -395,18 +395,39 @@ fn leftover_centerline(
 ) -> Option<Vec<Polyline>> {
     let min_feat = settings.min_feature_size_mm();
     let min_bead = settings.min_bead_width_mm();
+    let transition = settings.wall_transition_length * settings.nozzle_diameter_mm;
+    let area: f64 = contours.iter().map(crate::contour_area_mm2).sum();
+    let min_area = settings.top_area_threshold * walls.outer * walls.outer;
+    if area + 1e-9 < min_area {
+        return None;
+    }
     let (lo, hi) = if fitted == 0 {
         (min_feat * 0.5, walls.outer * 0.5)
     } else {
         let last = walls.loop_offset(fitted - 1);
-        let eps = (min_feat * 0.5).max(min_bead * 0.01).max(1e-4);
-        (last + eps, last + 0.5 * walls.inner)
+        let eps = (min_feat * 0.5)
+            .max(min_bead * 0.01)
+            .max(transition * 0.01)
+            .max(1e-4);
+        (last + eps, last + 0.5 * walls.inner + transition * 0.25)
     };
     if hi <= lo + 1e-6 {
         return None;
     }
-    let rings = deepest_inset(contours, lo, hi)?;
-    Some(seam_rings(rings, settings, hint))
+    let beads = settings.wall_distribution_count.max(1);
+    if beads == 1 {
+        let rings = deepest_inset(contours, lo, hi)?;
+        return Some(seam_rings(rings, settings, hint));
+    }
+    let mut out = Vec::new();
+    for k in 1..=beads {
+        let t = f64::from(k) / f64::from(beads + 1);
+        let inset = lo + (hi - lo) * t;
+        if let Some(rings) = offset_keep(contours, inset) {
+            out.extend(seam_rings(rings, settings, hint));
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn deepest_inset(contours: &[Polygon], lo: f64, hi: f64) -> Option<Vec<Polygon>> {

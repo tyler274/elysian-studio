@@ -16,7 +16,10 @@ use std::time::Duration;
 use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
 use thiserror::Error;
 
-pub use camera::{auth_packet, jpeg_to_frame, snapshot_jpeg, LAN_CAMERA_PORT};
+pub use camera::{
+    auth_packet, capture_chamber, jpeg_to_frame, probe_rtsps, rtsps_url, snapshot_jpeg,
+    ChamberCapture, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
+};
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
     load_from_dir, save_device_cert, write_to_dir, CredentialError, SlicerCredentials,

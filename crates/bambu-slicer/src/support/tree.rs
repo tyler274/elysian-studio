@@ -1,10 +1,8 @@
-//! Slim tree supports (Bambu `tree(auto)` / `drop_nodes` + `draw_circles`).
+//! Slim / organic-ish tree supports (Bambu `tree(auto)` / `drop_nodes`).
 //!
-//! Contact samples on overhangs drop toward a shared centroid, stay outside
-//! an XY gap around the part, and merge into fewer trunks. Each node is a
-//! disk whose radius follows `tree_support_branch_diameter_angle` toward the
-//! plate. Roofs under overhangs get dense interface fill. This is not the
-//! full organic 3D solver.
+//! Contact samples drop toward local cluster centroids (organic trunks) while
+//! staying outside an XY gap around the part. Disk radius follows
+//! `tree_support_branch_diameter_angle`. This is not the full 3D organic solver.
 
 use bambu_config::{SliceSettings, SupportBasePattern, LOOP_CLIPPING_OVER_NOZZLE};
 use bambu_geom::{offset_polygons, scale, union_polygons, Point, Polygon, Polyline};
@@ -70,6 +68,7 @@ fn drop_nodes(
     let n = layers.len();
     let tan_a = settings.tree_branch_angle_deg.to_radians().tan();
     let merge = scale(diameter.max(MIN_MM));
+    let cluster = merge.saturating_mul(4);
     let mut nodes = vec![Vec::new(); n];
     if n == 0 {
         return nodes;
@@ -81,14 +80,15 @@ fn drop_nodes(
         let max_move = scale((dz * tan_a).max(MIN_MM));
         let xy = settings.support_xy_gap_mm(i) + radii[i];
         let forbidden = offset_polygons(&layers[i].contours, xy);
-        let target = centroid(&current);
+        let global = centroid(&current);
         let mut next: Vec<Point> = current
             .iter()
             .map(|p| {
-                let q = match target {
-                    Some(c) => move_toward(*p, c, max_move),
-                    None => *p,
-                };
+                let trunk = cluster_centroid(*p, &current, cluster)
+                    .or(global)
+                    .unwrap_or(*p);
+                let attractor = nearest_toward_trunk(*p, &current, trunk);
+                let q = move_toward(*p, attractor, max_move);
                 push_out(q, &forbidden, max_move)
             })
             .collect();
@@ -246,6 +246,24 @@ fn centroid(pts: &[Point]) -> Option<Point> {
         pts.iter().map(|p| p.x).sum::<i64>() / n,
         pts.iter().map(|p| p.y).sum::<i64>() / n,
     ))
+}
+
+fn cluster_centroid(p: Point, pts: &[Point], radius: i64) -> Option<Point> {
+    let nearby: Vec<Point> = pts
+        .iter()
+        .copied()
+        .filter(|q| dist(p, *q) <= radius)
+        .collect();
+    centroid(&nearby)
+}
+
+fn nearest_toward_trunk(p: Point, pts: &[Point], trunk: Point) -> Point {
+    let p_to_trunk = dist(p, trunk);
+    pts.iter()
+        .copied()
+        .filter(|q| *q != p && dist(*q, trunk) + 1 < p_to_trunk)
+        .min_by_key(|q| dist(p, *q))
+        .unwrap_or(trunk)
 }
 
 fn move_toward(p: Point, target: Point, max_move: i64) -> Point {
