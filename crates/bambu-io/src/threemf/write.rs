@@ -2,7 +2,6 @@
 
 use bambu_geom::TriangleMesh;
 use bambu_model::{Instance, Model, ModelVolume};
-use glam::Vec3;
 
 use super::xml::{xml_escape, CORE_NS};
 use crate::IoError;
@@ -139,16 +138,12 @@ fn push_paint_attr(resources: &mut String, name: &str, hex: Option<&str>) {
 }
 
 fn instance_mesh(mesh: &TriangleMesh, instances: &[Instance]) -> TriangleMesh {
-    if instances.is_empty() || (instances.len() == 1 && instances[0].offset == Vec3::ZERO) {
+    if instances.is_empty() || (instances.len() == 1 && instances[0].is_identity()) {
         return mesh.clone();
     }
     let mut out = TriangleMesh::default();
     for inst in instances {
-        let mut copy = mesh.clone();
-        if inst.offset != Vec3::ZERO {
-            copy.translate(inst.offset);
-        }
-        out.append(&copy);
+        out.append(&inst.apply_to_mesh(mesh));
     }
     if out.indices.is_empty() {
         mesh.clone()

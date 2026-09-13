@@ -20,6 +20,7 @@ bambu-io.workspace = true
 bambu-model.workspace = true
 bambu-protocol.workspace = true
 bambu-slicer.workspace = true
+glam.workspace = true
 iced.workspace = true
 rfd.workspace = true
 tokio.workspace = true

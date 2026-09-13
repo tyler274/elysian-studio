@@ -808,6 +808,10 @@ fn h2c_machine_sets_retraction() {
     assert!(s.printable_area.len() >= 4, "{:?}", s.printable_area);
     assert!(s.bed_size_mm() > 256.0, "H2C bed {}", s.bed_size_mm());
     assert_eq!(s.extruder_printable_areas.len(), 2);
+    let (left_only, right_vis) = s.bed_shape().visible_only_rects();
+    let left = left_only.expect("H2C left-only strip");
+    assert!((left.w - 25.0).abs() < 1.0, "left-only {}", left.w);
+    assert!(right_vis.is_none(), "H2C right-only band is ≤ 5 mm");
     assert!(s.farthest_point_timelapse);
     assert_eq!(s.timelapse_type, 0);
     assert!(!s.spiral_mode);

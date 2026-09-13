@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
 
+mod plater;
+
 use std::collections::BTreeMap;
 
 use bambu_config::SliceSettings;
 use bambu_geom::TriangleMesh;
-use glam::{Mat4, Vec3};
+use glam::{EulerRot, Mat4, Vec3};
 use serde::{Deserialize, Serialize};
+
+pub use plater::{auto_orient_instance, drop_instance_to_bed, lay_instance_on_normal};
 
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -318,14 +322,62 @@ impl ModelObject {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Instance {
     pub offset: Vec3,
+    /// Euler XYZ rotation in degrees, applied about the mesh AABB center.
+    pub rotation_deg: Vec3,
+    pub scale: Vec3,
 }
 
 impl Default for Instance {
     fn default() -> Self {
-        Self { offset: Vec3::ZERO }
+        Self {
+            offset: Vec3::ZERO,
+            rotation_deg: Vec3::ZERO,
+            scale: Vec3::ONE,
+        }
+    }
+}
+
+impl Instance {
+    pub fn is_identity(self) -> bool {
+        self.offset.abs().max_element() < 1e-6
+            && self.rotation_deg.abs().max_element() < 1e-6
+            && (self.scale - Vec3::ONE).abs().max_element() < 1e-6
+    }
+
+    fn transform_matrix(self, pivot: Vec3) -> Mat4 {
+        Mat4::from_translation(self.offset)
+            * Mat4::from_translation(pivot)
+            * Mat4::from_euler(
+                EulerRot::XYZ,
+                self.rotation_deg.x.to_radians(),
+                self.rotation_deg.y.to_radians(),
+                self.rotation_deg.z.to_radians(),
+            )
+            * Mat4::from_scale(self.scale)
+            * Mat4::from_translation(-pivot)
+    }
+
+    /// Rotate / scale about the mesh AABB center, then translate. Does not
+    /// mutate `mesh` (paint triangle indices stay valid).
+    pub fn apply_to_mesh(&self, mesh: &TriangleMesh) -> TriangleMesh {
+        if self.is_identity() {
+            return mesh.clone();
+        }
+        let mut out = mesh.clone();
+        let pivot = out
+            .aabb()
+            .map(|a| (a.min + a.max) * 0.5)
+            .unwrap_or(Vec3::ZERO);
+        out.transform(self.transform_matrix(pivot));
+        if self.scale.x * self.scale.y * self.scale.z < 0.0 {
+            for tri in &mut out.indices {
+                tri.swap(1, 2);
+            }
+        }
+        out
     }
 }
 
@@ -353,7 +405,7 @@ impl Model {
         self.objects.first().map(|o| &o.mesh)
     }
 
-    /// Concatenate printable meshes after applying instance offsets.
+    /// Concatenate printable meshes after applying instance transforms.
     pub fn merged_mesh(&self) -> Option<TriangleMesh> {
         self.merge_indices(0..self.objects.len())
     }
@@ -366,7 +418,7 @@ impl Model {
         self.merge_indices(p.object_indices.iter().copied())
     }
 
-    /// World-space volumes on `plate` (instance offsets baked into each mesh).
+    /// World-space volumes on `plate` (instance transforms baked into each mesh).
     pub fn world_volumes_for_plate(&self, plate: usize) -> Vec<ModelVolume> {
         let indices: Vec<usize> = match self.plates.get(plate) {
             Some(p) => p.object_indices.clone(),
@@ -388,9 +440,7 @@ impl Model {
                     if vol.hidden {
                         continue;
                     }
-                    if inst.offset != Vec3::ZERO {
-                        vol.mesh.translate(inst.offset);
-                    }
+                    vol.mesh = inst.apply_to_mesh(&vol.mesh);
                     out.push(vol);
                 }
             }
@@ -413,11 +463,7 @@ impl Model {
                 continue;
             }
             for inst in &object.instances {
-                let mut mesh = base.clone();
-                if inst.offset != Vec3::ZERO {
-                    mesh.translate(inst.offset);
-                }
-                out.append(&mesh);
+                out.append(&inst.apply_to_mesh(&base));
             }
         }
         if out.indices.is_empty() {
@@ -425,6 +471,14 @@ impl Model {
         } else {
             Some(out)
         }
+    }
+
+    pub fn selected_instance(&self, object: usize) -> Option<&Instance> {
+        self.objects.get(object)?.instances.first()
+    }
+
+    pub fn selected_instance_mut(&mut self, object: usize) -> Option<&mut Instance> {
+        self.objects.get_mut(object)?.instances.first_mut()
     }
 }
 

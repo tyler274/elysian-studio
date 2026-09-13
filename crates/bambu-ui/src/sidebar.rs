@@ -35,7 +35,12 @@ impl crate::App {
                     Message::MachineProfile
                 )
                 .placeholder("machine JSON"),
-                text(format!("Bed {:.0} mm", self.scene.bed_mm)).size(12),
+                text(format!(
+                    "Bed {:.0}×{:.0} mm",
+                    self.scene.bed.width(),
+                    self.scene.bed.height()
+                ))
+                .size(12),
                 text(format!(
                     "{} · {}",
                     self.settings.printer_structure, self.settings.curr_bed_type
@@ -82,6 +87,7 @@ impl crate::App {
                 plate_row,
                 text("Objects").size(16),
                 self.object_panel(),
+                self.transform_panel(),
                 text("Paint (click triangle)").size(16),
                 checkbox(self.paint_blocker)
                     .label("Blocker (else Enforcer)")
@@ -97,7 +103,8 @@ impl crate::App {
                 button("Paint off").on_press(Message::PaintClear),
                 button("Calibration block").on_press(Message::Calibration),
                 button("Reset camera").on_press(Message::ResetCamera),
-                text("Drag: orbit · Scroll: zoom · Click: paint").size(12),
+                text("Right-drag: orbit · Middle-drag: pan · Scroll: zoom · Left: tool / paint")
+                    .size(12),
             ]
             .spacing(8)
             .padding(16)

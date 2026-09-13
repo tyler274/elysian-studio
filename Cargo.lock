@@ -568,6 +568,7 @@ dependencies = [
  "bambu-model",
  "bambu-protocol",
  "bambu-slicer",
+ "glam 0.29.3",
  "iced",
  "rfd",
  "tokio",

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod bbl;
+mod bed;
 mod catalog;
 mod placeholder;
 
@@ -16,6 +17,7 @@ pub use bbl::{
     save_user_filament, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
     BblProfileEntry, BblProfileKind, ConfigError,
 };
+pub use bed::{BedRect, BedShape};
 pub use catalog::{
     apply_catalog_onto, apply_sku_with_generic_base, catalog_id, expand_vendor_json, load_catalog,
     load_default_catalog, parse_materials, spoolman_db_dir, CatalogFilament, CatalogIndex,

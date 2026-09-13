@@ -2,8 +2,10 @@
 
 pub use crate::camera::OrbitCamera;
 
+use bambu_config::{BedRect, BedShape};
 use bambu_geom::TriangleMesh;
 use bambu_preview::{ExtrusionRole, ToolpathBuffer};
+use glam::Vec3;
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
@@ -15,6 +17,13 @@ const PAINT_ENFORCER: [f32; 3] = [0.22, 0.86, 0.38];
 const PAINT_BLOCKER: [f32; 3] = [0.92, 0.22, 0.28];
 const BED: [f32; 3] = [0.16, 0.17, 0.20];
 const GRID: [f32; 3] = [0.28, 0.32, 0.38];
+const EXCLUDE: [f32; 3] = [0.765, 0.769, 0.769];
+const LEFT_ONLY: [f32; 3] = [0.20, 0.30, 0.40];
+const RIGHT_ONLY: [f32; 3] = [0.36, 0.26, 0.22];
+const LABEL: [f32; 3] = [0.78, 0.78, 0.80];
+const AXIS_X: [f32; 3] = [0.92, 0.25, 0.22];
+const AXIS_Y: [f32; 3] = [0.28, 0.82, 0.32];
+const AXIS_Z: [f32; 3] = [0.28, 0.48, 0.95];
 const OUTER_WALL: [f32; 3] = [1.00, 0.86, 0.22];
 const INNER_WALL: [f32; 3] = [0.95, 0.52, 0.18];
 const INFILL: [f32; 3] = [0.28, 0.78, 0.96];
@@ -30,6 +39,23 @@ const SUPPORT: [f32; 3] = [0.18, 0.82, 0.42];
 const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
 const IRONING: [f32; 3] = [0.92, 0.88, 0.98];
 
+/// Prepare-tab pointer mode. Right-drag orbits; middle-drag pans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlaterTool {
+    #[default]
+    Orbit,
+    Move,
+    Rotate,
+    Scale,
+    LayOnFace,
+}
+
+impl PlaterTool {
+    fn is_transform_drag(self) -> bool {
+        matches!(self, Self::Move | Self::Rotate | Self::Scale)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ViewportScene {
     pub adapter_label: String,
@@ -41,9 +67,12 @@ pub struct ViewportScene {
     pub hide_infill: bool,
     pub hide_support: bool,
     pub bed_mm: f32,
+    pub bed: BedShape,
     /// Keep the solid mesh visible (paint overlay / no toolpaths).
     pub keep_solid: bool,
     pub paint_overlay: Vec<(usize, [f32; 3])>,
+    pub tool: PlaterTool,
+    pub gizmo_origin: Option<Vec3>,
 }
 
 impl Default for ViewportScene {
@@ -58,37 +87,46 @@ impl ViewportScene {
     }
 
     pub fn with_cube_on_bed(adapter_label: String, bed_mm: f32) -> Self {
-        let bed_mm = bed_mm.clamp(80.0, 512.0);
-        let mut mesh = TriangleMesh::cube(20.0);
-        mesh.place_on_bed(bed_mm);
+        let bed = BedShape::square(bed_mm.clamp(80.0, 512.0));
+        let bed_mm = bed.orbit_mm();
         Self {
             adapter_label,
-            camera: OrbitCamera::looking_at_bed(bed_mm),
-            mesh,
+            camera: OrbitCamera::looking_at_center(
+                Vec3::new(bed.center().0, bed.center().1, 0.0),
+                bed_mm,
+            ),
+            mesh: TriangleMesh::cube(20.0),
             toolpaths: ToolpathBuffer::default(),
             preview_layer: 0,
             preview_vertices: 0,
             hide_infill: false,
             hide_support: false,
             bed_mm,
+            bed,
             keep_solid: false,
             paint_overlay: Vec::new(),
+            tool: PlaterTool::Orbit,
+            gizmo_origin: None,
         }
     }
 
     pub fn set_bed_mm(&mut self, bed_mm: f32) {
-        let bed_mm = bed_mm.clamp(80.0, 512.0);
-        self.bed_mm = bed_mm;
-        self.camera = OrbitCamera::looking_at_bed(bed_mm);
+        self.set_bed_shape(BedShape::square(bed_mm));
     }
 
-    pub fn set_mesh(&mut self, mut mesh: TriangleMesh) {
-        mesh.place_on_bed(self.bed_mm);
+    pub fn set_bed_shape(&mut self, bed: BedShape) {
+        self.bed = bed;
+        self.bed_mm = self.bed.orbit_mm();
+        let (cx, cy) = self.bed.center();
+        self.camera = OrbitCamera::looking_at_center(Vec3::new(cx, cy, 0.0), self.bed_mm);
+    }
+
+    /// Replace the solid mesh in world space. Does not recenter or move the camera.
+    pub fn set_mesh(&mut self, mesh: TriangleMesh) {
         self.mesh = mesh;
         self.toolpaths = ToolpathBuffer::default();
         self.preview_layer = 0;
         self.preview_vertices = 0;
-        self.camera = OrbitCamera::looking_at_bed(self.bed_mm);
         self.paint_overlay.clear();
     }
 
@@ -110,16 +148,62 @@ impl ViewportScene {
 
 #[derive(Debug, Default)]
 pub struct ViewportState {
-    dragging: bool,
+    dragging: Option<DragKind>,
     last: Option<iced::Point>,
     press: Option<iced::Point>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DragKind {
+    Orbit,
+    Pan,
+    Tool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ViewportEvent {
-    Orbit { dx: f32, dy: f32 },
+    Orbit {
+        dx: f32,
+        dy: f32,
+    },
+    /// World-XY delta so the z=0 hit under the cursor stays put (Studio pan).
+    Pan {
+        world_x: f32,
+        world_y: f32,
+    },
+    /// Pixel pan used when the ray misses the bed.
+    PanScreen {
+        dx: f32,
+        dy: f32,
+    },
     Zoom(f32),
-    Click { ndc_x: f32, ndc_y: f32, aspect: f32 },
+    Click {
+        ndc_x: f32,
+        ndc_y: f32,
+        aspect: f32,
+    },
+    DragStart {
+        ndc_x: f32,
+        ndc_y: f32,
+        aspect: f32,
+    },
+    Drag {
+        ndc_x: f32,
+        ndc_y: f32,
+        aspect: f32,
+    },
+    DragEnd,
+}
+
+fn is_pan_button(button: mouse::Button) -> bool {
+    matches!(button, mouse::Button::Middle | mouse::Button::Other(2))
+}
+
+fn cursor_ndc(bounds: Rectangle, pos: iced::Point) -> (f32, f32, f32) {
+    let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
+    let ndc_x = ((pos.x - bounds.x) / bounds.width.max(1.0)) * 2.0 - 1.0;
+    let ndc_y = 1.0 - ((pos.y - bounds.y) / bounds.height.max(1.0)) * 2.0;
+    (ndc_x, ndc_y, aspect)
 }
 
 impl<Message> shader::Program<Message> for ViewportScene
@@ -137,32 +221,53 @@ where
         cursor: mouse::Cursor,
     ) -> Option<shader::Action<Message>> {
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if cursor.position_over(bounds).is_some() {
-                    state.dragging = true;
-                    state.last = cursor.position();
-                    state.press = cursor.position();
-                    Some(shader::Action::request_redraw())
+            Event::Mouse(mouse::Event::ButtonPressed(button)) => {
+                let pos = cursor.position_over(bounds)?;
+                let kind = if is_pan_button(*button) {
+                    DragKind::Pan
+                } else if *button == mouse::Button::Right
+                    || (*button == mouse::Button::Left && !self.tool.is_transform_drag())
+                {
+                    DragKind::Orbit
+                } else if *button == mouse::Button::Left {
+                    DragKind::Tool
                 } else {
-                    None
+                    return None;
+                };
+                state.dragging = Some(kind);
+                state.last = Some(pos);
+                state.press = Some(pos);
+                if matches!(kind, DragKind::Tool) {
+                    let (ndc_x, ndc_y, aspect) = cursor_ndc(bounds, pos);
+                    Some(shader::Action::publish(
+                        ViewportEvent::DragStart {
+                            ndc_x,
+                            ndc_y,
+                            aspect,
+                        }
+                        .into(),
+                    ))
+                } else {
+                    Some(shader::Action::request_redraw())
                 }
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                let click = if let (Some(press), Some(pos)) = (state.press, cursor.position()) {
+            Event::Mouse(mouse::Event::ButtonReleased(button)) => {
+                let kind = state.dragging.take();
+                let press = state.press.take();
+                state.last = None;
+                let click = if let (Some(press), Some(pos)) = (press, cursor.position()) {
                     let dx = pos.x - press.x;
                     let dy = pos.y - press.y;
                     dx * dx + dy * dy < 16.0
                 } else {
                     false
                 };
-                state.dragging = false;
-                state.last = None;
-                state.press = None;
-                if click {
-                    if let Some(pos) = cursor.position_over(bounds) {
-                        let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
-                        let ndc_x = ((pos.x - bounds.x) / bounds.width.max(1.0)) * 2.0 - 1.0;
-                        let ndc_y = 1.0 - ((pos.y - bounds.y) / bounds.height.max(1.0)) * 2.0;
+                if matches!(kind, Some(DragKind::Tool)) {
+                    return Some(shader::Action::publish(ViewportEvent::DragEnd.into()));
+                }
+                if click && *button == mouse::Button::Left {
+                    if let Some(pos) = cursor.position_over(bounds).or(cursor.position()) {
+                        let (ndc_x, ndc_y, aspect) = cursor_ndc(bounds, pos);
                         return Some(shader::Action::publish(
                             ViewportEvent::Click {
                                 ndc_x,
@@ -175,13 +280,55 @@ where
                 }
                 None
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.dragging => {
-                let pos = cursor.position()?;
-                let last = state.last.replace(pos)?;
-                let dx = pos.x - last.x;
-                let dy = pos.y - last.y;
-                Some(shader::Action::publish(ViewportEvent::Orbit { dx, dy }.into()).and_capture())
-            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => match state.dragging {
+                Some(DragKind::Orbit) => {
+                    let pos = cursor.position()?;
+                    let last = state.last.replace(pos)?;
+                    let dx = pos.x - last.x;
+                    let dy = pos.y - last.y;
+                    Some(
+                        shader::Action::publish(ViewportEvent::Orbit { dx, dy }.into())
+                            .and_capture(),
+                    )
+                }
+                Some(DragKind::Pan) => {
+                    let pos = cursor.position()?;
+                    let last = state.last.replace(pos)?;
+                    let (nx, ny, aspect) = cursor_ndc(bounds, pos);
+                    let (lx, ly, _) = cursor_ndc(bounds, last);
+                    let event = match (
+                        self.camera.hit_z0(nx, ny, aspect),
+                        self.camera.hit_z0(lx, ly, aspect),
+                    ) {
+                        (Some(cur), Some(prev)) => ViewportEvent::Pan {
+                            world_x: prev.x - cur.x,
+                            world_y: prev.y - cur.y,
+                        },
+                        _ => ViewportEvent::PanScreen {
+                            dx: pos.x - last.x,
+                            dy: pos.y - last.y,
+                        },
+                    };
+                    Some(shader::Action::publish(event.into()).and_capture())
+                }
+                Some(DragKind::Tool) => {
+                    let pos = cursor.position()?;
+                    state.last = Some(pos);
+                    let (ndc_x, ndc_y, aspect) = cursor_ndc(bounds, pos);
+                    Some(
+                        shader::Action::publish(
+                            ViewportEvent::Drag {
+                                ndc_x,
+                                ndc_y,
+                                aspect,
+                            }
+                            .into(),
+                        )
+                        .and_capture(),
+                    )
+                }
+                None => None,
+            },
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 cursor.position_over(bounds)?;
                 let y = match delta {
@@ -200,8 +347,10 @@ where
         _bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.dragging {
+        if state.dragging.is_some() {
             mouse::Interaction::Grabbing
+        } else if self.tool.is_transform_drag() || self.tool == PlaterTool::LayOnFace {
+            mouse::Interaction::Pointer
         } else {
             mouse::Interaction::Grab
         }
@@ -213,7 +362,11 @@ where
         _cursor: mouse::Cursor,
         bounds: Rectangle,
     ) -> Self::Primitive {
-        let mut lines = grid_vertices(self.bed_mm);
+        let mut lines = grid_vertices(&self.bed);
+        lines.extend(label_strokes(&self.bed));
+        if let Some(origin) = self.gizmo_origin {
+            lines.extend(gizmo_axes(origin, self.bed_mm * 0.08));
+        }
         lines.extend(toolpath_vertices(
             &self.toolpaths,
             self.preview_z(),
@@ -221,7 +374,7 @@ where
             self.hide_infill,
             self.hide_support,
         ));
-        let mut solid = bed_quad(self.bed_mm);
+        let mut solid = bed_solids(&self.bed);
         if self.toolpaths.is_empty() || self.keep_solid {
             solid.extend(mesh_vertices(&self.mesh, PLASTIC));
             solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
@@ -606,16 +759,17 @@ fn upload_vertices(
 }
 
 fn overlay_vertices(mesh: &TriangleMesh, paints: &[(usize, [f32; 3])]) -> Vec<Vertex> {
+    let center = mesh_center(mesh);
     let mut out = Vec::new();
     for &(i, color) in paints {
         let Some(idx) = mesh.indices.get(i).copied() else {
             continue;
         };
         let [a, b, c] = mesh.triangle(idx);
-        let n = (b - a).cross(c - a).normalize_or_zero();
+        let (pts, n) = outward_triangle(a, b, c, center);
         let lift = n * 0.08;
         let n3 = [n.x, n.y, n.z];
-        for p in [a, b, c] {
+        for p in pts {
             let p = p + lift;
             out.push(Vertex {
                 position: [p.x, p.y, p.z],
@@ -635,13 +789,31 @@ pub fn paint_overlay_color(enforcer: bool) -> [f32; 3] {
     }
 }
 
+fn mesh_center(mesh: &TriangleMesh) -> Vec3 {
+    mesh.aabb()
+        .map(|a| (a.min + a.max) * 0.5)
+        .unwrap_or(Vec3::ZERO)
+}
+
+/// CCW from the outside of the AABB so GPU back-face culling keeps the shell.
+pub fn outward_triangle(a: Vec3, b: Vec3, c: Vec3, center: Vec3) -> ([Vec3; 3], Vec3) {
+    let n = (b - a).cross(c - a);
+    let centroid = (a + b + c) / 3.0;
+    if n.dot(centroid - center) < 0.0 {
+        ([a, c, b], (-n).normalize_or_zero())
+    } else {
+        ([a, b, c], n.normalize_or_zero())
+    }
+}
+
 fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {
+    let center = mesh_center(mesh);
     let mut out = Vec::with_capacity(mesh.indices.len() * 3);
     for idx in &mesh.indices {
         let [a, b, c] = mesh.triangle(*idx);
-        let n = (b - a).cross(c - a).normalize_or_zero();
+        let (pts, n) = outward_triangle(a, b, c, center);
         let n = [n.x, n.y, n.z];
-        for p in [a, b, c] {
+        for p in pts {
             out.push(Vertex {
                 position: [p.x, p.y, p.z],
                 normal: n,
@@ -652,39 +824,222 @@ fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {
     out
 }
 
-fn bed_quad(bed: f32) -> Vec<Vertex> {
-    let z = -0.15_f32;
+fn bed_solids(bed: &BedShape) -> Vec<Vertex> {
+    let mut out = fill_poly(&bed.printable, -0.15, BED);
+    let (left, right) = bed.visible_only_rects();
+    if let Some(rect) = left {
+        out.extend(fill_rect(rect, -0.08, LEFT_ONLY));
+    }
+    if let Some(rect) = right {
+        out.extend(fill_rect(rect, -0.08, RIGHT_ONLY));
+    }
+    if bed.exclude.len() >= 3 {
+        out.extend(fill_poly(&bed.exclude, -0.05, EXCLUDE));
+    }
+    out
+}
+
+fn fill_rect(rect: BedRect, z: f32, color: [f32; 3]) -> Vec<Vertex> {
+    fill_poly(
+        &[
+            (rect.x, rect.y),
+            (rect.max_x(), rect.y),
+            (rect.max_x(), rect.max_y()),
+            (rect.x, rect.max_y()),
+        ],
+        z,
+        color,
+    )
+}
+
+fn fill_poly(pts: &[(f32, f32)], z: f32, color: [f32; 3]) -> Vec<Vertex> {
+    if pts.len() < 3 {
+        return Vec::new();
+    }
     let n = [0.0, 0.0, 1.0];
-    let pts = [[0.0, 0.0, z], [bed, 0.0, z], [bed, bed, z], [0.0, bed, z]];
-    let tris = [[0, 1, 2], [0, 2, 3]];
-    let mut out = Vec::with_capacity(6);
-    for t in tris {
-        for i in t {
+    let mut out = Vec::with_capacity((pts.len() - 2) * 3);
+    for i in 1..pts.len().saturating_sub(1) {
+        for &(x, y) in &[pts[0], pts[i], pts[i + 1]] {
             out.push(Vertex {
-                position: pts[i],
+                position: [x, y, z],
                 normal: n,
-                color: BED,
+                color,
             });
         }
     }
     out
 }
 
-fn grid_vertices(bed: f32) -> Vec<Vertex> {
+fn grid_vertices(bed: &BedShape) -> Vec<Vertex> {
+    let (x0, y0, x1, y1) = bed.printable_aabb();
     let step = 10.0_f32;
     let z = 0.05_f32;
     let n = [0.0, 0.0, 1.0];
     let mut out = Vec::new();
-    let mut x = 0.0;
-    while x <= bed + 0.01 {
-        push_line(&mut out, [x, 0.0, z], [x, bed, z], n, GRID);
+    let mut x = (x0 / step).floor() * step;
+    while x <= x1 + 0.01 {
+        if x >= x0 - 0.01 {
+            push_line(&mut out, [x, y0, z], [x, y1, z], n, GRID);
+        }
         x += step;
     }
-    let mut y = 0.0;
-    while y <= bed + 0.01 {
-        push_line(&mut out, [0.0, y, z], [bed, y, z], n, GRID);
+    let mut y = (y0 / step).floor() * step;
+    while y <= y1 + 0.01 {
+        if y >= y0 - 0.01 {
+            push_line(&mut out, [x0, y, z], [x1, y, z], n, GRID);
+        }
         y += step;
     }
+    out
+}
+
+fn label_strokes(bed: &BedShape) -> Vec<Vertex> {
+    let mut out = Vec::new();
+    let (left, right) = bed.visible_only_rects();
+    if let Some(rect) = left {
+        stroke_label(&mut out, rect, "LEFT NOZZLE ONLY");
+    }
+    if let Some(rect) = right {
+        stroke_label(&mut out, rect, "RIGHT NOZZLE ONLY");
+    }
+    out
+}
+
+fn stroke_label(out: &mut Vec<Vertex>, rect: BedRect, text: &str) {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || rect.w < 2.0 || rect.h < 8.0 {
+        return;
+    }
+    let char_w = (rect.w * 0.55).clamp(2.4, 9.0);
+    let char_h = char_w * 1.7;
+    let step = char_h + char_w * 0.45;
+    let total = step * chars.len() as f32;
+    // First glyph at high Y (back of the plate) so the left strip reads
+    // LEFT → NOZZLE → ONLY top-to-bottom in the default camera view.
+    let mut y = rect.y + (rect.h - total).max(0.0) * 0.5 + total - char_h;
+    let x = rect.x + (rect.w - char_w) * 0.5;
+    let z = 0.12_f32;
+    let n = [0.0, 0.0, 1.0];
+    for ch in chars {
+        for &(u0, v0, u1, v1) in glyph(ch) {
+            push_line(
+                out,
+                [x + u0 * char_w, y + v0 * char_h, z],
+                [x + u1 * char_w, y + v1 * char_h, z],
+                n,
+                LABEL,
+            );
+        }
+        y -= step;
+    }
+}
+
+/// Unit-square strokes (origin bottom-left) for plate labels.
+fn glyph(ch: char) -> &'static [(f32, f32, f32, f32)] {
+    match ch {
+        'A' => &[
+            (0.0, 0.0, 0.5, 1.0),
+            (0.5, 1.0, 1.0, 0.0),
+            (0.2, 0.4, 0.8, 0.4),
+        ],
+        'E' => &[
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0, 1.0),
+            (0.0, 0.5, 0.75, 0.5),
+            (0.0, 0.0, 1.0, 0.0),
+        ],
+        'F' => &[
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0, 1.0),
+            (0.0, 0.5, 0.75, 0.5),
+        ],
+        'G' => &[
+            (1.0, 0.75, 0.15, 1.0),
+            (0.15, 1.0, 0.0, 0.5),
+            (0.0, 0.5, 0.15, 0.0),
+            (0.15, 0.0, 1.0, 0.15),
+            (1.0, 0.15, 1.0, 0.5),
+            (0.5, 0.5, 1.0, 0.5),
+        ],
+        'H' => &[
+            (0.0, 0.0, 0.0, 1.0),
+            (1.0, 0.0, 1.0, 1.0),
+            (0.0, 0.5, 1.0, 0.5),
+        ],
+        'I' => &[
+            (0.2, 1.0, 0.8, 1.0),
+            (0.5, 1.0, 0.5, 0.0),
+            (0.2, 0.0, 0.8, 0.0),
+        ],
+        'L' => &[(0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0)],
+        'N' => &[
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 1.0, 1.0, 0.0),
+            (1.0, 0.0, 1.0, 1.0),
+        ],
+        'O' => &[
+            (0.15, 0.0, 0.85, 0.0),
+            (0.85, 0.0, 1.0, 0.5),
+            (1.0, 0.5, 0.85, 1.0),
+            (0.85, 1.0, 0.15, 1.0),
+            (0.15, 1.0, 0.0, 0.5),
+            (0.0, 0.5, 0.15, 0.0),
+        ],
+        'R' => &[
+            (0.0, 0.0, 0.0, 1.0),
+            (0.0, 1.0, 0.85, 1.0),
+            (0.85, 1.0, 1.0, 0.75),
+            (1.0, 0.75, 0.85, 0.5),
+            (0.85, 0.5, 0.0, 0.5),
+            (0.4, 0.5, 1.0, 0.0),
+        ],
+        'T' => &[(0.0, 1.0, 1.0, 1.0), (0.5, 1.0, 0.5, 0.0)],
+        'U' => &[
+            (0.0, 1.0, 0.0, 0.2),
+            (0.0, 0.2, 0.5, 0.0),
+            (0.5, 0.0, 1.0, 0.2),
+            (1.0, 0.2, 1.0, 1.0),
+        ],
+        'Y' => &[
+            (0.0, 1.0, 0.5, 0.5),
+            (1.0, 1.0, 0.5, 0.5),
+            (0.5, 0.5, 0.5, 0.0),
+        ],
+        'Z' => &[
+            (0.0, 1.0, 1.0, 1.0),
+            (1.0, 1.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0, 0.0),
+        ],
+        _ => &[],
+    }
+}
+
+fn gizmo_axes(origin: Vec3, len: f32) -> Vec<Vertex> {
+    let len = len.clamp(12.0, 40.0);
+    let z = 0.2;
+    let n = [0.0, 0.0, 1.0];
+    let mut out = Vec::new();
+    push_line(
+        &mut out,
+        [origin.x, origin.y, origin.z + z],
+        [origin.x + len, origin.y, origin.z + z],
+        n,
+        AXIS_X,
+    );
+    push_line(
+        &mut out,
+        [origin.x, origin.y, origin.z + z],
+        [origin.x, origin.y + len, origin.z + z],
+        n,
+        AXIS_Y,
+    );
+    push_line(
+        &mut out,
+        [origin.x, origin.y, origin.z + z],
+        [origin.x, origin.y, origin.z + z + len],
+        n,
+        AXIS_Z,
+    );
     out
 }
 
@@ -735,4 +1090,71 @@ fn push_line(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], normal: [f32; 3], 
         normal,
         color,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bambu_geom::TriangleMesh;
+
+    #[test]
+    fn cube_display_normals_point_outward() {
+        let mesh = TriangleMesh::cube(20.0);
+        let center = Vec3::splat(10.0);
+        let mut saw_top = false;
+        for idx in &mesh.indices {
+            let [a, b, c] = mesh.triangle(*idx);
+            let (_, n) = outward_triangle(a, b, c, center);
+            let centroid = (a + b + c) / 3.0;
+            assert!(
+                n.dot(centroid - center) > 0.0,
+                "display normal must point away from the cube center"
+            );
+            if centroid.z > 19.0 {
+                assert!(n.z > 0.8, "top face normal {n:?}");
+                saw_top = true;
+            }
+        }
+        assert!(saw_top);
+    }
+
+    #[test]
+    fn h2c_bed_emits_left_only_fill() {
+        let bed = BedShape {
+            printable: vec![(0.0, 0.0), (330.0, 0.0), (330.0, 320.0), (0.0, 320.0)],
+            exclude: Vec::new(),
+            extruder_areas: vec![
+                vec![(0.0, 0.0), (325.0, 0.0), (325.0, 320.0), (0.0, 320.0)],
+                vec![(25.0, 0.0), (330.0, 0.0), (330.0, 320.0), (25.0, 320.0)],
+            ],
+        };
+        let solids = bed_solids(&bed);
+        assert!(solids.len() >= 12, "printable + left-only quads");
+        assert!(
+            solids.iter().any(|v| v.color == LEFT_ONLY),
+            "left-only strip should be filled"
+        );
+        assert!(!label_strokes(&bed).is_empty());
+    }
+
+    #[test]
+    fn left_nozzle_label_first_letter_is_toward_back() {
+        let rect = BedRect {
+            x: 0.0,
+            y: 0.0,
+            w: 25.0,
+            h: 320.0,
+        };
+        let mut lines = Vec::new();
+        stroke_label(&mut lines, rect, "LY");
+        assert!(lines.len() >= 4);
+        let mid = lines.len() / 2;
+        let l_y: f32 = lines[..mid].iter().map(|v| v.position[1]).sum::<f32>() / mid as f32;
+        let y_y: f32 =
+            lines[mid..].iter().map(|v| v.position[1]).sum::<f32>() / (lines.len() - mid) as f32;
+        assert!(
+            l_y > y_y + 5.0,
+            "L (first) should sit at higher Y than Y (last): {l_y} vs {y_y}"
+        );
+    }
 }

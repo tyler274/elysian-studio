@@ -4,6 +4,7 @@ mod chrome;
 mod filament;
 mod inventory;
 mod monitor;
+mod plater;
 mod sidebar;
 
 use bambu_alloc as _;
@@ -21,7 +22,7 @@ use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
-    slice_with_gpu_or_cpu, ExtrusionRole, ToolpathBuffer, ViewportEvent, ViewportScene,
+    slice_with_gpu_or_cpu, ExtrusionRole, PlaterTool, ToolpathBuffer, ViewportEvent, ViewportScene,
 };
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
@@ -35,6 +36,7 @@ use iced::widget::{button, checkbox, column, container, row, shader, text};
 use iced::{Color, Element, Fill, Subscription, Task, Theme};
 
 use monitor::JpegThumb;
+use plater::{CoordSpace, XformField};
 
 fn main() -> iced::Result {
     reexec_with_vulkan_if_needed();
@@ -140,6 +142,8 @@ struct App {
     draft_measure: String,
     selected_object: usize,
     selected_volume: usize,
+    drag_last_bed: Option<(f32, f32)>,
+    drag_last_ndc: Option<(f32, f32)>,
     machine: MachineState,
     ams: AmsState,
     hms_lines: Vec<String>,
@@ -160,6 +164,14 @@ struct App {
     control_nozzle: String,
     control_fan: u8,
     project_opts: ProjectFileOpts,
+    coord_space: CoordSpace,
+    uniform_scale: bool,
+    rotate_open_deg: glam::Vec3,
+    pos_edit: [String; 3],
+    rot_rel_edit: [String; 3],
+    rot_abs_edit: [String; 3],
+    scale_pct_edit: [String; 3],
+    size_edit: [String; 3],
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +318,18 @@ enum Message {
     SpoolColor(String),
     SpoolFilamentId(String),
     SpoolNote(String),
+    PlaterTool(PlaterTool),
+    Arrange,
+    AutoOrient,
+    Mirror(u8),
+    Rotate90,
+    CoordSpace(CoordSpace),
+    UniformScale(bool),
+    XformDraft { field: XformField, text: String },
+    XformCommit(XformField),
+    DropToBed,
+    ResetRotation,
+    ResetScale,
 }
 
 impl From<ViewportEvent> for Message {
@@ -459,21 +483,27 @@ struct StudioImportUi {
 impl App {
     fn new(adapter: String) -> Self {
         let settings = default_slice_settings();
-        let bed = settings.bed_size_mm();
-        let scene = ViewportScene::with_cube_on_bed(adapter.clone(), bed);
+        let bed = settings.bed_shape();
+        let mut scene = ViewportScene::with_cube_on_bed(adapter.clone(), bed.orbit_mm());
+        scene.set_bed_shape(bed.clone());
+        let mut model = Model::from_mesh("cube", bambu_geom::TriangleMesh::cube(20.0));
+        model.place_on_bed_if_needed(&bed);
+        if let Some(mesh) = model.mesh_for_plate(0) {
+            scene.set_mesh(mesh);
+        }
         let mut app = Self {
             adapter,
             scene,
             workspace: Workspace::Prepare,
             busy: false,
-            status: format!("20mm cube on {bed:.0}mm bed"),
+            status: format!("20mm cube on {:.0}×{:.0} mm bed", bed.width(), bed.height()),
             host: String::new(),
             access_code: String::new(),
             serial: String::new(),
             last_gcode: None,
             estimated_seconds: None,
             settings,
-            model: None,
+            model: Some(model),
             plate: 0,
             by_object: false,
             paint_kind: None,
@@ -506,6 +536,8 @@ impl App {
             draft_measure: String::new(),
             selected_object: 0,
             selected_volume: 0,
+            drag_last_bed: None,
+            drag_last_ndc: None,
             machine: MachineState::default(),
             ams: AmsState::default(),
             hms_lines: Vec::new(),
@@ -526,6 +558,14 @@ impl App {
             control_nozzle: String::new(),
             control_fan: 0,
             project_opts: ProjectFileOpts::default(),
+            coord_space: CoordSpace::World,
+            uniform_scale: true,
+            rotate_open_deg: glam::Vec3::ZERO,
+            pos_edit: std::array::from_fn(|_| "0.00".into()),
+            rot_rel_edit: std::array::from_fn(|_| "0.00".into()),
+            rot_abs_edit: std::array::from_fn(|_| "0.00".into()),
+            scale_pct_edit: std::array::from_fn(|_| "100.00".into()),
+            size_edit: std::array::from_fn(|_| "0.00".into()),
         };
         app.reload_user_filaments();
         app.catalog = load_default_catalog();
@@ -538,6 +578,8 @@ impl App {
         }
         app.init_filament_slots();
         app.sync_keep_solid();
+        app.sync_gizmo();
+        app.fill_xform_edits();
         app.load_account_from_disk();
         app
     }
@@ -630,19 +672,7 @@ impl App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Viewport(ViewportEvent::Orbit { dx, dy }) => {
-                self.scene.camera.orbit(dx, dy);
-            }
-            Message::Viewport(ViewportEvent::Zoom(delta)) => {
-                self.scene.camera.zoom(delta);
-            }
-            Message::Viewport(ViewportEvent::Click {
-                ndc_x,
-                ndc_y,
-                aspect,
-            }) => {
-                self.paint_pick(ndc_x, ndc_y, aspect);
-            }
+            Message::Viewport(event) => self.handle_viewport(event),
             Message::Workspace(workspace) => {
                 self.workspace = workspace;
                 self.sync_keep_solid();
@@ -679,7 +709,11 @@ impl App {
                 }
             }
             Message::ResetCamera => {
-                self.scene.camera = bambu_gpu::OrbitCamera::looking_at_bed(self.scene.bed_mm);
+                let (cx, cy) = self.scene.bed.center();
+                self.scene.camera = bambu_gpu::OrbitCamera::looking_at_center(
+                    glam::Vec3::new(cx, cy, 0.0),
+                    self.scene.bed_mm,
+                );
             }
             Message::ExtractKeys => {
                 if !self.begin_work("extracting keys…") {
@@ -1015,13 +1049,7 @@ impl App {
                     .map(|m| m.plates.len().max(1))
                     .unwrap_or(1);
                 self.plate = i.min(n.saturating_sub(1));
-                if let Some(mesh) = self
-                    .model
-                    .as_ref()
-                    .and_then(|m| m.mesh_for_plate(self.plate))
-                {
-                    self.scene.set_mesh(mesh);
-                }
+                self.sync_scene_mesh();
                 self.status = format!("plate {}", self.plate + 1);
             }
             Message::PreviewLayer(i) => {
@@ -1038,16 +1066,19 @@ impl App {
             Message::ByObject(v) => self.by_object = v,
             Message::PaintSupport => {
                 self.paint_kind = Some(PaintKind::Support);
+                self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint support".into();
             }
             Message::PaintSeam => {
                 self.paint_kind = Some(PaintKind::Seam);
+                self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint seam".into();
             }
             Message::PaintFuzzy => {
                 self.paint_kind = Some(PaintKind::Fuzzy);
+                self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint fuzzy".into();
             }
@@ -1188,6 +1219,8 @@ impl App {
             Message::SelectObject(i) => {
                 self.selected_object = i;
                 self.selected_volume = 0;
+                self.sync_gizmo();
+                self.fill_xform_edits();
             }
             Message::SelectVolume(i) => self.selected_volume = i,
             Message::HideVolume(hidden) => {
@@ -1375,6 +1408,18 @@ impl App {
             Message::SpoolMeasureGross(s) => self.draft_measure = s,
             Message::ApplySpoolUse => self.apply_spool_use(),
             Message::ApplySpoolMeasure => self.apply_spool_measure(),
+            Message::PlaterTool(tool) => self.apply_plater_tool(tool),
+            Message::Arrange => self.arrange_plate(),
+            Message::AutoOrient => self.auto_orient_selected(),
+            Message::Mirror(axis) => self.mirror_selected(axis),
+            Message::Rotate90 => self.rotate_selected_90(),
+            Message::CoordSpace(space) => self.set_coord_space(space),
+            Message::UniformScale(v) => self.set_uniform_scale(v),
+            Message::XformDraft { field, text } => self.set_xform_draft(field, text),
+            Message::XformCommit(field) => self.commit_xform_field(field),
+            Message::DropToBed => self.drop_selected_to_bed(),
+            Message::ResetRotation => self.reset_selected_rotation(),
+            Message::ResetScale => self.reset_selected_scale(),
         }
         Task::none()
     }
@@ -1394,7 +1439,12 @@ impl App {
                 })
                 .height(Fill);
                 let viewport = shader(&self.scene).width(Fill).height(Fill);
-                row![left, viewport].into()
+                let stage: Element<'_, Message> = if self.workspace == Workspace::Prepare {
+                    column![self.plater_toolbar(), viewport].height(Fill).into()
+                } else {
+                    viewport.into()
+                };
+                row![left, stage].into()
             }
         };
         column![
@@ -1723,7 +1773,7 @@ impl App {
                     }
                     BblProfileKind::Machine => {
                         self.machine_name = Some(name.to_string());
-                        self.scene.set_bed_mm(self.settings.bed_size_mm());
+                        self.apply_bed_from_settings();
                     }
                 }
                 self.status = format!("overlay {}", path.display());
@@ -1749,35 +1799,42 @@ impl App {
             || !self.scene.paint_overlay.is_empty();
     }
 
-    fn apply_loaded_model(&mut self, loaded: LoadedModel) {
+    fn apply_loaded_model(&mut self, mut loaded: LoadedModel) {
         if loaded.apply_settings {
             if let Some(s) = loaded.model.settings.clone() {
                 self.settings = s;
             }
         }
         self.plate = 0;
+        if loaded.apply_settings {
+            self.apply_bed_from_settings();
+        }
+        loaded.model.place_on_bed_if_needed(&self.scene.bed);
         let tris = loaded
             .model
             .mesh_for_plate(0)
             .map(|m| m.indices.len())
             .unwrap_or(0);
-        if let Some(mesh) = loaded.model.mesh_for_plate(0) {
-            self.scene.set_mesh(mesh);
-        }
+        self.model = Some(loaded.model);
+        self.selected_object = 0;
+        self.selected_volume = 0;
+        self.sync_scene_mesh();
         self.status = if loaded.apply_settings {
             format!(
                 "loaded {} ({} triangles, {} plates)",
                 loaded.label,
                 tris,
-                loaded.model.plates.len().max(1)
+                self.model
+                    .as_ref()
+                    .map(|m| m.plates.len().max(1))
+                    .unwrap_or(1)
             )
         } else {
             format!(
                 "calibration block ({} objects) — Slice with current settings",
-                loaded.model.objects.len()
+                self.model.as_ref().map(|m| m.objects.len()).unwrap_or(0)
             )
         };
-        self.model = Some(loaded.model);
         self.sync_keep_solid();
     }
 
@@ -2391,6 +2448,18 @@ impl App {
         self.scene.set_mesh(mesh);
         self.scene.keep_solid = keep;
         self.refresh_paint_overlay();
+        self.sync_gizmo();
+        self.fill_xform_edits();
+    }
+
+    fn sync_gizmo(&mut self) {
+        self.scene.gizmo_origin = self.model.as_ref().and_then(|model| {
+            let obj = model.objects.get(self.selected_object)?;
+            let mesh = obj.printable_mesh();
+            let inst = obj.instances.first().copied().unwrap_or_default();
+            let aabb = inst.apply_to_mesh(&mesh).aabb()?;
+            Some((aabb.min + aabb.max) * 0.5)
+        });
     }
 
     fn refresh_paint_overlay(&mut self) {
