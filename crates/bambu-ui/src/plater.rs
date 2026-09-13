@@ -54,7 +54,9 @@ impl crate::App {
             } else {
                 label.to_string()
             };
-            button(text(caption).size(12)).on_press(Message::PlaterTool(t))
+            button(text(caption).size(12))
+                .padding([3, 8])
+                .on_press(Message::PlaterTool(t))
         };
         row![
             btn("Select", PlaterTool::Orbit),
@@ -62,16 +64,28 @@ impl crate::App {
             btn("Rotate", PlaterTool::Rotate),
             btn("Scale", PlaterTool::Scale),
             btn("Lay on face", PlaterTool::LayOnFace),
-            button(text("Arrange").size(12)).on_press(Message::Arrange),
-            button(text("Orient").size(12)).on_press(Message::AutoOrient),
-            button(text("Mirror X").size(12)).on_press(Message::Mirror(0)),
-            button(text("Mirror Y").size(12)).on_press(Message::Mirror(1)),
-            button(text("Mirror Z").size(12)).on_press(Message::Mirror(2)),
-            button(text("Rot 90°").size(12)).on_press(Message::Rotate90),
+            button(text("Arrange").size(12))
+                .padding([3, 8])
+                .on_press(Message::Arrange),
+            button(text("Orient").size(12))
+                .padding([3, 8])
+                .on_press(Message::AutoOrient),
+            button(text("Mirror X").size(12))
+                .padding([3, 8])
+                .on_press(Message::Mirror(0)),
+            button(text("Mirror Y").size(12))
+                .padding([3, 8])
+                .on_press(Message::Mirror(1)),
+            button(text("Mirror Z").size(12))
+                .padding([3, 8])
+                .on_press(Message::Mirror(2)),
+            button(text("Rot 90°").size(12))
+                .padding([3, 8])
+                .on_press(Message::Rotate90),
             text(self.plate_hint()).size(12),
         ]
-        .spacing(6)
-        .padding([6, 8])
+        .spacing(4)
+        .padding([4, 8])
         .into()
     }
 

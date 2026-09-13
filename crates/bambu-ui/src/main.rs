@@ -22,7 +22,8 @@ use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
-    slice_with_gpu_or_cpu, ExtrusionRole, PlaterTool, ToolpathBuffer, ViewportEvent, ViewportScene,
+    slice_with_gpu_or_cpu, AxisGizmo, ExtrusionRole, PlaterTool, ToolpathBuffer, ViewportEvent,
+    ViewportScene,
 };
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
@@ -33,7 +34,12 @@ use bambu_protocol::{
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, shader, text};
-use iced::{Color, Element, Fill, Subscription, Task, Theme};
+use iced::{window, Color, Element, Fill, Settings, Size, Subscription, Task, Theme};
+
+/// Studio `MainFrame::SetSize(FromDIP(1200), FromDIP(800))` — 3:2, not iced's 4:3.
+const WINDOW_SIZE: Size = Size::new(1200.0, 800.0);
+const WINDOW_MIN: Size = Size::new(960.0, 640.0);
+pub(crate) const SIDEBAR_WIDTH: f32 = 300.0;
 
 use monitor::JpegThumb;
 use plater::{CoordSpace, XformField};
@@ -69,7 +75,17 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .title("Bambu Studio")
         .theme(Theme::Dark)
-        .antialiasing(true)
+        .settings(Settings {
+            antialiasing: true,
+            default_text_size: iced::Pixels(13.0),
+            ..Settings::default()
+        })
+        .window(window::Settings {
+            size: WINDOW_SIZE,
+            min_size: Some(WINDOW_MIN),
+            ..window::Settings::default()
+        })
+        .centered()
         .run()
 }
 
@@ -1437,6 +1453,7 @@ impl App {
                     background: Some(iced::Background::Color(Color::from_rgb(0.10, 0.11, 0.13))),
                     ..container::Style::default()
                 })
+                .width(SIDEBAR_WIDTH)
                 .height(Fill);
                 let viewport = shader(&self.scene).width(Fill).height(Fill);
                 let stage: Element<'_, Message> = if self.workspace == Workspace::Prepare {
@@ -1688,7 +1705,11 @@ impl App {
                 .map(|p| p.name.clone())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("{}", i + 1));
-            r = r.push(button(text(name).size(12)).on_press(Message::Plate(i)));
+            r = r.push(
+                button(text(name).size(12))
+                    .padding([3, 8])
+                    .on_press(Message::Plate(i)),
+            );
         }
         r.spacing(4).into()
     }
@@ -2453,12 +2474,15 @@ impl App {
     }
 
     fn sync_gizmo(&mut self) {
-        self.scene.gizmo_origin = self.model.as_ref().and_then(|model| {
+        self.scene.gizmo = self.model.as_ref().and_then(|model| {
             let obj = model.objects.get(self.selected_object)?;
             let mesh = obj.printable_mesh();
             let inst = obj.instances.first().copied().unwrap_or_default();
             let aabb = inst.apply_to_mesh(&mesh).aabb()?;
-            Some((aabb.min + aabb.max) * 0.5)
+            Some(AxisGizmo {
+                origin: (aabb.min + aabb.max) * 0.5,
+                half: (aabb.max - aabb.min) * 0.5,
+            })
         });
     }
 

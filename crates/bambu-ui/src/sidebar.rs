@@ -3,7 +3,7 @@
 use iced::widget::{button, checkbox, column, pick_list, row, scrollable, slider, text};
 use iced::{Element, Fill};
 
-use crate::{format_eta, role_legend, Message};
+use crate::{format_eta, role_legend, Message, SIDEBAR_WIDTH};
 
 impl crate::App {
     pub(crate) fn prepare_sidebar(&self) -> Element<'_, Message> {
@@ -28,13 +28,17 @@ impl crate::App {
                     self.process_name.clone(),
                     Message::ProcessProfile
                 )
-                .placeholder("process JSON"),
+                .placeholder("process JSON")
+                .padding([3, 8])
+                .text_size(13),
                 pick_list(
                     machine_names,
                     self.machine_name.clone(),
                     Message::MachineProfile
                 )
-                .placeholder("machine JSON"),
+                .placeholder("machine JSON")
+                .padding([3, 8])
+                .text_size(13),
                 text(format!(
                     "Bed {:.0}×{:.0} mm",
                     self.scene.bed.width(),
@@ -47,11 +51,12 @@ impl crate::App {
                 ))
                 .size(12),
                 row![
-                    button("-").on_press(Message::WallLoops(
+                    button("-").padding([3, 8]).on_press(Message::WallLoops(
                         self.settings.wall_loops.saturating_sub(1).max(1)
                     )),
                     text(format!("Walls {}", self.settings.wall_loops)).size(13),
                     button("+")
+                        .padding([3, 8])
                         .on_press(Message::WallLoops((self.settings.wall_loops + 1).min(10))),
                 ]
                 .spacing(6),
@@ -97,18 +102,30 @@ impl crate::App {
                     Message::BrushRadius(v as f32)
                 })
                 .step(0.5),
-                button("Paint support").on_press(Message::PaintSupport),
-                button("Paint seam").on_press(Message::PaintSeam),
-                button("Paint fuzzy").on_press(Message::PaintFuzzy),
-                button("Paint off").on_press(Message::PaintClear),
-                button("Calibration block").on_press(Message::Calibration),
-                button("Reset camera").on_press(Message::ResetCamera),
+                button("Paint support")
+                    .padding([3, 8])
+                    .on_press(Message::PaintSupport),
+                button("Paint seam")
+                    .padding([3, 8])
+                    .on_press(Message::PaintSeam),
+                button("Paint fuzzy")
+                    .padding([3, 8])
+                    .on_press(Message::PaintFuzzy),
+                button("Paint off")
+                    .padding([3, 8])
+                    .on_press(Message::PaintClear),
+                button("Calibration block")
+                    .padding([3, 8])
+                    .on_press(Message::Calibration),
+                button("Reset camera")
+                    .padding([3, 8])
+                    .on_press(Message::ResetCamera),
                 text("Right-drag: orbit · Middle-drag: pan · Scroll: zoom · Left: tool / paint")
                     .size(12),
             ]
-            .spacing(8)
-            .padding(16)
-            .width(300),
+            .spacing(6)
+            .padding([10, 12])
+            .width(SIDEBAR_WIDTH),
         )
         .height(Fill)
         .into()
@@ -159,12 +176,14 @@ impl crate::App {
                 checkbox(self.scene.hide_support)
                     .label("Hide support")
                     .on_toggle(Message::HideSupport),
-                button("Reset camera").on_press(Message::ResetCamera),
+                button("Reset camera")
+                    .padding([3, 8])
+                    .on_press(Message::ResetCamera),
                 text("Slice from the top bar, then scrub layers.").size(12),
             ]
-            .spacing(8)
-            .padding(16)
-            .width(300),
+            .spacing(6)
+            .padding([10, 12])
+            .width(SIDEBAR_WIDTH),
         )
         .height(Fill)
         .into()

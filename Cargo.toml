@@ -56,3 +56,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "27"
 x509-parser = "0.16"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+ab_glyph = "0.2"

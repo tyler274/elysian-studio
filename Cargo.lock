@@ -472,6 +472,7 @@ dependencies = [
 name = "bambu-gpu"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bambu-config",
  "bambu-geom",
  "bambu-model",

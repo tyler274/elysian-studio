@@ -56,6 +56,13 @@ impl PlaterTool {
     }
 }
 
+/// Selection AABB used to size the XYZ arrows so they stay outside the mesh.
+#[derive(Debug, Clone, Copy)]
+pub struct AxisGizmo {
+    pub origin: Vec3,
+    pub half: Vec3,
+}
+
 #[derive(Debug, Clone)]
 pub struct ViewportScene {
     pub adapter_label: String,
@@ -72,7 +79,7 @@ pub struct ViewportScene {
     pub keep_solid: bool,
     pub paint_overlay: Vec<(usize, [f32; 3])>,
     pub tool: PlaterTool,
-    pub gizmo_origin: Option<Vec3>,
+    pub gizmo: Option<AxisGizmo>,
 }
 
 impl Default for ViewportScene {
@@ -106,7 +113,7 @@ impl ViewportScene {
             keep_solid: false,
             paint_overlay: Vec::new(),
             tool: PlaterTool::Orbit,
-            gizmo_origin: None,
+            gizmo: None,
         }
     }
 
@@ -199,8 +206,12 @@ fn is_pan_button(button: mouse::Button) -> bool {
     matches!(button, mouse::Button::Middle | mouse::Button::Other(2))
 }
 
+fn pane_aspect(bounds: Rectangle) -> f32 {
+    (bounds.width / bounds.height.max(1.0)).max(0.1)
+}
+
 fn cursor_ndc(bounds: Rectangle, pos: iced::Point) -> (f32, f32, f32) {
-    let aspect = (bounds.width / bounds.height.max(1.0)).max(0.1);
+    let aspect = pane_aspect(bounds);
     let ndc_x = ((pos.x - bounds.x) / bounds.width.max(1.0)) * 2.0 - 1.0;
     let ndc_y = 1.0 - ((pos.y - bounds.y) / bounds.height.max(1.0)) * 2.0;
     (ndc_x, ndc_y, aspect)
@@ -360,13 +371,9 @@ where
         &self,
         _state: &Self::State,
         _cursor: mouse::Cursor,
-        bounds: Rectangle,
+        _bounds: Rectangle,
     ) -> Self::Primitive {
         let mut lines = grid_vertices(&self.bed);
-        lines.extend(label_strokes(&self.bed));
-        if let Some(origin) = self.gizmo_origin {
-            lines.extend(gizmo_axes(origin, self.bed_mm * 0.08));
-        }
         lines.extend(toolpath_vertices(
             &self.toolpaths,
             self.preview_z(),
@@ -379,21 +386,27 @@ where
             solid.extend(mesh_vertices(&self.mesh, PLASTIC));
             solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
         }
+        let gizmos = self
+            .gizmo
+            .map(|g| gizmo_arrows(g.origin, g.half))
+            .unwrap_or_default();
         ScenePrimitive {
-            aspect: (bounds.width / bounds.height.max(1.0)).max(0.1),
             camera: self.camera,
             solid,
             lines,
+            gizmos,
+            labels: crate::label::plate_labels(&self.bed, LABEL),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct ScenePrimitive {
-    aspect: f32,
     camera: OrbitCamera,
     solid: Vec<Vertex>,
     lines: Vec<Vertex>,
+    gizmos: Vec<Vertex>,
+    labels: Vec<crate::label::LabelVertex>,
 }
 
 #[repr(C)]
@@ -415,26 +428,36 @@ struct Vertex {
 pub struct ScenePipeline {
     pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    gizmo_pipeline: wgpu::RenderPipeline,
+    label_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    label_bind_group: wgpu::BindGroup,
     uniform_buf: wgpu::Buffer,
     vertex_buf: wgpu::Buffer,
     vertex_capacity: u64,
     line_buf: wgpu::Buffer,
     line_capacity: u64,
+    gizmo_buf: wgpu::Buffer,
+    gizmo_capacity: u64,
+    label_buf: wgpu::Buffer,
+    label_capacity: u64,
     solid_count: u32,
     line_count: u32,
+    gizmo_count: u32,
+    label_count: u32,
     depth_view: Option<wgpu::TextureView>,
     depth_size: (u32, u32),
+    _atlas: wgpu::Texture,
 }
 
 impl shader::Pipeline for ScenePipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self::create(device, format)
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        Self::create(device, queue, format)
     }
 }
 
 impl ScenePipeline {
-    fn create(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    fn create(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bambu-gpu-solid"),
             source: wgpu::ShaderSource::Wgsl(include_str!("solid.wgsl").into()),
@@ -534,6 +557,42 @@ impl ScenePipeline {
             cache: None,
         });
 
+        let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("bambu-gpu-gizmo-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: std::slice::from_ref(&vertex_layout),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("bambu-gpu-line-pipeline"),
             layout: Some(&pipeline_layout),
@@ -572,20 +631,33 @@ impl ScenePipeline {
 
         let vertex_buf = empty_vertex_buffer(device, 4096, "bambu-gpu-solid-verts");
         let line_buf = empty_vertex_buffer(device, 4096, "bambu-gpu-line-verts");
+        let gizmo_buf = empty_vertex_buffer(device, 1024, "bambu-gpu-gizmo-verts");
+        let (label_pipeline, label_bind_group, label_buf, atlas_texture) =
+            label_gpu(device, queue, format, &uniform_buf);
 
         Self {
             pipeline,
             line_pipeline,
+            gizmo_pipeline,
+            label_pipeline,
             bind_group,
+            label_bind_group,
             uniform_buf,
             vertex_buf,
             vertex_capacity: 4096,
             line_buf,
             line_capacity: 4096,
+            gizmo_buf,
+            gizmo_capacity: 1024,
+            label_buf,
+            label_capacity: 256,
             solid_count: 0,
             line_count: 0,
+            gizmo_count: 0,
+            label_count: 0,
             depth_view: None,
             depth_size: (0, 0),
+            _atlas: atlas_texture,
         }
     }
 
@@ -622,14 +694,15 @@ impl shader::Primitive for ScenePrimitive {
         pipeline: &mut ScenePipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _bounds: &Rectangle,
+        bounds: &Rectangle,
         viewport: &Viewport,
     ) {
         let size = viewport.physical_size();
         pipeline.ensure_depth(device, size.width, size.height);
 
-        let proj =
-            glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, self.aspect, 1.0, 4000.0);
+        // Match the pane we `set_viewport` to in `render`, not the full window.
+        let aspect = pane_aspect(*bounds);
+        let proj = glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
         let view = self.camera.view_matrix();
         let model = glam::Mat4::IDENTITY;
         let mvp = proj * view * model;
@@ -663,6 +736,25 @@ impl shader::Primitive for ScenePrimitive {
             "bambu-gpu-line-verts",
         );
         pipeline.line_count = self.lines.len() as u32;
+
+        upload_vertices(
+            device,
+            queue,
+            &mut pipeline.gizmo_buf,
+            &mut pipeline.gizmo_capacity,
+            &self.gizmos,
+            "bambu-gpu-gizmo-verts",
+        );
+        pipeline.gizmo_count = self.gizmos.len() as u32;
+
+        upload_labels(
+            device,
+            queue,
+            &mut pipeline.label_buf,
+            &mut pipeline.label_capacity,
+            &self.labels,
+        );
+        pipeline.label_count = self.labels.len() as u32;
     }
 
     fn draw(&self, _pipeline: &ScenePipeline, _render_pass: &mut wgpu::RenderPass<'_>) -> bool {
@@ -708,6 +800,18 @@ impl shader::Primitive for ScenePrimitive {
             occlusion_query_set: None,
         });
 
+        // iced's `draw()` path already sets this; our depth pass does not.
+        // Without it, NDC maps to the full window and the cube looks stretched.
+        let vp_w = clip_bounds.width.max(1) as f32;
+        let vp_h = clip_bounds.height.max(1) as f32;
+        pass.set_viewport(
+            clip_bounds.x as f32,
+            clip_bounds.y as f32,
+            vp_w,
+            vp_h,
+            0.0,
+            1.0,
+        );
         pass.set_scissor_rect(
             clip_bounds.x,
             clip_bounds.y,
@@ -727,6 +831,18 @@ impl shader::Primitive for ScenePrimitive {
             pass.set_vertex_buffer(0, pipeline.line_buf.slice(..));
             pass.draw(0..pipeline.line_count, 0..1);
         }
+        if pipeline.gizmo_count > 0 {
+            pass.set_pipeline(&pipeline.gizmo_pipeline);
+            pass.set_bind_group(0, &pipeline.bind_group, &[]);
+            pass.set_vertex_buffer(0, pipeline.gizmo_buf.slice(..));
+            pass.draw(0..pipeline.gizmo_count, 0..1);
+        }
+        if pipeline.label_count > 0 {
+            pass.set_pipeline(&pipeline.label_pipeline);
+            pass.set_bind_group(0, &pipeline.label_bind_group, &[]);
+            pass.set_vertex_buffer(0, pipeline.label_buf.slice(..));
+            pass.draw(0..pipeline.label_count, 0..1);
+        }
     }
 }
 
@@ -734,6 +850,15 @@ fn empty_vertex_buffer(device: &wgpu::Device, count: u64, label: &str) -> wgpu::
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: count * std::mem::size_of::<Vertex>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn empty_label_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bambu-gpu-label-verts"),
+        size: count * std::mem::size_of::<crate::label::LabelVertex>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -756,6 +881,200 @@ fn upload_vertices(
         *buffer = empty_vertex_buffer(device, *capacity, label);
     }
     queue.write_buffer(buffer, 0, bytemuck::cast_slice(verts));
+}
+
+fn upload_labels(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &mut wgpu::Buffer,
+    capacity: &mut u64,
+    verts: &[crate::label::LabelVertex],
+) {
+    let needed = verts.len() as u64;
+    if needed == 0 {
+        return;
+    }
+    if needed > *capacity {
+        *capacity = needed.next_power_of_two().max(64);
+        *buffer = empty_label_buffer(device, *capacity);
+    }
+    queue.write_buffer(buffer, 0, bytemuck::cast_slice(verts));
+}
+
+fn label_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    uniform_buf: &wgpu::Buffer,
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::BindGroup,
+    wgpu::Buffer,
+    wgpu::Texture,
+) {
+    let atlas = crate::label::atlas();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("bambu-gpu-label-atlas"),
+        size: wgpu::Extent3d {
+            width: atlas.width,
+            height: atlas.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &atlas.pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(atlas.stride),
+            rows_per_image: Some(atlas.height),
+        },
+        wgpu::Extent3d {
+            width: atlas.width,
+            height: atlas.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("bambu-gpu-label-sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("bambu-gpu-label"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("label.wgsl").into()),
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("bambu-gpu-label-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bambu-gpu-label-bg"),
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("bambu-gpu-label-pl"),
+        bind_group_layouts: &[&layout],
+        push_constant_ranges: &[],
+    });
+    let vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<crate::label::LabelVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: 12,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x2,
+            },
+            wgpu::VertexAttribute {
+                offset: 20,
+                shader_location: 2,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+        ],
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("bambu-gpu-label-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: std::slice::from_ref(&vertex_layout),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+    (
+        pipeline,
+        bind_group,
+        empty_label_buffer(device, 256),
+        texture,
+    )
 }
 
 fn overlay_vertices(mesh: &TriangleMesh, paints: &[(usize, [f32; 3])]) -> Vec<Vertex> {
@@ -893,154 +1212,104 @@ fn grid_vertices(bed: &BedShape) -> Vec<Vertex> {
     out
 }
 
-fn label_strokes(bed: &BedShape) -> Vec<Vertex> {
+fn gizmo_arrows(origin: Vec3, half: Vec3) -> Vec<Vertex> {
     let mut out = Vec::new();
-    let (left, right) = bed.visible_only_rects();
-    if let Some(rect) = left {
-        stroke_label(&mut out, rect, "LEFT NOZZLE ONLY");
-    }
-    if let Some(rect) = right {
-        stroke_label(&mut out, rect, "RIGHT NOZZLE ONLY");
-    }
+    axis_arrow(&mut out, origin, Vec3::X, axis_len(half.x), AXIS_X);
+    axis_arrow(&mut out, origin, Vec3::Y, axis_len(half.y), AXIS_Y);
+    axis_arrow(&mut out, origin, Vec3::Z, axis_len(half.z), AXIS_Z);
     out
 }
 
-fn stroke_label(out: &mut Vec<Vertex>, rect: BedRect, text: &str) {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() || rect.w < 2.0 || rect.h < 8.0 {
+fn axis_len(half: f32) -> f32 {
+    (half.abs() * 1.35 + 12.0).max(16.0)
+}
+
+fn axis_arrow(out: &mut Vec<Vertex>, origin: Vec3, dir: Vec3, len: f32, color: [f32; 3]) {
+    let dir = dir.normalize_or_zero();
+    if dir.length_squared() < 1e-8 || len < 1.0 {
         return;
     }
-    let char_w = (rect.w * 0.55).clamp(2.4, 9.0);
-    let char_h = char_w * 1.7;
-    let step = char_h + char_w * 0.45;
-    let total = step * chars.len() as f32;
-    // First glyph at high Y (back of the plate) so the left strip reads
-    // LEFT → NOZZLE → ONLY top-to-bottom in the default camera view.
-    let mut y = rect.y + (rect.h - total).max(0.0) * 0.5 + total - char_h;
-    let x = rect.x + (rect.w - char_w) * 0.5;
-    let z = 0.12_f32;
-    let n = [0.0, 0.0, 1.0];
-    for ch in chars {
-        for &(u0, v0, u1, v1) in glyph(ch) {
-            push_line(
-                out,
-                [x + u0 * char_w, y + v0 * char_h, z],
-                [x + u1 * char_w, y + v1 * char_h, z],
-                n,
-                LABEL,
-            );
-        }
-        y -= step;
+    let head_h = (len * 0.22).clamp(5.0, 28.0);
+    let shaft_len = (len - head_h).max(len * 0.6);
+    let shaft_r = (len * 0.032).clamp(0.55, 4.0);
+    let head_r = shaft_r * 2.7;
+    let shaft_end = origin + dir * shaft_len;
+    let tip = origin + dir * (shaft_len + head_h);
+    push_cylinder(out, origin, shaft_end, dir, shaft_r, color, 12);
+    push_cone(out, shaft_end, tip, dir, head_r, color, 12);
+}
+
+fn axis_basis(dir: Vec3) -> (Vec3, Vec3) {
+    let helper = if dir.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+    let right = dir.cross(helper).normalize_or_zero();
+    let up = right.cross(dir).normalize_or_zero();
+    (right, up)
+}
+
+fn push_cylinder(
+    out: &mut Vec<Vertex>,
+    a: Vec3,
+    b: Vec3,
+    dir: Vec3,
+    radius: f32,
+    color: [f32; 3],
+    segs: usize,
+) {
+    let (right, up) = axis_basis(dir);
+    let segs = segs.max(6);
+    for i in 0..segs {
+        let t0 = i as f32 / segs as f32 * std::f32::consts::TAU;
+        let t1 = (i + 1) as f32 / segs as f32 * std::f32::consts::TAU;
+        let r0 = right * t0.cos() + up * t0.sin();
+        let r1 = right * t1.cos() + up * t1.sin();
+        let a0 = a + r0 * radius;
+        let a1 = a + r1 * radius;
+        let b0 = b + r0 * radius;
+        let b1 = b + r1 * radius;
+        push_lit_tri(out, a0, a1, b1, color, r0 + r1);
+        push_lit_tri(out, a0, b1, b0, color, r0 + r1);
     }
 }
 
-/// Unit-square strokes (origin bottom-left) for plate labels.
-fn glyph(ch: char) -> &'static [(f32, f32, f32, f32)] {
-    match ch {
-        'A' => &[
-            (0.0, 0.0, 0.5, 1.0),
-            (0.5, 1.0, 1.0, 0.0),
-            (0.2, 0.4, 0.8, 0.4),
-        ],
-        'E' => &[
-            (0.0, 0.0, 0.0, 1.0),
-            (0.0, 1.0, 1.0, 1.0),
-            (0.0, 0.5, 0.75, 0.5),
-            (0.0, 0.0, 1.0, 0.0),
-        ],
-        'F' => &[
-            (0.0, 0.0, 0.0, 1.0),
-            (0.0, 1.0, 1.0, 1.0),
-            (0.0, 0.5, 0.75, 0.5),
-        ],
-        'G' => &[
-            (1.0, 0.75, 0.15, 1.0),
-            (0.15, 1.0, 0.0, 0.5),
-            (0.0, 0.5, 0.15, 0.0),
-            (0.15, 0.0, 1.0, 0.15),
-            (1.0, 0.15, 1.0, 0.5),
-            (0.5, 0.5, 1.0, 0.5),
-        ],
-        'H' => &[
-            (0.0, 0.0, 0.0, 1.0),
-            (1.0, 0.0, 1.0, 1.0),
-            (0.0, 0.5, 1.0, 0.5),
-        ],
-        'I' => &[
-            (0.2, 1.0, 0.8, 1.0),
-            (0.5, 1.0, 0.5, 0.0),
-            (0.2, 0.0, 0.8, 0.0),
-        ],
-        'L' => &[(0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0)],
-        'N' => &[
-            (0.0, 0.0, 0.0, 1.0),
-            (0.0, 1.0, 1.0, 0.0),
-            (1.0, 0.0, 1.0, 1.0),
-        ],
-        'O' => &[
-            (0.15, 0.0, 0.85, 0.0),
-            (0.85, 0.0, 1.0, 0.5),
-            (1.0, 0.5, 0.85, 1.0),
-            (0.85, 1.0, 0.15, 1.0),
-            (0.15, 1.0, 0.0, 0.5),
-            (0.0, 0.5, 0.15, 0.0),
-        ],
-        'R' => &[
-            (0.0, 0.0, 0.0, 1.0),
-            (0.0, 1.0, 0.85, 1.0),
-            (0.85, 1.0, 1.0, 0.75),
-            (1.0, 0.75, 0.85, 0.5),
-            (0.85, 0.5, 0.0, 0.5),
-            (0.4, 0.5, 1.0, 0.0),
-        ],
-        'T' => &[(0.0, 1.0, 1.0, 1.0), (0.5, 1.0, 0.5, 0.0)],
-        'U' => &[
-            (0.0, 1.0, 0.0, 0.2),
-            (0.0, 0.2, 0.5, 0.0),
-            (0.5, 0.0, 1.0, 0.2),
-            (1.0, 0.2, 1.0, 1.0),
-        ],
-        'Y' => &[
-            (0.0, 1.0, 0.5, 0.5),
-            (1.0, 1.0, 0.5, 0.5),
-            (0.5, 0.5, 0.5, 0.0),
-        ],
-        'Z' => &[
-            (0.0, 1.0, 1.0, 1.0),
-            (1.0, 1.0, 0.0, 0.0),
-            (0.0, 0.0, 1.0, 0.0),
-        ],
-        _ => &[],
+fn push_cone(
+    out: &mut Vec<Vertex>,
+    base: Vec3,
+    tip: Vec3,
+    dir: Vec3,
+    radius: f32,
+    color: [f32; 3],
+    segs: usize,
+) {
+    let (right, up) = axis_basis(dir);
+    let segs = segs.max(6);
+    for i in 0..segs {
+        let t0 = i as f32 / segs as f32 * std::f32::consts::TAU;
+        let t1 = (i + 1) as f32 / segs as f32 * std::f32::consts::TAU;
+        let r0 = right * t0.cos() + up * t0.sin();
+        let r1 = right * t1.cos() + up * t1.sin();
+        let a0 = base + r0 * radius;
+        let a1 = base + r1 * radius;
+        push_lit_tri(out, a0, a1, tip, color, r0 + r1 + dir);
+        push_lit_tri(out, a0, a1, base, color, -dir);
     }
 }
 
-fn gizmo_axes(origin: Vec3, len: f32) -> Vec<Vertex> {
-    let len = len.clamp(12.0, 40.0);
-    let z = 0.2;
-    let n = [0.0, 0.0, 1.0];
-    let mut out = Vec::new();
-    push_line(
-        &mut out,
-        [origin.x, origin.y, origin.z + z],
-        [origin.x + len, origin.y, origin.z + z],
-        n,
-        AXIS_X,
-    );
-    push_line(
-        &mut out,
-        [origin.x, origin.y, origin.z + z],
-        [origin.x, origin.y + len, origin.z + z],
-        n,
-        AXIS_Y,
-    );
-    push_line(
-        &mut out,
-        [origin.x, origin.y, origin.z + z],
-        [origin.x, origin.y, origin.z + z + len],
-        n,
-        AXIS_Z,
-    );
-    out
+fn push_lit_tri(out: &mut Vec<Vertex>, a: Vec3, b: Vec3, c: Vec3, color: [f32; 3], outward: Vec3) {
+    let mut pts = [a, b, c];
+    let mut n = (b - a).cross(c - a);
+    if n.dot(outward) < 0.0 {
+        pts.swap(1, 2);
+        n = -n;
+    }
+    let n = n.normalize_or_zero();
+    let n3 = [n.x, n.y, n.z];
+    for p in pts {
+        out.push(Vertex {
+            position: [p.x, p.y, p.z],
+            normal: n3,
+            color,
+        });
+    }
 }
 
 fn toolpath_vertices(
@@ -1134,27 +1403,31 @@ mod tests {
             solids.iter().any(|v| v.color == LEFT_ONLY),
             "left-only strip should be filled"
         );
-        assert!(!label_strokes(&bed).is_empty());
+        assert!(!crate::label::plate_labels(&bed, LABEL).is_empty());
     }
 
     #[test]
-    fn left_nozzle_label_first_letter_is_toward_back() {
-        let rect = BedRect {
-            x: 0.0,
-            y: 0.0,
-            w: 25.0,
-            h: 320.0,
-        };
-        let mut lines = Vec::new();
-        stroke_label(&mut lines, rect, "LY");
-        assert!(lines.len() >= 4);
-        let mid = lines.len() / 2;
-        let l_y: f32 = lines[..mid].iter().map(|v| v.position[1]).sum::<f32>() / mid as f32;
-        let y_y: f32 =
-            lines[mid..].iter().map(|v| v.position[1]).sum::<f32>() / (lines.len() - mid) as f32;
+    fn gizmo_arrows_are_solid_not_lines() {
+        let verts = gizmo_arrows(Vec3::ZERO, Vec3::splat(10.0));
         assert!(
-            l_y > y_y + 5.0,
-            "L (first) should sit at higher Y than Y (last): {l_y} vs {y_y}"
+            verts.len() > 36,
+            "shaft + cone should be tessellated, got {}",
+            verts.len()
         );
+        assert_eq!(verts.len() % 3, 0);
+    }
+
+    #[test]
+    fn gizmo_arrows_grow_with_aabb() {
+        let small = gizmo_arrows(Vec3::ZERO, Vec3::splat(10.0));
+        let large = gizmo_arrows(Vec3::ZERO, Vec3::splat(40.0));
+        let tip = |verts: &[Vertex]| verts.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+        assert!(
+            tip(&large) > tip(&small) + 20.0,
+            "X arrow should lengthen with the mesh, small {} large {}",
+            tip(&small),
+            tip(&large)
+        );
+        assert!(tip(&large) > 40.0 * 0.5, "tip must stick out past the AABB");
     }
 }

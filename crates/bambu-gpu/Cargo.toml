@@ -10,6 +10,7 @@ description = "wgpu Vulkan viewport and compute slice acceleration"
 workspace = true
 
 [dependencies]
+ab_glyph.workspace = true
 bambu-config.workspace = true
 bambu-geom.workspace = true
 bambu-model.workspace = true

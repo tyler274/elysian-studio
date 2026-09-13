@@ -12,13 +12,15 @@ impl crate::App {
             self.workspace_tab("Preview", Workspace::Preview),
             self.workspace_tab("Device", Workspace::Device),
             self.workspace_tab("Filament", Workspace::Filament),
-            button("Open").on_press(Message::OpenModel),
-            button("Slice").on_press(Message::Slice),
-            button("Send last slice").on_press(Message::Send),
+            button("Open").padding([3, 10]).on_press(Message::OpenModel),
+            button("Slice").padding([3, 10]).on_press(Message::Slice),
+            button("Send last slice")
+                .padding([3, 10])
+                .on_press(Message::Send),
             text(&self.status).size(13).width(Fill),
         ]
-        .spacing(8)
-        .padding([8, 12])
+        .spacing(6)
+        .padding([4, 10])
         .into()
     }
 
@@ -28,7 +30,8 @@ impl crate::App {
         } else {
             label.to_string()
         };
-        button(text(caption).size(14))
+        button(text(caption).size(13))
+            .padding([3, 10])
             .on_press(Message::Workspace(workspace))
             .into()
     }
