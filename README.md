@@ -55,14 +55,18 @@ The UI re-execs with `WGPU_BACKEND=vulkan` on Linux. The top bar is Studio-shape
 **Prepare** / **Preview** / **Device** / **Filament**, plus **Open**, **Slice**, and **Send last slice**.
 Prepare is the left plater (printer, process, filament slots, TabFilament param pages, grouping, Sync AMS, plates, paint). Preview is the
 G-code overlay after a slice. Device holds LAN/cloud, Import Studio, **Extract keys**, and the
-live monitor. **Filament** is native spool inventory (`filament_inventory/spools.json`) with optional
-cloud GET/POST/PUT/DELETE `/my/filament/v2` when a Bearer is present. Extract, slice, mesh load, and
+live monitor. **Filament** is a Spoolman-style inventory (`filament_inventory/inventory.json`:
+vendor → filament → spool, remaining weight, locations) with **SpoolmanDB** as the default catalog
+(`SPOOLMAN_DB` or sibling `../SpoolmanDB`). Optional Bambu cloud GET/POST/PUT/DELETE `/my/filament/v2`
+when a Bearer is present. Extract, slice, mesh load, catalog disk I/O, and
 cloud spool I/O run off the iced thread so orbit/scroll stay live.
 
-Prepare’s filament library is project slots (add/remove, system vs user presets, colour), not the
-cloud inventory tab. User presets are `$XDG_CONFIG_HOME/bambu-studio-rs/filament/`
-(`"from": "User"`). Studio’s `~/.config/BambuStudio/user/*/filament/` is read-only. The picker
-lists only `instantiation: true` system JSON (bases such as `fdm_filament_*.json` stay hidden).
+Prepare’s filament library is project slots (add/remove, inventory/catalog picks, colour), not the
+inventory tab. User presets are `$XDG_CONFIG_HOME/bambu-studio-rs/filament/`
+(`"from": "User"`). Studio’s `~/.config/BambuStudio/user/*/filament/` is read-only. **Bambu system
+presets** (`instantiation: true` BBL JSON) are an optional picker source (off by default); AMS
+sync still resolves `tray_info_idx` against those profiles. Binding a SpoolmanDB SKU overlays
+`Generic {material}` when that BBL file exists, then catalog density/diameter/temps/colour.
 **Sync AMS** fills slots from MQTT trays (`tray_info_idx` → `filament_id`, else `Generic {type}`).
 Dual-nozzle grouping is Flush / Match / Quality / Manual (`filament_map_mode`); cube stays single-filament.
 LAN remains the default send path; this workspace still does **not** dlopen `libbambu_networking`.
@@ -114,7 +118,7 @@ cargo run -p bambu-cli -- device install-cert --host 192.168.1.42 --code 1234567
 
 P1/A1 chamber JPEG is TLS `:6000`. X1/H2 use RTSPS `:322` (not this snapshot path). The UI **Chamber snapshot** button reports frame size after the same JPEG grab.
 
-The UI **Device** tab runs **Import Studio** / **Extract keys** / **Discover printers**; **Send last slice** is on the top bar (same LAN FTPS default, or **Cloud upload** when a Bearer is present). The **Filament** tab is local inventory plus optional cloud pull/push. Extract and slice no longer freeze the window. C++ CLI leftovers such as `result.json` are gitignored.
+The UI **Device** tab runs **Import Studio** / **Extract keys** / **Discover printers**; **Send last slice** is on the top bar (same LAN FTPS default, or **Cloud upload** when a Bearer is present). The **Filament** tab is local Spoolman-like inventory (catalog add, remaining/use/measure) plus optional cloud pull/push. Extract and slice no longer freeze the window. C++ CLI leftovers such as `result.json` are gitignored.
 
 Nix:
 

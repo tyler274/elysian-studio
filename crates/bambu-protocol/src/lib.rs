@@ -8,6 +8,7 @@ mod extract;
 mod ftps;
 mod hms;
 mod https;
+mod inventory;
 mod lan_mqtt;
 mod mqtt;
 mod pack;
@@ -47,6 +48,11 @@ pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
 pub use hms::{
     catalog_cache_path, describe_hms, fetch_catalog, load_cached_catalog, lookup_hms_intro,
     refresh_catalog, save_cached_catalog, HMS_HOST,
+};
+pub use inventory::{
+    initial_weight, length_from_weight, load_inventory, remain_percent, remaining_weight,
+    save_inventory, spool_tare, weight_from_length, Inventory, InventoryFilament, InventorySpool,
+    InventoryVendor,
 };
 pub use mqtt::{
     ams_change_filament, app_cert_install, chamber_light, gcode_line, hms_ignore, hms_resume,

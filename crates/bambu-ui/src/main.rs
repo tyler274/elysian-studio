@@ -11,10 +11,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use bambu_config::{
-    clone_filament_as_user, delete_user_filament, list_bbl_profiles, list_filament_json_dir,
-    list_instantiated_bbl_profiles, list_studio_user_filaments, load_bbl_process,
-    overlay_bbl_profile, patch_filament_colour, patch_user_filament_settings, profile_filament_id,
-    resolve_ams_filament, BblProfileEntry, BblProfileKind, FilamentMapMode, SliceSettings,
+    apply_sku_with_generic_base, clone_filament_as_user, delete_user_filament, list_bbl_profiles,
+    list_filament_json_dir, list_instantiated_bbl_profiles, list_studio_user_filaments,
+    load_bbl_process, load_default_catalog, overlay_bbl_profile, patch_filament_colour,
+    patch_user_filament_settings, profile_filament_id, resolve_ams_filament, BblProfileEntry,
+    BblProfileKind, CatalogFilament, CatalogIndex, FilamentMapMode, SliceSettings,
 };
 use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
@@ -25,9 +26,9 @@ use bambu_gpu::{
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
-    describe_hms, load_cached_catalog, load_cloud_session, load_lan_codes, load_spools,
-    refresh_catalog, save_cloud_session, save_spools, CloudApi, CloudBackend, CloudDevice,
-    FilamentSpool, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
+    describe_hms, load_cached_catalog, load_cloud_session, load_inventory, load_lan_codes,
+    refresh_catalog, save_cloud_session, save_inventory, CloudApi, CloudBackend, CloudDevice,
+    FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, shader, text};
@@ -125,10 +126,18 @@ struct App {
     active_filament: usize,
     user_preset_name: String,
     filament_page: FilamentPage,
-    spools: Vec<FilamentSpool>,
+    inventory: Inventory,
+    catalog: CatalogIndex,
+    catalog_query: String,
+    show_bbl_presets: bool,
+    show_archived: bool,
     spool_search: String,
     selected_spool: Option<usize>,
     draft_spool: FilamentSpool,
+    draft_location: String,
+    draft_archived: bool,
+    draft_use: String,
+    draft_measure: String,
     selected_object: usize,
     selected_volume: usize,
     machine: MachineState,
@@ -271,6 +280,16 @@ enum Message {
     CoolingFanMin(f64),
     CoolingFanMax(f64),
     CoolingSlowdown(f64),
+    CatalogQuery(String),
+    CatalogAdd(String),
+    ShowBblPresets(bool),
+    ShowArchived(bool),
+    SpoolLocation(String),
+    SpoolArchived(bool),
+    SpoolUseGrams(String),
+    SpoolMeasureGross(String),
+    ApplySpoolUse,
+    ApplySpoolMeasure,
     InventorySearch(String),
     InventoryNew,
     InventorySelect(usize),
@@ -335,14 +354,16 @@ enum Workspace {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FilamentSource {
+pub(crate) enum FilamentSource {
     System,
     User,
     Studio,
+    Catalog,
+    Inventory,
 }
 
 #[derive(Debug, Clone)]
-struct FilamentSlot {
+pub(crate) struct FilamentSlot {
     name: String,
     colour: String,
     source: FilamentSource,
@@ -351,6 +372,8 @@ struct FilamentSlot {
     is_support: bool,
     ams_id: Option<u8>,
     slot_id: Option<u8>,
+    external_id: String,
+    spool_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -469,10 +492,18 @@ impl App {
             active_filament: 0,
             user_preset_name: String::new(),
             filament_page: FilamentPage::Filament,
-            spools: Vec::new(),
+            inventory: Inventory::default(),
+            catalog: CatalogIndex::default(),
+            catalog_query: String::new(),
+            show_bbl_presets: false,
+            show_archived: false,
             spool_search: String::new(),
             selected_spool: None,
             draft_spool: FilamentSpool::default(),
+            draft_location: String::new(),
+            draft_archived: false,
+            draft_use: String::new(),
+            draft_measure: String::new(),
             selected_object: 0,
             selected_volume: 0,
             machine: MachineState::default(),
@@ -497,14 +528,17 @@ impl App {
             project_opts: ProjectFileOpts::default(),
         };
         app.reload_user_filaments();
+        app.catalog = load_default_catalog();
+        app.inventory = load_inventory(bambu_protocol::default_config_dir()).unwrap_or_default();
+        if let Some(first) = app.inventory.spools.first() {
+            app.draft_spool = app.inventory.flatten(first);
+            app.draft_location = first.location.clone();
+            app.draft_archived = first.archived;
+            app.selected_spool = Some(0);
+        }
         app.init_filament_slots();
         app.sync_keep_solid();
         app.load_account_from_disk();
-        app.spools = load_spools(bambu_protocol::default_config_dir()).unwrap_or_default();
-        if let Some(first) = app.spools.first() {
-            app.draft_spool = first.clone();
-            app.selected_spool = Some(0);
-        }
         app
     }
 
@@ -1269,16 +1303,23 @@ impl App {
                 self.settings.fan_max_speed = v.round().clamp(0.0, 100.0) as u32;
             }
             Message::CoolingSlowdown(v) => self.settings.slow_down_layer_time_s = v.max(0.0),
+            Message::CatalogQuery(s) => self.catalog_query = s,
+            Message::CatalogAdd(id) => self.add_catalog_spool(&id),
+            Message::ShowBblPresets(v) => self.show_bbl_presets = v,
+            Message::ShowArchived(v) => self.show_archived = v,
             Message::InventorySearch(s) => self.spool_search = s,
             Message::InventoryNew => {
                 self.draft_spool = FilamentSpool::default();
-                self.draft_spool.spool_id = format!("local-{}", self.spools.len() + 1);
+                self.draft_location.clear();
+                self.draft_archived = false;
                 self.selected_spool = None;
             }
             Message::InventorySelect(i) => {
-                if let Some(spool) = self.spools.get(i).cloned() {
+                if let Some(spool) = self.inventory.spools.get(i) {
                     self.selected_spool = Some(i);
-                    self.draft_spool = spool;
+                    self.draft_spool = self.inventory.flatten(spool);
+                    self.draft_location = spool.location.clone();
+                    self.draft_archived = spool.archived;
                 }
             }
             Message::InventorySave => self.save_draft_spool(),
@@ -1293,7 +1334,12 @@ impl App {
                 if !self.begin_work("pushing filaments…") {
                     return Task::none();
                 }
-                let spools = self.spools.clone();
+                let spools: Vec<FilamentSpool> = self
+                    .inventory
+                    .spools
+                    .iter()
+                    .map(|s| self.inventory.flatten(s))
+                    .collect();
                 return offload(
                     move || push_cloud_filaments(&spools),
                     Message::InventoryPushed,
@@ -1304,7 +1350,7 @@ impl App {
                 match result {
                     Ok(list) => {
                         self.merge_pulled_spools(list);
-                        self.status = format!("{} spool(s)", self.spools.len());
+                        self.status = format!("{} spool(s)", self.inventory.spools.len());
                     }
                     Err(err) => self.status = format!("pull failed: {err}"),
                 }
@@ -1323,6 +1369,12 @@ impl App {
             Message::SpoolColor(s) => self.draft_spool.color_code = s,
             Message::SpoolFilamentId(s) => self.draft_spool.filament_id = s,
             Message::SpoolNote(s) => self.draft_spool.note = s,
+            Message::SpoolLocation(s) => self.draft_location = s,
+            Message::SpoolArchived(v) => self.draft_archived = v,
+            Message::SpoolUseGrams(s) => self.draft_use = s,
+            Message::SpoolMeasureGross(s) => self.draft_measure = s,
+            Message::ApplySpoolUse => self.apply_spool_use(),
+            Message::ApplySpoolMeasure => self.apply_spool_measure(),
         }
         Task::none()
     }
@@ -1738,21 +1790,38 @@ impl App {
         self.studio_filaments = list_studio_user_filaments();
     }
 
-    fn init_filament_slots(&mut self) {
-        let (name, source) = default_filament_pick(&self.filament_profiles);
-        self.filament_name = Some(name.clone());
-        let colour = slot_colour_hex(&self.settings.filament_colour);
-        self.filament_slots = vec![FilamentSlot {
-            name,
-            colour,
-            source,
-            filament_id: self.settings.filament_id.clone(),
-            filament_type: self.settings.filament_type.clone(),
-            is_support: self.settings.filament_is_support,
+    fn empty_slot() -> FilamentSlot {
+        FilamentSlot {
+            name: String::from("Generic PLA"),
+            colour: String::from("#FFFFFFFF"),
+            source: FilamentSource::System,
+            filament_id: String::new(),
+            filament_type: String::from("PLA"),
+            is_support: false,
             ams_id: None,
             slot_id: None,
-        }];
+            external_id: String::new(),
+            spool_id: String::new(),
+        }
+    }
+
+    fn init_filament_slots(&mut self) {
+        self.filament_slots = vec![Self::empty_slot()];
         self.active_filament = 0;
+        if let Some(spool) = self.inventory.spools.first() {
+            self.apply_inventory_spool(0, &spool.id.clone());
+        } else if let Some(sku) = self
+            .catalog
+            .by_external_id("bambulab_pla_jadewhite_1000_175_n")
+            .cloned()
+            .or_else(|| self.catalog.search("PLA", 1).into_iter().next().cloned())
+        {
+            self.apply_catalog_sku(0, &sku);
+        } else {
+            let (name, source) = default_filament_pick(&self.filament_profiles);
+            let label = filament::filament_pick_label(source, &name);
+            self.apply_filament_slot_preset(0, &label);
+        }
         self.sync_filament_map();
     }
 
@@ -1761,6 +1830,7 @@ impl App {
             FilamentSource::System => &self.filament_profiles,
             FilamentSource::User => &self.user_filaments,
             FilamentSource::Studio => &self.studio_filaments,
+            FilamentSource::Catalog | FilamentSource::Inventory => return None,
         };
         list.iter()
             .find(|p| p.name == name)
@@ -1773,6 +1843,90 @@ impl App {
                     .find(|p| p.name == name)
                     .map(|p| p.path.clone())
             })
+    }
+
+    fn generic_bbl_path(&self, material: &str) -> Option<PathBuf> {
+        resolve_ams_filament("", material, &self.filament_profiles).map(|p| p.path)
+    }
+
+    fn sku_from_inventory_filament(&self, filament_id: &str) -> Option<CatalogFilament> {
+        let f = self.inventory.filament(filament_id)?;
+        let vendor = self
+            .inventory
+            .vendor(&f.vendor_id)
+            .map(|v| v.name.clone())
+            .unwrap_or_default();
+        Some(CatalogFilament {
+            external_id: f.external_id.clone(),
+            manufacturer: vendor,
+            name: f.name.clone(),
+            material: f.material.clone(),
+            density: f.density,
+            diameter: f.diameter,
+            net_weight: f.weight,
+            spool_weight: f.spool_weight,
+            color_name: f.color_name.clone(),
+            color_hex: f.color_hex.clone(),
+            extruder_temp: f.extruder_temp,
+            bed_temp: f.bed_temp,
+        })
+    }
+
+    fn apply_catalog_sku(&mut self, slot: usize, sku: &CatalogFilament) {
+        let generic = self.generic_bbl_path(&sku.material);
+        if let Err(err) = apply_sku_with_generic_base(&mut self.settings, sku, generic.as_deref()) {
+            self.status = format!("catalog overlay: {err}");
+            return;
+        }
+        if let Some(s) = self.filament_slots.get_mut(slot) {
+            s.name = sku.name.clone();
+            s.source = FilamentSource::Catalog;
+            s.colour = slot_colour_hex(&sku.color_hex);
+            s.filament_type = sku.material.clone();
+            s.external_id = sku.external_id.clone();
+            s.spool_id.clear();
+            s.is_support = self.settings.filament_is_support;
+            if s.filament_id.is_empty() {
+                s.filament_id = self.settings.filament_id.clone();
+            }
+        }
+        self.settings.filament_colour = slot_colour_hex(&sku.color_hex);
+        self.filament_name = Some(sku.name.clone());
+        self.active_filament = slot.min(self.filament_slots.len().saturating_sub(1));
+        self.status = format!("catalog {}", sku.external_id);
+    }
+
+    fn apply_inventory_spool(&mut self, slot: usize, spool_id: &str) {
+        let Some(spool) = self.inventory.spool(spool_id).cloned() else {
+            self.status = format!("no spool {spool_id}");
+            return;
+        };
+        let Some(sku) = self.sku_from_inventory_filament(&spool.filament_id) else {
+            self.status = format!("spool {spool_id} has no filament");
+            return;
+        };
+        self.apply_catalog_sku(slot, &sku);
+        if let Some(s) = self.filament_slots.get_mut(slot) {
+            s.source = FilamentSource::Inventory;
+            s.spool_id = spool.id.clone();
+            if let Some(f) = self.inventory.filament(&spool.filament_id) {
+                if !f.bambu_filament_id.is_empty() {
+                    s.filament_id = f.bambu_filament_id.clone();
+                    self.settings.filament_id = f.bambu_filament_id.clone();
+                }
+            }
+        }
+        if spool.ams_id >= 0 {
+            if let Some(s) = self.filament_slots.get_mut(slot) {
+                s.ams_id = Some(spool.ams_id as u8);
+            }
+        }
+        if spool.slot_id >= 0 {
+            if let Some(s) = self.filament_slots.get_mut(slot) {
+                s.slot_id = Some(spool.slot_id as u8);
+            }
+        }
+        self.status = format!("inventory spool {}", spool.id);
     }
 
     fn sync_filament_map(&mut self) {
@@ -1789,16 +1943,7 @@ impl App {
             .filament_slots
             .last()
             .cloned()
-            .unwrap_or_else(|| FilamentSlot {
-                name: default_filament_pick(&self.filament_profiles).0,
-                colour: String::from("#FFFFFFFF"),
-                source: FilamentSource::System,
-                filament_id: String::new(),
-                filament_type: String::from("PLA"),
-                is_support: false,
-                ams_id: None,
-                slot_id: None,
-            });
+            .unwrap_or_else(Self::empty_slot);
         self.filament_slots.push(slot);
         self.sync_filament_map();
         self.apply_group_mode();
@@ -1824,17 +1969,29 @@ impl App {
             return;
         };
         self.active_filament = i;
-        if let Some(path) = self.filament_path(slot.source, &slot.name) {
-            if overlay_bbl_profile(&mut self.settings, &path).is_ok() {
-                self.filament_name = Some(slot.name.clone());
-                if slot.colour.is_empty() {
-                    if let Some(s) = self.filament_slots.get_mut(i) {
-                        if !self.settings.filament_colour.is_empty() {
-                            s.colour = self.settings.filament_colour.clone();
+        match slot.source {
+            FilamentSource::Catalog => {
+                if let Some(sku) = self.catalog.by_external_id(&slot.external_id).cloned() {
+                    self.apply_catalog_sku(i, &sku);
+                }
+            }
+            FilamentSource::Inventory => {
+                self.apply_inventory_spool(i, &slot.spool_id);
+            }
+            _ => {
+                if let Some(path) = self.filament_path(slot.source, &slot.name) {
+                    if overlay_bbl_profile(&mut self.settings, &path).is_ok() {
+                        self.filament_name = Some(slot.name.clone());
+                        if slot.colour.is_empty() {
+                            if let Some(s) = self.filament_slots.get_mut(i) {
+                                if !self.settings.filament_colour.is_empty() {
+                                    s.colour = self.settings.filament_colour.clone();
+                                }
+                            }
+                        } else {
+                            self.settings.filament_colour = slot.colour.clone();
                         }
                     }
-                } else {
-                    self.settings.filament_colour = slot.colour.clone();
                 }
             }
         }
@@ -1846,6 +2003,21 @@ impl App {
             self.status = format!("unknown preset {label}");
             return;
         };
+        match source {
+            FilamentSource::Catalog => {
+                if let Some(sku) = self.catalog.by_external_id(&name).cloned() {
+                    self.apply_catalog_sku(slot, &sku);
+                } else {
+                    self.status = format!("no catalog {name}");
+                }
+                return;
+            }
+            FilamentSource::Inventory => {
+                self.apply_inventory_spool(slot, &name);
+                return;
+            }
+            _ => {}
+        }
         let Some(path) = self.filament_path(source, &name) else {
             self.status = format!("no {name} profile");
             return;
@@ -1868,6 +2040,8 @@ impl App {
                     s.filament_id = self.settings.filament_id.clone();
                     s.filament_type = self.settings.filament_type.clone();
                     s.is_support = self.settings.filament_is_support;
+                    s.external_id.clear();
+                    s.spool_id.clear();
                     if s.filament_id.is_empty() {
                         s.filament_id = profile_filament_id(&path);
                     }
@@ -2029,6 +2203,8 @@ impl App {
                 is_support: false,
                 ams_id: Some(tray.ams_id),
                 slot_id: Some(tray.id),
+                external_id: String::new(),
+                spool_id: String::new(),
             });
             if let Some(path) = path {
                 if slots.len() == 1 {
@@ -2048,24 +2224,56 @@ impl App {
     }
 
     fn persist_spools(&mut self) {
-        if let Err(err) = save_spools(bambu_protocol::default_config_dir(), &self.spools) {
-            self.status = format!("spools.json: {err}");
+        if let Err(err) = save_inventory(bambu_protocol::default_config_dir(), &self.inventory) {
+            self.status = format!("inventory.json: {err}");
         }
     }
 
-    fn save_draft_spool(&mut self) {
-        if self.draft_spool.spool_id.is_empty() {
-            self.draft_spool.spool_id = format!("local-{}", self.spools.len() + 1);
-        }
+    fn refresh_draft_from_selected(&mut self) {
         if let Some(i) = self.selected_spool {
-            if let Some(slot) = self.spools.get_mut(i) {
-                *slot = self.draft_spool.clone();
+            if let Some(spool) = self.inventory.spools.get(i) {
+                self.draft_spool = self.inventory.flatten(spool);
+                self.draft_location = spool.location.clone();
+                self.draft_archived = spool.archived;
             }
-        } else {
-            self.spools.push(self.draft_spool.clone());
-            self.selected_spool = Some(self.spools.len() - 1);
+        }
+    }
+
+    fn add_catalog_spool(&mut self, external_id: &str) {
+        let Some(sku) = self.catalog.by_external_id(external_id).cloned() else {
+            self.status = format!("catalog miss {external_id}");
+            return;
+        };
+        let fid = self.inventory.add_catalog_sku(
+            &sku.external_id,
+            &sku.manufacturer,
+            &sku.name,
+            &sku.material,
+            sku.density,
+            sku.diameter,
+            sku.net_weight,
+            sku.spool_weight,
+            &sku.color_name,
+            &sku.color_hex,
+            sku.extruder_temp,
+            sku.bed_temp,
+        );
+        let sid = self.inventory.add_spool_for_filament(&fid);
+        self.persist_spools();
+        self.selected_spool = self.inventory.spools.iter().position(|s| s.id == sid);
+        self.refresh_draft_from_selected();
+        self.status = format!("added {} spool", sku.name);
+    }
+
+    fn save_draft_spool(&mut self) {
+        let id = self.inventory.upsert_flat(&self.draft_spool);
+        if let Some(spool) = self.inventory.spool_mut(&id) {
+            spool.location = self.draft_location.clone();
+            spool.archived = self.draft_archived;
         }
         self.persist_spools();
+        self.selected_spool = self.inventory.spools.iter().position(|s| s.id == id);
+        self.refresh_draft_from_selected();
         self.status = format!("saved {}", self.draft_spool.label());
     }
 
@@ -2074,57 +2282,88 @@ impl App {
             self.status = "select a spool first".into();
             return;
         };
-        if i < self.spools.len() {
-            self.spools.remove(i);
+        if let Some(id) = self.inventory.spools.get(i).map(|s| s.id.clone()) {
+            self.inventory.delete_spool(&id);
         }
         self.selected_spool = None;
         self.draft_spool = FilamentSpool::default();
+        self.draft_location.clear();
+        self.draft_archived = false;
         self.persist_spools();
         self.status = "deleted spool".into();
     }
 
+    fn apply_spool_use(&mut self) {
+        let grams: f64 = self.draft_use.trim().parse().unwrap_or(0.0);
+        let Some(i) = self.selected_spool else {
+            self.status = "select a spool first".into();
+            return;
+        };
+        if let Some(id) = self.inventory.spools.get(i).map(|s| s.id.clone()) {
+            self.inventory.use_grams(&id, grams);
+            self.persist_spools();
+            self.refresh_draft_from_selected();
+            self.draft_use.clear();
+            self.status = format!("used {grams:.1} g");
+        }
+    }
+
+    fn apply_spool_measure(&mut self) {
+        let gross: f64 = self.draft_measure.trim().parse().unwrap_or(0.0);
+        let Some(i) = self.selected_spool else {
+            self.status = "select a spool first".into();
+            return;
+        };
+        if let Some(id) = self.inventory.spools.get(i).map(|s| s.id.clone()) {
+            self.inventory.measure_gross(&id, gross);
+            self.persist_spools();
+            self.refresh_draft_from_selected();
+            self.draft_measure.clear();
+            self.status = format!("measured {gross:.0} g gross");
+        }
+    }
+
     fn merge_pulled_spools(&mut self, pulled: Vec<FilamentSpool>) {
         for remote in pulled {
-            if let Some(existing) = self
-                .spools
-                .iter_mut()
-                .find(|s| !remote.spool_id.is_empty() && s.spool_id == remote.spool_id)
-            {
-                *existing = remote;
-            } else {
-                self.spools.push(remote);
-            }
+            self.inventory.upsert_flat(&remote);
         }
         self.persist_spools();
+        self.refresh_draft_from_selected();
     }
 
     fn bind_spool_to_active_slot(&mut self) {
+        if let Some(i) = self.selected_spool {
+            if let Some(id) = self.inventory.spools.get(i).map(|s| s.id.clone()) {
+                self.apply_inventory_spool(self.active_filament, &id);
+                return;
+            }
+        }
         let spool = self.draft_spool.clone();
         if spool.filament_id.is_empty() && spool.series.is_empty() {
             self.status = "edit a spool first".into();
             return;
         }
-        let resolved = resolve_ams_filament(
-            &spool.filament_id,
-            &spool.material_type,
-            &self.filament_profiles,
-        );
-        if let Some(p) = resolved {
-            let label = filament::filament_pick_label(FilamentSource::System, &p.name);
-            self.apply_filament_slot_preset(self.active_filament, &label);
-        }
+        let sku = CatalogFilament {
+            external_id: String::new(),
+            manufacturer: spool.brand.clone(),
+            name: spool.series.clone(),
+            material: spool.material_type.clone(),
+            density: 1.24,
+            diameter: spool.diameter,
+            net_weight: spool.initial_weight,
+            spool_weight: spool.spool_weight,
+            color_name: spool.color_name.clone(),
+            color_hex: slot_colour_hex(&spool.color_code),
+            extruder_temp: None,
+            bed_temp: None,
+        };
+        self.apply_catalog_sku(self.active_filament, &sku);
         if let Some(slot) = self.filament_slots.get_mut(self.active_filament) {
-            if !spool.color_code.is_empty() {
-                slot.colour = slot_colour_hex(&spool.color_code);
-            }
             if !spool.filament_id.is_empty() {
                 slot.filament_id = spool.filament_id.clone();
-            }
-            if !spool.material_type.is_empty() {
-                slot.filament_type = spool.material_type.clone();
+                self.settings.filament_id = spool.filament_id.clone();
             }
         }
-        self.settings.filament_colour = slot_colour_hex(&spool.color_code);
         self.status = format!(
             "bound {} to slot {}",
             spool.label(),

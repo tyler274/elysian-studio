@@ -28,7 +28,7 @@ impl crate::App {
         ]
         .spacing(6)];
         for (i, slot) in self.filament_slots.iter().enumerate() {
-            let selected = Some(filament_pick_label(slot.source, &slot.name));
+            let selected = Some(slot_pick_label(slot));
             let swatch = colour_swatch(&slot.colour);
             let mark = if i == self.active_filament {
                 "●"
@@ -70,6 +70,14 @@ impl crate::App {
         );
         slots = slots.push(self.ams_chips());
         slots = slots.push(button("Sync AMS").on_press(Message::SyncAms));
+        slots = slots.push(
+            checkbox(self.show_bbl_presets)
+                .label("Bambu system presets")
+                .on_toggle(Message::ShowBblPresets),
+        );
+        slots = slots.push(
+            text_input("catalog search", &self.catalog_query).on_input(Message::CatalogQuery),
+        );
         slots = slots.push(self.filament_group_ui());
         slots = slots.push(self.filament_params());
         slots = slots.push(text("New user preset…").size(13));
@@ -90,8 +98,28 @@ impl crate::App {
 
     pub(crate) fn filament_pick_labels(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for p in &self.filament_profiles {
-            out.push(filament_pick_label(FilamentSource::System, &p.name));
+        for spool in &self.inventory.spools {
+            if spool.archived {
+                continue;
+            }
+            let filament = self.inventory.filament(&spool.filament_id);
+            let vendor = filament
+                .and_then(|f| self.inventory.vendor(&f.vendor_id))
+                .map(|v| v.name.as_str())
+                .unwrap_or("—");
+            let name = filament.map(|f| f.name.as_str()).unwrap_or("spool");
+            out.push(format!("Inventory · {} · {vendor} {name}", spool.id));
+        }
+        for sku in self.catalog.search(&self.catalog_query, 40) {
+            out.push(format!(
+                "Catalog · {} · {} {}",
+                sku.external_id, sku.manufacturer, sku.name
+            ));
+        }
+        if self.show_bbl_presets {
+            for p in &self.filament_profiles {
+                out.push(filament_pick_label(FilamentSource::System, &p.name));
+            }
         }
         for p in &self.user_filaments {
             out.push(filament_pick_label(FilamentSource::User, &p.name));
@@ -381,15 +409,37 @@ impl crate::App {
     }
 }
 
+pub(crate) fn slot_pick_label(slot: &crate::FilamentSlot) -> String {
+    match slot.source {
+        FilamentSource::Inventory if !slot.spool_id.is_empty() => {
+            format!("Inventory · {} · {}", slot.spool_id, slot.name)
+        }
+        FilamentSource::Catalog if !slot.external_id.is_empty() => {
+            format!("Catalog · {} · {}", slot.external_id, slot.name)
+        }
+        _ => filament_pick_label(slot.source, &slot.name),
+    }
+}
+
 pub(crate) fn filament_pick_label(source: FilamentSource, name: &str) -> String {
     match source {
         FilamentSource::System => format!("System · {name}"),
         FilamentSource::User => format!("User · {name}"),
         FilamentSource::Studio => format!("Studio · {name}"),
+        FilamentSource::Catalog => format!("Catalog · {name}"),
+        FilamentSource::Inventory => format!("Inventory · {name}"),
     }
 }
 
 pub(crate) fn parse_filament_pick(label: &str) -> Option<(FilamentSource, String)> {
+    if let Some(rest) = label.strip_prefix("Inventory · ") {
+        let id = rest.split(" · ").next().unwrap_or(rest).to_string();
+        return Some((FilamentSource::Inventory, id));
+    }
+    if let Some(rest) = label.strip_prefix("Catalog · ") {
+        let id = rest.split(" · ").next().unwrap_or(rest).to_string();
+        return Some((FilamentSource::Catalog, id));
+    }
     if let Some(name) = label.strip_prefix("System · ") {
         return Some((FilamentSource::System, name.to_string()));
     }

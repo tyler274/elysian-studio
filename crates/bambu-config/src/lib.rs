@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod bbl;
+mod catalog;
 mod placeholder;
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,11 @@ pub use bbl::{
     patch_user_filament_settings, profile_filament_id, project_settings_json, resolve_ams_filament,
     save_user_filament, settings_from_json, write_flattened_bbl_profile, BblOraclePaths,
     BblProfileEntry, BblProfileKind, ConfigError,
+};
+pub use catalog::{
+    apply_catalog_onto, apply_sku_with_generic_base, catalog_id, expand_vendor_json, load_catalog,
+    load_default_catalog, parse_materials, spoolman_db_dir, CatalogFilament, CatalogIndex,
+    CatalogMaterial,
 };
 pub use placeholder::{expand_placeholders, PlaceholderContext};
 
