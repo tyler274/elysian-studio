@@ -50,6 +50,11 @@ pub(crate) fn parse_tray_color(raw: &str) -> Color {
     )
 }
 
+pub(crate) const CAMERA_CLOUD_DISCOVER: &str =
+    "Cloud MQTT has no JPEG tunnel — discovering LAN IP for :6000…";
+pub(crate) const CAMERA_CLOUD_NEED_LAN: &str =
+    "Cloud TUTK/Agora liveview is not this pass. Enter printer IP + LAN access code (same Wi‑Fi) or Discover; then Play for JPEG :6000.";
+
 pub(crate) fn lan_ready(host: &str, code: &str) -> bool {
     !host.is_empty() && !code.is_empty()
 }
@@ -151,7 +156,7 @@ impl crate::App {
                 .color(theme::TEXT_MUTED)
                 .into()
         } else {
-            text("Chamber camera — P1/A1 JPEG :6000 stream, X1/H2 RTSPS :322")
+            text("P1/A1 JPEG :6000 needs printer IP + LAN access code (cloud MQTT is not a camera tunnel). X1/H2 RTSPS :322 has no H.264 this pass.")
                 .size(12)
                 .color(theme::TEXT_MUTED)
                 .into()

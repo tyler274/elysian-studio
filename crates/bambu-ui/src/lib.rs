@@ -271,6 +271,7 @@ pub enum Message {
     Chamber,
     CameraPlay,
     CameraStop,
+    CameraLan(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
     ChamberShot(Result<ChamberResult, String>),
     WallLoops(u32),
     Infill(f64),
@@ -1231,17 +1232,7 @@ impl App {
             Message::CloudLogged(Err(err)) => self.status = format!("login: {err}"),
             Message::Discover => {
                 self.status = "SSDP discover on UDP 2021…".into();
-                return Task::perform(
-                    async {
-                        std::thread::spawn(|| {
-                            bambu_protocol::discover(std::time::Duration::from_secs(3))
-                                .map_err(|err| err.to_string())
-                        })
-                        .join()
-                        .unwrap_or_else(|_| Err("discover thread panicked".into()))
-                    },
-                    Message::Discovered,
-                );
+                return Task::perform(discover_lan_job(), Message::Discovered);
             }
             Message::Discovered(Ok(list)) if list.is_empty() => {
                 self.status = "no printers on UDP 2021 (3s)".into();
@@ -1382,22 +1373,12 @@ impl App {
                     Message::ChamberShot,
                 );
             }
-            Message::CameraPlay => {
-                if !monitor::lan_ready(&self.host, &self.access_code) {
-                    self.camera_note = "printer IP and LAN access code required".into();
-                    self.status = self.camera_note.clone();
-                    return Task::none();
-                }
-                self.camera_live = true;
-                if self.camera_note.is_empty() && self.chamber_handle.is_none() {
-                    self.camera_note = "connecting JPEG :6000…".into();
-                }
-                self.status = "camera play".into();
-            }
+            Message::CameraPlay => return self.play_camera(),
             Message::CameraStop => {
                 self.camera_live = false;
                 self.status = "camera stopped".into();
             }
+            Message::CameraLan(result) => return self.on_camera_lan(result),
             Message::ChamberShot(Ok(ChamberResult::Jpeg {
                 bytes,
                 width,
@@ -3026,8 +3007,83 @@ impl App {
             if self.chamber_handle.is_none() && self.camera_note.is_empty() {
                 self.camera_note = "connecting JPEG :6000…".into();
             }
+        } else if self.has_bearer && self.chamber_handle.is_none() && self.camera_note.is_empty() {
+            self.camera_note = monitor::CAMERA_CLOUD_NEED_LAN.into();
         }
         self.refresh_monitor()
+    }
+
+    fn ensure_lan_access_code(&mut self) {
+        if self.access_code.is_empty() && !self.serial.is_empty() {
+            let serial = self.serial.clone();
+            self.apply_device(&serial);
+        }
+    }
+
+    fn apply_lan_from_discovered(&mut self, list: &[bambu_protocol::DiscoveredPrinter]) {
+        let found = if self.serial.is_empty() {
+            list.first()
+        } else {
+            list.iter().find(|p| p.dev_id == self.serial)
+        };
+        let Some(printer) = found else {
+            return;
+        };
+        self.host = printer.dev_ip.clone();
+        if self.serial.is_empty() {
+            self.apply_device(&printer.dev_id);
+        } else {
+            let serial = self.serial.clone();
+            self.apply_device(&serial);
+        }
+    }
+
+    fn start_jpeg_camera(&mut self) {
+        self.camera_live = true;
+        if self.chamber_handle.is_none() {
+            self.camera_note = "connecting JPEG :6000…".into();
+        }
+        self.status = "camera play".into();
+    }
+
+    fn play_camera(&mut self) -> Task<Message> {
+        self.ensure_lan_access_code();
+        if monitor::lan_ready(&self.host, &self.access_code) {
+            self.start_jpeg_camera();
+            return Task::none();
+        }
+        if self.has_bearer || !self.serial.is_empty() || !self.access_code.is_empty() {
+            self.camera_note = monitor::CAMERA_CLOUD_DISCOVER.into();
+            self.status = self.camera_note.clone();
+            return Task::perform(discover_lan_job(), Message::CameraLan);
+        }
+        self.camera_note = monitor::CAMERA_CLOUD_NEED_LAN.into();
+        self.status = self.camera_note.clone();
+        Task::none()
+    }
+
+    fn on_camera_lan(
+        &mut self,
+        result: Result<Vec<bambu_protocol::DiscoveredPrinter>, String>,
+    ) -> Task<Message> {
+        match result {
+            Ok(list) => {
+                self.apply_lan_from_discovered(&list);
+                if monitor::lan_ready(&self.host, &self.access_code) {
+                    self.start_jpeg_camera();
+                } else {
+                    self.camera_live = false;
+                    self.camera_note = monitor::CAMERA_CLOUD_NEED_LAN.into();
+                    self.status = self.camera_note.clone();
+                }
+            }
+            Err(err) => {
+                self.camera_live = false;
+                self.camera_note = format!("camera: {err}");
+                self.status = self.camera_note.clone();
+            }
+        }
+        Task::none()
     }
 
     fn continue_slice_all(&mut self) -> Task<Message> {
@@ -3176,6 +3232,14 @@ fn default_filament_pick(system: &[BblProfileEntry]) -> (String, FilamentSource)
         .map(|p| p.name.clone())
         .unwrap_or_else(|| String::from("Generic PLA"));
     (name, FilamentSource::System)
+}
+
+async fn discover_lan_job() -> Result<Vec<bambu_protocol::DiscoveredPrinter>, String> {
+    std::thread::spawn(|| {
+        bambu_protocol::discover(std::time::Duration::from_secs(3)).map_err(|err| err.to_string())
+    })
+    .join()
+    .unwrap_or_else(|_| Err("discover thread panicked".into()))
 }
 
 fn pull_cloud_filaments() -> Result<Vec<FilamentSpool>, String> {
@@ -3490,6 +3554,57 @@ mod device_sync {
         assert!(app.camera_live);
         let _ = app.update(Message::CameraStop);
         assert!(!app.camera_live);
+    }
+
+    #[test]
+    fn camera_play_cloud_without_lan_explains_jpeg() {
+        let mut app = App::new_for_gui_test();
+        app.has_bearer = true;
+        let _ = app.update(Message::CameraPlay);
+        assert!(!app.camera_live);
+        assert!(app.camera_note.contains("JPEG"));
+        let _ = app.update(Message::CameraLan(Ok(vec![])));
+        assert!(!app.camera_live);
+        assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_NEED_LAN);
+    }
+
+    #[test]
+    fn camera_play_cloud_uses_ssdp_ip_and_imported_code() {
+        let mut app = App::new_for_gui_test();
+        app.has_bearer = true;
+        app.serial = "01P00A000000001".into();
+        app.imported_printers.push(StudioPrinter {
+            serial: "01P00A000000001".into(),
+            access_code: "12345678".into(),
+        });
+        let _ = app.update(Message::CameraLan(Ok(vec![DiscoveredPrinter {
+            dev_id: "01P00A000000001".into(),
+            dev_ip: "192.168.1.20".into(),
+            dev_name: "P1S".into(),
+            ..Default::default()
+        }])));
+        assert_eq!(app.host, "192.168.1.20");
+        assert_eq!(app.access_code, "12345678");
+        assert!(app.camera_live);
+    }
+
+    #[test]
+    fn camera_play_ignores_ssdp_for_other_serial() {
+        let mut app = App::new_for_gui_test();
+        app.has_bearer = true;
+        app.serial = "01P00A000000001".into();
+        app.imported_printers.push(StudioPrinter {
+            serial: "01P00A000000001".into(),
+            access_code: "12345678".into(),
+        });
+        let _ = app.update(Message::CameraLan(Ok(vec![DiscoveredPrinter {
+            dev_id: "01X00A999999999".into(),
+            dev_ip: "10.0.0.9".into(),
+            ..Default::default()
+        }])));
+        assert!(app.host.is_empty());
+        assert!(!app.camera_live);
+        assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_NEED_LAN);
     }
 
     #[test]
