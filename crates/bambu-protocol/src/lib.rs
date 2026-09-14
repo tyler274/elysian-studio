@@ -5,6 +5,7 @@ mod cloud;
 mod cloud_api;
 mod credentials;
 mod extract;
+mod extract_live;
 mod ftps;
 mod hms;
 mod https;
@@ -42,8 +43,8 @@ pub use credentials::{
     load_from_dir, save_device_cert, write_to_dir, CredentialError, SlicerCredentials,
 };
 pub use extract::{
-    extract_pems_from_bytes, extract_to_config_dir, find_all_stock_plugins, find_stock_plugin,
-    ExtractReport,
+    extract_keys, extract_pems_from_bytes, extract_to_config_dir, find_all_stock_plugins,
+    find_stock_plugin, ExtractKeysOpts, ExtractReport,
 };
 pub use ftps::{stor as ftps_stor, LAN_FTPS_PORT};
 pub use hms::{

@@ -808,7 +808,7 @@ impl App {
                 }
                 return offload(
                     || {
-                        bambu_protocol::extract_to_config_dir(None, None)
+                        bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts::default())
                             .map(|report| ExtractUi {
                                 can_sign: report.credentials.can_sign(),
                                 note: report.notes.last().cloned().unwrap_or_default(),

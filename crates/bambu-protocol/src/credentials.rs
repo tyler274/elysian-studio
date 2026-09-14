@@ -121,15 +121,26 @@ pub fn write_to_dir(
     let dir = dir.as_ref();
     std::fs::create_dir_all(dir)?;
     if let Some(pem) = &creds.cert_pem {
-        std::fs::write(dir.join("slicer_cert.pem"), pem)?;
+        write_secret_pem(dir.join("slicer_cert.pem"), pem)?;
     }
     if let Some(pem) = &creds.key_pem {
-        std::fs::write(dir.join("slicer_key.pem"), pem)?;
+        write_secret_pem(dir.join("slicer_key.pem"), pem)?;
     }
     if let Some(pem) = &creds.crl_pem {
-        std::fs::write(dir.join("slicer_crl.pem"), pem)?;
+        write_secret_pem(dir.join("slicer_crl.pem"), pem)?;
     }
     Ok(dir.to_path_buf())
+}
+
+fn write_secret_pem(path: impl AsRef<Path>, pem: &str) -> Result<(), CredentialError> {
+    let path = path.as_ref();
+    std::fs::write(path, pem)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 pub fn device_cert_path(dir: impl AsRef<Path>, serial: &str) -> PathBuf {

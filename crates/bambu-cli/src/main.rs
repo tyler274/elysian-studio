@@ -185,6 +185,12 @@ enum KeysCommand {
         /// Destination directory (default: $XDG_CONFIG_HOME/bambu-studio-rs).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Skip sandboxed official Studio memory harvest if the on-disk scan misses.
+        #[arg(long)]
+        no_live: bool,
+        /// Seconds to wait for seeded login, then again for interactive Studio login.
+        #[arg(long, default_value_t = 90)]
+        timeout: u64,
     },
     /// Show whether Option B PEMs and optional cloud token files are present.
     Status {
@@ -627,10 +633,19 @@ fn run() -> Result<(), CliError> {
             tracing::info!("wrote {}", output.display());
         }
         Commands::Keys { command } => match command {
-            KeysCommand::Extract { plugin, out } => {
-                let report =
-                    bambu_protocol::extract_to_config_dir(plugin.as_deref(), out.as_deref())
-                        .map_err(|err| CliError::Message(err.to_string()))?;
+            KeysCommand::Extract {
+                plugin,
+                out,
+                no_live,
+                timeout,
+            } => {
+                let report = bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts {
+                    plugin,
+                    out_dir: out,
+                    live: !no_live,
+                    timeout: std::time::Duration::from_secs(timeout.max(1)),
+                })
+                .map_err(|err| CliError::Message(err.to_string()))?;
                 for note in &report.notes {
                     println!("{note}");
                 }
@@ -955,10 +970,8 @@ fn run() -> Result<(), CliError> {
                     bambu_protocol::login_with_ticket(&region, ticket.trim())
                         .map_err(|err| CliError::Message(err.to_string()))?
                 } else if oauth {
-                    let url = bambu_protocol::sign_in_url(
-                        &region,
-                        &bambu_protocol::oauth_callback_url(),
-                    );
+                    let url =
+                        bambu_protocol::sign_in_url(&region, &bambu_protocol::oauth_callback_url());
                     println!("Open this URL and sign in with Google / Apple / email:");
                     println!("{url}");
                     println!(

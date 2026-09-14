@@ -6,6 +6,7 @@
 //! the source tree.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::credentials::{default_config_dir, import_from_known_locations, SlicerCredentials};
 
@@ -71,14 +72,54 @@ pub fn extract_to_config_dir(
             .push(format!("wrote credentials under {}", dest.display()));
     } else {
         report.notes.push(
-            "no PEMs found. Recent plugins obfuscate keys past a simple scan; import slicer_cert.pem / slicer_key.pem / slicer_crl.pem extracted by a local tool such as BambuSlicerKeySaver into the config dir."
+            "no PEMs in the on-disk plugin (recent builds obfuscate past a static scan); live Studio extract can harvest decrypted PEMs from a sandboxed official process"
                 .into(),
         );
     }
     Ok(report)
 }
 
-fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials) {
+#[derive(Debug, Clone)]
+pub struct ExtractKeysOpts {
+    pub plugin: Option<PathBuf>,
+    pub out_dir: Option<PathBuf>,
+    pub live: bool,
+    pub timeout: Duration,
+}
+
+impl Default for ExtractKeysOpts {
+    fn default() -> Self {
+        Self {
+            plugin: None,
+            out_dir: None,
+            live: true,
+            timeout: Duration::from_secs(90),
+        }
+    }
+}
+
+/// Static plugin scan, then (on Linux) a sandboxed official Studio harvest.
+pub fn extract_keys(
+    opts: ExtractKeysOpts,
+) -> Result<ExtractReport, crate::credentials::CredentialError> {
+    let mut report = extract_to_config_dir(opts.plugin.as_deref(), opts.out_dir.as_deref())?;
+    if report.credentials.has_cert_and_key() || !opts.live {
+        return Ok(report);
+    }
+    report.notes.push(
+        "starting sandboxed official Studio to harvest decrypted PEMs (this process does not dlopen the plugin)"
+            .into(),
+    );
+    crate::extract_live::extract_live(
+        &mut report,
+        opts.plugin.as_deref(),
+        opts.out_dir.as_deref(),
+        opts.timeout,
+    )?;
+    Ok(report)
+}
+
+pub(crate) fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials) {
     if into.cert_pem.is_none() {
         into.cert_pem = from.cert_pem;
     }
@@ -195,9 +236,14 @@ pub fn find_all_stock_plugins() -> Vec<PathBuf> {
         scan_plugin_dir(&mut out, &home.join(".local/share/BambuStudio/plugins"));
         scan_plugin_dir(&mut out, &home.join(".BambuStudio/plugins"));
         scan_plugin_dir(&mut out, &home.join(".config/BambuStudio/plugins"));
+        scan_plugin_dir(&mut out, &home.join(".config/OrcaSlicer/plugins"));
         scan_plugin_dir(
             &mut out,
             &home.join("Library/Application Support/BambuStudio/plugins"),
+        );
+        scan_plugin_dir(
+            &mut out,
+            &home.join("Library/Application Support/OrcaSlicer/plugins"),
         );
         push_plugin(
             &mut out,
@@ -205,7 +251,9 @@ pub fn find_all_stock_plugins() -> Vec<PathBuf> {
         );
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        scan_plugin_dir(&mut out, &PathBuf::from(xdg).join("BambuStudio/plugins"));
+        let xdg = PathBuf::from(xdg);
+        scan_plugin_dir(&mut out, &xdg.join("BambuStudio/plugins"));
+        scan_plugin_dir(&mut out, &xdg.join("OrcaSlicer/plugins"));
     }
     if let Ok(studio) = std::env::var("BAMBU_STUDIO") {
         collect_neighbors(&mut out, Path::new(&studio));
@@ -222,8 +270,9 @@ pub fn find_all_stock_plugins() -> Vec<PathBuf> {
     if let Ok(appdata) = std::env::var("APPDATA") {
         scan_plugin_dir(
             &mut out,
-            &PathBuf::from(appdata).join("BambuStudio/plugins"),
+            &PathBuf::from(&appdata).join("BambuStudio/plugins"),
         );
+        scan_plugin_dir(&mut out, &PathBuf::from(appdata).join("OrcaSlicer/plugins"));
     }
     out
 }
@@ -251,6 +300,10 @@ fn collect_neighbors(out: &mut Vec<PathBuf>, studio_bin: &Path) {
 }
 
 fn scan_plugin_dir(out: &mut Vec<PathBuf>, dir: &Path) {
+    scan_plugin_dir_depth(out, dir, 0);
+}
+
+fn scan_plugin_dir_depth(out: &mut Vec<PathBuf>, dir: &Path, depth: u8) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -261,6 +314,10 @@ fn scan_plugin_dir(out: &mut Vec<PathBuf>, dir: &Path) {
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        if path.is_dir() && depth == 0 && name == "backup" {
+            scan_plugin_dir_depth(out, &path, depth + 1);
+            continue;
+        }
         if name.contains("bambu_networking") || name.contains("bambunetwork") {
             push_plugin(out, path);
         }
@@ -318,6 +375,46 @@ mod tests {
         assert!(report.credentials.has_cert_and_key());
         assert!(out.join("slicer_cert.pem").is_file());
         assert!(out.join("slicer_key.pem").is_file());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scan_plugin_dir_picks_versioned_orca_name() {
+        let tmp = std::env::temp_dir().join(format!(
+            "bambu-orca-plugin-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let plugins = tmp.join("plugins");
+        std::fs::create_dir_all(plugins.join("backup")).unwrap();
+        std::fs::write(
+            plugins.join("libbambu_networking_02.03.00.62.so"),
+            b"not-a-pem",
+        )
+        .unwrap();
+        std::fs::write(
+            plugins.join("backup").join("libbambu_networking.so"),
+            b"also-not",
+        )
+        .unwrap();
+        let mut found = Vec::new();
+        scan_plugin_dir(&mut found, &plugins);
+        assert!(
+            found.iter().any(|p| p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.contains("02.03.00.62"))),
+            "{found:?}"
+        );
+        assert!(
+            found.iter().any(|p| p
+                .parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                == Some("backup")),
+            "{found:?}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
