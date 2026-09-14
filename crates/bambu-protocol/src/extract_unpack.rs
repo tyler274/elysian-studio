@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::credentials::{write_to_dir, CredentialError};
-use crate::extract::{merge_creds, ExtractReport};
-use crate::extract_elf::{map_notes, scan_image};
+use crate::extract::ExtractReport;
+use crate::extract_elf::{map_notes, scan_key_matching};
 
 pub fn extract_unpack(
     report: &mut ExtractReport,
@@ -49,12 +49,27 @@ pub fn extract_unpack(
         helper.display(),
         plugin.display()
     ));
-    let mut child = Command::new(&helper)
-        .arg(&plugin)
+    let key_out = tmp.with_extension("key.pem");
+    let rand_out = tmp.with_extension("rand");
+    let mut cmd = Command::new(&helper);
+    cmd.arg(&plugin)
         .arg(&tmp)
+        .env("BAMBU_VMP_KEY_OUT", &key_out)
+        .env("BAMBU_VMP_RAND_OUT", &rand_out)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(hook) = find_vmp_hook() {
+        report
+            .notes
+            .push(format!("unpack: LD_PRELOAD {}", hook.display()));
+        prepend_ld_preload(&mut cmd, &hook);
+    } else {
+        report
+            .notes
+            .push("unpack: libbambu_vmp_hook.so not found; VMP anti-debug not masked".into());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|err| CredentialError::Message(format!("spawn bambu-vmp-dump: {err}")))?;
     let deadline = Instant::now() + timeout.max(Duration::from_secs(5));
@@ -68,12 +83,16 @@ pub fn extract_unpack(
                     .notes
                     .push("unpack: helper timed out (anti-debug/anti-VM?); falling through".into());
                 let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&key_out);
+                let _ = std::fs::remove_file(&rand_out);
                 return Ok(());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(err) => {
                 report.notes.push(format!("unpack: wait helper: {err}"));
                 let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&key_out);
+                let _ = std::fs::remove_file(&rand_out);
                 return Ok(());
             }
         }
@@ -83,7 +102,7 @@ pub fn extract_unpack(
         let _ = pipe.read_to_string(&mut stderr);
     }
     if !stderr.trim().is_empty() {
-        for line in stderr.lines().take(8) {
+        for line in stderr.lines().take(20) {
             report.notes.push(format!("unpack: {line}"));
         }
     }
@@ -92,6 +111,8 @@ pub fn extract_unpack(
             "unpack: helper exited {status} (anti-debug/anti-VM or missing plugin); falling through"
         ));
         let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&key_out);
+        let _ = std::fs::remove_file(&rand_out);
         return Ok(());
     }
     let bytes = match std::fs::read(&tmp) {
@@ -117,8 +138,50 @@ pub fn extract_unpack(
             .notes
             .push(format!("unpack: copied dump to {}", dest.display()));
     }
-    let found = scan_image(&bytes);
-    merge_creds(&mut report.credentials, found);
+    crate::extract::apply_appcert_dump(report, &bytes, "unpack");
+    if let Ok(pem) = std::fs::read_to_string(&key_out) {
+        if crate::signing::load_private_key(&pem).is_ok() {
+            report.credentials.key_pem = Some(pem);
+            report
+                .notes
+                .push("unpack: captured private key from in-process hook".into());
+        }
+    }
+    if report.credentials.key_pem.is_none() {
+        if let Some(pem) =
+            crate::extract_appcert::try_unwrap_appcert_key(&bytes, report.credentials.cert_pem.as_deref())
+        {
+            report.credentials.key_pem = Some(pem);
+            report
+                .notes
+                .push("unpack: unwrapped get_app_cert key blob (custom AES-CTR, not VMP)".into());
+        }
+    }
+    if report.credentials.key_pem.is_none() {
+        if let Ok(rands) = std::fs::read(&rand_out) {
+            if let Some(pem) = crate::extract_elf::try_decrypt_app_key(&bytes, &rands) {
+                report.credentials.key_pem = Some(pem);
+                report
+                    .notes
+                    .push("unpack: decrypted get_app_cert key blob with captured session key".into());
+            }
+        }
+    }
+    if report.credentials.key_pem.is_none() {
+        if let Some(cert) = report.credentials.cert_pem.clone() {
+            if let Some(key) = scan_key_matching(&bytes, &cert) {
+                report.credentials.key_pem = Some(key);
+                report
+                    .notes
+                    .push("unpack: recovered private key matching on-disk cert".into());
+            } else {
+                report.notes.push(
+                    "unpack: app cert/CRL present in dump; private key still not in PEM/DER (plugin encrypts that field)"
+                        .into(),
+                );
+            }
+        }
+    }
     if report.credentials.cert_pem.is_some()
         || report.credentials.key_pem.is_some()
         || report.credentials.crl_pem.is_some()
@@ -136,6 +199,8 @@ pub fn extract_unpack(
             .push("unpack: dump had no usable PEM/DER identity".into());
     }
     let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_file(&key_out);
+    let _ = std::fs::remove_file(&rand_out);
     Ok(())
 }
 
@@ -159,4 +224,50 @@ pub fn find_vmp_dump() -> Option<PathBuf> {
         let candidate = dir.join("bambu-vmp-dump");
         candidate.is_file().then_some(candidate)
     })
+}
+
+pub fn find_vmp_hook() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("BAMBU_VMP_HOOK") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let name = "libbambu_vmp_hook.so";
+    if let Some(helper) = find_vmp_dump() {
+        let candidate = helper.with_file_name(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if let Some(dir) = helper.parent() {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        let candidate = dir.join(name);
+        candidate.is_file().then_some(candidate)
+    })
+}
+
+pub(crate) fn prepend_ld_preload(cmd: &mut Command, hook: &Path) {
+    let mut preload = hook.as_os_str().to_os_string();
+    if let Ok(old) = std::env::var("LD_PRELOAD") {
+        if !old.is_empty() {
+            preload.push(":");
+            preload.push(old);
+        }
+    }
+    cmd.env("LD_PRELOAD", preload);
 }

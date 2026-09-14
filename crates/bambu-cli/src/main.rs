@@ -194,6 +194,9 @@ enum KeysCommand {
         /// Write the reconstructed in-memory plugin image (not committed; default scan-and-delete).
         #[arg(long)]
         dump_elf: Option<PathBuf>,
+        /// Scan an existing helper dump instead of (or before) spawning VMProtect unpack.
+        #[arg(long)]
+        from_dump: Option<PathBuf>,
         /// Seconds to wait for seeded login, then again for interactive Studio login.
         #[arg(long, default_value_t = 90)]
         timeout: u64,
@@ -645,6 +648,7 @@ fn run() -> Result<(), CliError> {
                 no_live,
                 no_unpack,
                 dump_elf,
+                from_dump,
                 timeout,
             } => {
                 let report = bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts {
@@ -653,6 +657,7 @@ fn run() -> Result<(), CliError> {
                     live: !no_live,
                     unpack: !no_unpack,
                     dump_elf,
+                    from_dump,
                     timeout: std::time::Duration::from_secs(timeout.max(1)),
                 })
                 .map_err(|err| CliError::Message(err.to_string()))?;

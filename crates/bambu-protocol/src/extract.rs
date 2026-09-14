@@ -8,7 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rsa::traits::PublicKeyParts;
+
 use crate::credentials::{default_config_dir, import_from_known_locations, SlicerCredentials};
+use crate::signing::{load_private_key, public_key_from_cert_pem};
 
 #[derive(Debug, Clone, Default)]
 pub struct ExtractReport {
@@ -86,6 +89,8 @@ pub struct ExtractKeysOpts {
     pub live: bool,
     pub unpack: bool,
     pub dump_elf: Option<PathBuf>,
+    /// Existing helper/Studio dump to scan (skips a new VMProtect unpack when set).
+    pub from_dump: Option<PathBuf>,
     pub timeout: Duration,
 }
 
@@ -97,18 +102,36 @@ impl Default for ExtractKeysOpts {
             live: true,
             unpack: true,
             dump_elf: None,
+            from_dump: None,
             timeout: Duration::from_secs(90),
         }
     }
 }
 
-/// Static plugin scan, optional self-unpack dump, then sandboxed official Studio harvest.
+/// Static plugin scan, optional dump / self-unpack, cloud cert GET, then Studio harvest.
 pub fn extract_keys(
     opts: ExtractKeysOpts,
 ) -> Result<ExtractReport, crate::credentials::CredentialError> {
     let mut report = extract_to_config_dir(opts.plugin.as_deref(), opts.out_dir.as_deref())?;
     if report.credentials.has_cert_and_key() {
         return Ok(report);
+    }
+    if let Some(path) = &opts.from_dump {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                report
+                    .notes
+                    .push(format!("scanning dump {}", path.display()));
+                apply_appcert_dump(&mut report, &bytes, "dump");
+                write_extracted(&mut report, opts.out_dir.as_deref())?;
+                if report.credentials.has_cert_and_key() {
+                    return Ok(report);
+                }
+            }
+            Err(err) => report
+                .notes
+                .push(format!("could not read dump {}: {err}", path.display())),
+        }
     }
     if !opts.unpack {
         if let Some(path) = opts
@@ -132,6 +155,12 @@ pub fn extract_keys(
             return Ok(report);
         }
     }
+    if !report.credentials.can_sign() {
+        try_cloud_appcert(&mut report, opts.out_dir.as_deref())?;
+        if report.credentials.has_cert_and_key() {
+            return Ok(report);
+        }
+    }
     if !opts.live {
         return Ok(report);
     }
@@ -148,15 +177,105 @@ pub fn extract_keys(
     Ok(report)
 }
 
-pub(crate) fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials) {
-    if into.cert_pem.is_none() {
-        into.cert_pem = from.cert_pem;
+pub(crate) fn apply_appcert_dump(report: &mut ExtractReport, bytes: &[u8], prefix: &str) {
+    if let Some(found) = crate::extract_appcert::harvest_appcert(bytes) {
+        merge_creds(&mut report.credentials, found);
+        report.notes.push(format!(
+            "{prefix}: unwrapped get_app_cert JSON (custom AES-CTR, ClusterM fetch_slicer_credentials.py)"
+        ));
     }
+    merge_creds(
+        &mut report.credentials,
+        crate::extract_elf::scan_image(bytes),
+    );
+}
+
+fn write_extracted(
+    report: &mut ExtractReport,
+    out_dir: Option<&Path>,
+) -> Result<(), crate::credentials::CredentialError> {
+    if report.credentials.cert_pem.is_none()
+        && report.credentials.key_pem.is_none()
+        && report.credentials.crl_pem.is_none()
+    {
+        return Ok(());
+    }
+    let dest = out_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_config_dir);
+    crate::credentials::write_to_dir(&dest, &report.credentials)?;
+    report
+        .notes
+        .push(format!("wrote credentials under {}", dest.display()));
+    Ok(())
+}
+
+fn try_cloud_appcert(
+    report: &mut ExtractReport,
+    out_dir: Option<&Path>,
+) -> Result<(), crate::credentials::CredentialError> {
+    let dest = out_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_config_dir);
+    let mut dirs = vec![dest.clone()];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(&home).join(".config/BambuStudio"));
+        dirs.push(PathBuf::from(&home).join(".config/open-bamboo-networking"));
+    }
+    let Some((secret, wrap)) = crate::extract_appcert::try_bootstrap_secret_files(&dirs) else {
+        return Ok(());
+    };
+    let region = std::fs::read_to_string(dest.join("cloud_region")).unwrap_or_default();
+    let host = crate::cloud_api::api_host(region.trim());
+    report.notes.push(format!(
+        "cloud: GET applications/{{enc_secret}}/cert using bootstrap files ({} byte secret)",
+        secret.len()
+    ));
+    match crate::extract_appcert::fetch_appcert_from_bootstrap(&secret, &wrap, host) {
+        Ok(found) => {
+            merge_creds(&mut report.credentials, found);
+            write_extracted(report, out_dir)?;
+            report
+                .notes
+                .push("cloud: fetched app cert/key (ClusterM envelope)".into());
+        }
+        Err(err) => report.notes.push(format!("cloud: {err}")),
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials) {
+    let key = into.key_pem.as_deref().or(from.key_pem.as_deref());
+    into.cert_pem = pick_cert(into.cert_pem.take(), from.cert_pem, key);
     if into.key_pem.is_none() {
         into.key_pem = from.key_pem;
     }
     if into.crl_pem.is_none() {
         into.crl_pem = from.crl_pem;
+    }
+}
+
+fn pick_cert(a: Option<String>, b: Option<String>, key: Option<&str>) -> Option<String> {
+    let score = |pem: &str| -> i32 {
+        let mut s = pem.matches("-----BEGIN CERTIFICATE-----").count() as i32;
+        if let Some(k) = key {
+            if let (Ok(privk), Ok(pubk)) = (load_private_key(k), public_key_from_cert_pem(pem)) {
+                if privk.n() == pubk.n() {
+                    s += 100;
+                }
+            }
+        }
+        s
+    };
+    match (a, b) {
+        (None, x) | (x, None) => x,
+        (Some(a), Some(b)) => {
+            if score(&b) > score(&a) {
+                Some(b)
+            } else {
+                Some(a)
+            }
+        }
     }
 }
 

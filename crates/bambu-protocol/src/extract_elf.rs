@@ -5,16 +5,21 @@
 
 use std::path::Path;
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
+use hkdf::Hkdf;
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::pkcs8::DecodePrivateKey;
-use rsa::RsaPrivateKey;
+use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
+use rsa::traits::PublicKeyParts;
+use rsa::{BigUint, RsaPrivateKey};
+use sha2::Sha256;
 use x509_parser::prelude::{FromDer, X509Certificate};
 use x509_parser::revocation_list::CertificateRevocationList;
 
 use crate::credentials::SlicerCredentials;
 use crate::extract::{extract_pems_plain, merge_creds};
-use crate::signing::{load_private_key, slicer_cert_id};
+use crate::signing::{load_private_key, public_key_from_cert_pem, slicer_cert_id};
 
 const ELF_MAGIC: &[u8] = b"\x7fELF";
 const PT_LOAD: u32 = 1;
@@ -205,7 +210,14 @@ pub fn harvest_maps(maps: &[ProcMap]) -> Vec<ProcMap> {
             if plugin {
                 return m.perms.contains('r');
             }
-            m.perms.starts_with("rw") && (m.pathname.is_empty() || m.pathname == "[heap]")
+            m.perms.starts_with("rw")
+                && (m.pathname.is_empty()
+                    || m.pathname == "[heap]"
+                    || m.pathname == "[stack]"
+                    || m.pathname.starts_with("[anon")
+                    || m.pathname.contains("memfd")
+                    || m.pathname.contains("libcrypto")
+                    || m.pathname.contains("libssl"))
         })
         .filter(|m| m.end.saturating_sub(m.start) <= 64 * 1024 * 1024)
         .cloned()
@@ -240,7 +252,267 @@ pub fn reconstruct_linear(
 pub fn scan_image(data: &[u8]) -> SlicerCredentials {
     let mut creds = extract_pems_plain(data);
     merge_creds(&mut creds, scan_der(data));
+    if creds.key_pem.is_none() {
+        if let Some(cert) = &creds.cert_pem {
+            if let Some(key) = scan_key_matching(data, cert) {
+                creds.key_pem = Some(key);
+            }
+        }
+    }
     validate_scanned(&creds)
+}
+
+/// Find a PKCS#1/PKCS#8 RSA private key in `data` whose modulus matches `cert_pem`.
+pub fn scan_key_matching(data: &[u8], cert_pem: &str) -> Option<String> {
+    let want = public_key_from_cert_pem(cert_pem).ok()?;
+    if let Some(key) = key_pem_if_matches(scan_der(data).key_pem, &want) {
+        return Some(key);
+    }
+    let n_be = want.n().to_bytes_be();
+    let n_le = want.n().to_bytes_le();
+    let mut from = 0;
+    while let Some(rel) = find_bytes(&data[from..], &n_be) {
+        let at = from + rel;
+        let start = at.saturating_sub(64);
+        let end = (at + n_be.len() + 64).min(data.len());
+        if let Some(key) = key_pem_if_matches(scan_der(&data[start..end]).key_pem, &want) {
+            return Some(key);
+        }
+        from = at + 1;
+    }
+    let mut le_hits = Vec::new();
+    from = 0;
+    while let Some(rel) = find_bytes(&data[from..], &n_le) {
+        let at = from + rel;
+        le_hits.push(at);
+        let start = at.saturating_sub(64);
+        let end = (at + n_le.len() + 64).min(data.len());
+        if let Some(key) = key_pem_if_matches(scan_der(&data[start..end]).key_pem, &want) {
+            return Some(key);
+        }
+        from = at + 1;
+    }
+    // n_be lives in the public cert; OpenSSL BIGNUM limbs are little-endian.
+    // Only hunt primes when we saw n_le (or a tiny test blob).
+    if le_hits.is_empty() {
+        if data.len() <= 64 * 1024 {
+            return scan_key_from_prime_limbs(data, &want);
+        }
+        return None;
+    }
+    if data.len() <= 4 * 1024 * 1024 {
+        return scan_key_from_prime_limbs(data, &want);
+    }
+    for at in le_hits {
+        let start = at.saturating_sub(256 * 1024);
+        let end = (at + 256 * 1024).min(data.len());
+        if let Some(key) = scan_key_from_prime_limbs(&data[start..end], &want) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn key_pem_if_matches(pem: Option<String>, want: &rsa::RsaPublicKey) -> Option<String> {
+    let pem = pem?;
+    let key = load_private_key(&pem).ok()?;
+    (key.n() == want.n()).then_some(pem)
+}
+
+/// OpenSSL keeps RSA primes as little-endian BIGNUM limbs after the PEM is dropped.
+fn scan_key_from_prime_limbs(data: &[u8], want: &rsa::RsaPublicKey) -> Option<String> {
+    let n = want.n();
+    let e = want.e();
+    let half_bits = n.bits().saturating_add(1) / 2;
+    let p_len = ((half_bits + 7) / 8) as usize;
+    if p_len < 32 || data.len() < p_len {
+        return None;
+    }
+    for len in [p_len, p_len.saturating_add(1), p_len.saturating_sub(1)] {
+        if len < 32 || len > data.len() {
+            continue;
+        }
+        if let Some(key) = try_prime_windows(data, n, e, len, true) {
+            return Some(key);
+        }
+        if let Some(key) = try_prime_windows(data, n, e, len, false) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn try_prime_windows(
+    data: &[u8],
+    n: &BigUint,
+    e: &BigUint,
+    p_len: usize,
+    little: bool,
+) -> Option<String> {
+    let min_bits = (n.bits() / 2).saturating_sub(8).max(32);
+    let mut i = 0;
+    while i + p_len <= data.len() {
+        let raw = &data[i..i + p_len];
+        let odd = if little { raw[0] & 1 == 1 } else { raw[p_len - 1] & 1 == 1 };
+        if !odd {
+            i += 8;
+            continue;
+        }
+        let p = if little {
+            BigUint::from_bytes_le(raw)
+        } else {
+            BigUint::from_bytes_be(raw)
+        };
+        if p.bits() >= min_bits && &p > &BigUint::from(2u32) && p != *n && n % &p == BigUint::from(0u32)
+        {
+            let q = n / &p;
+            if &p * &q == *n {
+                if let Ok(key) = RsaPrivateKey::from_p_q(p, q, e.clone()) {
+                    if key.n() == n {
+                        return key.to_pkcs8_pem(LineEnding::LF).ok().map(|pem| pem.to_string());
+                    }
+                }
+            }
+        }
+        i += 8;
+    }
+    None
+}
+
+pub(crate) fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Try AES-GCM layouts against `get_app_cert` JSON `"key"` blobs using captured RAND.
+pub fn try_decrypt_app_key(dump: &[u8], rand_records: &[u8]) -> Option<String> {
+    let keys = parse_rand_keys(rand_records);
+    if keys.is_empty() {
+        return None;
+    }
+    let blobs = json_b64_fields(dump, br#""key":""#);
+    for blob in blobs {
+        if blob.len() < 48 {
+            continue;
+        }
+        for k in &keys {
+            if k.len() != 32 {
+                continue;
+            }
+            if let Some(pem) = decrypt_key_blob(k, &blob) {
+                if load_private_key(&pem).is_ok() {
+                    return Some(pem);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn parse_rand_keys(records: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < records.len() {
+        let n = records[i] as usize;
+        i += 1;
+        if n == 0 || i + n > records.len() {
+            break;
+        }
+        if n == 32 {
+            out.push(records[i..i + n].to_vec());
+        }
+        i += n;
+    }
+    out
+}
+
+pub(crate) fn json_b64_fields(data: &[u8], prefix: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = find_bytes(&data[from..], prefix) {
+        let start = from + rel + prefix.len();
+        let rest = &data[start..];
+        let n = rest
+            .iter()
+            .take_while(|b| {
+                matches!(
+                    **b,
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=' | b'-' | b'_'
+                )
+            })
+            .count();
+        if n >= 64 {
+            let slice = &rest[..n];
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(slice)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(slice))
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(slice));
+            if let Ok(raw) = raw {
+                if !out.iter().any(|b| b == &raw) {
+                    out.push(raw);
+                }
+            }
+        }
+        from = start + n.max(1);
+    }
+    out
+}
+
+fn decrypt_key_blob(k: &[u8], blob: &[u8]) -> Option<String> {
+    if blob.len() < 48 {
+        return None;
+    }
+    let derived = hkdf_app_key(k, blob.get(4..16).unwrap_or(&[]));
+    let keys = [k, derived.as_slice()];
+    let n = blob.len();
+    let layouts: [(&[u8], &[u8], &[u8]); 3] = [
+        (&blob[..12], &blob[12..n - 16], &blob[n - 16..]),
+        (&blob[4..16], &blob[32..], &blob[16..32]),
+        (&blob[4..16], &blob[16..n - 16], &blob[n - 16..]),
+    ];
+    for key in keys {
+        for (nonce, ct, tag) in layouts {
+            if nonce.len() != 12 || ct.is_empty() || tag.len() != 16 {
+                continue;
+            }
+            let mut payload = Vec::with_capacity(ct.len() + 16);
+            payload.extend_from_slice(ct);
+            payload.extend_from_slice(tag);
+            if let Some(pt) = aes_gcm_decrypt(key, nonce, &payload) {
+                if let Some(pem) = pem_from_bytes(&pt) {
+                    return Some(pem);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hkdf_app_key(ikm: &[u8], salt: &[u8]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
+    let mut okm = [0u8; 32];
+    let _ = hk.expand(b"bambu_app_key_v1", &mut okm);
+    okm
+}
+
+fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], payload: &[u8]) -> Option<Vec<u8>> {
+    if key.len() != 32 || nonce.len() != 12 {
+        return None;
+    }
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let nonce = Nonce::from_slice(nonce);
+    cipher.decrypt(nonce, payload).ok()
+}
+
+fn pem_from_bytes(pt: &[u8]) -> Option<String> {
+    let creds = extract_pems_plain(pt);
+    creds.key_pem.or_else(|| {
+        let text = String::from_utf8_lossy(pt);
+        if text.contains("BEGIN PRIVATE") {
+            Some(text.into_owned())
+        } else {
+            None
+        }
+    })
 }
 
 fn validate_scanned(creds: &SlicerCredentials) -> SlicerCredentials {
@@ -549,5 +821,53 @@ mod tests {
         assert!(plugin_readable_maps(&maps)
             .iter()
             .any(|m| m.perms.contains("r-x")));
+    }
+
+    #[test]
+    fn scan_key_matching_finds_pkcs8_der() {
+        let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let key_pem = include_str!("../tests/fixtures/test_slicer_key.pem");
+        let key = RsaPrivateKey::from_pkcs8_pem(key_pem).unwrap();
+        let der = key.to_pkcs8_der().unwrap();
+        let mut blob = vec![0u8; 64];
+        blob.extend_from_slice(der.as_bytes());
+        let found = scan_key_matching(&blob, cert).expect("DER key matching cert");
+        assert!(load_private_key(&found).is_ok());
+    }
+
+    #[test]
+    fn scan_key_matching_finds_openssl_le_prime() {
+        use rsa::traits::PrivateKeyParts;
+        let cert = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let key_pem = include_str!("../tests/fixtures/test_slicer_key.pem");
+        let key = RsaPrivateKey::from_pkcs8_pem(key_pem).unwrap();
+        let p = &key.primes()[0];
+        let mut blob = vec![0u8; 24];
+        blob.extend_from_slice(&p.to_bytes_le());
+        blob.extend_from_slice(&[0u8; 16]);
+        let found = scan_key_matching(&blob, cert).expect("LE prime limbs matching cert");
+        let recovered = load_private_key(&found).expect("recovered key");
+        assert_eq!(recovered.n(), key.n());
+    }
+
+    #[test]
+    fn decrypt_app_key_roundtrip_nonce_ct_tag() {
+        let key_pem = include_str!("../tests/fixtures/test_slicer_key.pem");
+        let session = [0x11u8; 32];
+        let nonce = [0x22u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&session).unwrap();
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nonce), key_pem.as_bytes())
+            .unwrap();
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ct);
+        let dump = format!(
+            r#"{{"key":"{}"}}"#,
+            base64::engine::general_purpose::STANDARD.encode(&blob)
+        );
+        let mut rands = vec![32u8];
+        rands.extend_from_slice(&session);
+        let found = try_decrypt_app_key(dump.as_bytes(), &rands).expect("decrypt fixture key");
+        assert!(load_private_key(&found).is_ok());
     }
 }

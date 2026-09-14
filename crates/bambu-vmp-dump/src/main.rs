@@ -53,6 +53,13 @@ mod linux {
     }
 
     pub(super) fn run(plugin: &str, dump: &str) -> Result<(), String> {
+        unsafe {
+            extern "C" {
+                fn prctl(option: c_int, arg2: *const c_char) -> c_int;
+            }
+            const PR_SET_NAME: c_int = 15;
+            let _ = prctl(PR_SET_NAME, b"bambu-studio\0".as_ptr().cast());
+        }
         let c_path = CString::new(plugin).map_err(|err| err.to_string())?;
         let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW) };
         if handle.is_null() {
@@ -68,18 +75,99 @@ mod linux {
         }
         let sym = CString::new("bambu_network_get_version").unwrap();
         let _ = unsafe { dlsym(handle, sym.as_ptr()) };
-        let maps = std::fs::read_to_string("/proc/self/maps").map_err(|err| err.to_string())?;
-        let image = reconstruct_plugin(&maps, plugin)?;
-        if image.is_empty() {
-            return Err("no bambu_networking mappings after dlopen".into());
+
+        let cfg = std::env::temp_dir().join(format!("bambu-vmp-agent-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&cfg);
+        if let Ok(home) = std::env::var("HOME") {
+            let engine =
+                std::path::Path::new(&home).join(".config/BambuStudio/BambuNetworkEngine.conf");
+            if engine.is_file() {
+                let _ = std::fs::copy(&engine, cfg.join("BambuNetworkEngine.conf"));
+                eprintln!("copied official BambuNetworkEngine.conf into helper config");
+            }
         }
-        eprintln!("dumped {} bytes from plugin mappings", image.len());
+        let cert_folder = find_cert_folder();
+        if let Some(ref cert) = cert_folder {
+            eprintln!(
+                "init agent config={} cert={}",
+                cfg.display(),
+                cert.display()
+            );
+        } else {
+            eprintln!("init agent without slicer_base64.cer (set BAMBU_STUDIO_RESOURCES)");
+        }
+        let c_cfg = CString::new(cfg.to_string_lossy().as_ref()).map_err(|err| err.to_string())?;
+        let c_cert = CString::new(
+            cert_folder
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        )
+        .map_err(|err| err.to_string())?;
+        let rc = unsafe { vmp_init_agent(handle, c_cfg.as_ptr(), c_cert.as_ptr()) };
+        eprintln!("vmp_init_agent rc={rc}");
+
+        let maps = std::fs::read_to_string("/proc/self/maps").map_err(|err| err.to_string())?;
+        let image = reconstruct_interesting(&maps, plugin)?;
+        if image.is_empty() {
+            return Err("no plugin/heap mappings after dlopen".into());
+        }
+        eprintln!("dumped {} bytes from plugin+heap mappings", image.len());
         let mut out = File::create(dump).map_err(|err| err.to_string())?;
         out.write_all(&image).map_err(|err| err.to_string())?;
-        Ok(())
+        extern "C" {
+            fn _exit(code: c_int) -> !;
+        }
+        unsafe { _exit(0) };
     }
 
-    fn reconstruct_plugin(maps: &str, plugin: &str) -> Result<Vec<u8>, String> {
+    fn find_cert_folder() -> Option<std::path::PathBuf> {
+        if let Ok(p) = std::env::var("BAMBU_STUDIO_CERT") {
+            let p = std::path::PathBuf::from(p);
+            if p.join("slicer_base64.cer").is_file() {
+                return Some(p);
+            }
+            if p.is_file() {
+                return p.parent().map(std::path::Path::to_path_buf);
+            }
+        }
+        if let Ok(p) = std::env::var("BAMBU_STUDIO_RESOURCES") {
+            let c = std::path::PathBuf::from(p).join("cert");
+            if c.join("slicer_base64.cer").is_file() {
+                return Some(c);
+            }
+        }
+        let path = std::env::var_os("PATH")?;
+        for dir in std::env::split_paths(&path) {
+            let bin = dir.join("bambu-studio");
+            if !bin.is_file() {
+                continue;
+            }
+            if let Some(parent) = bin.parent() {
+                for rel in [
+                    "share/BambuStudio/cert",
+                    "../share/BambuStudio/cert",
+                    "../../share/BambuStudio/cert",
+                ] {
+                    let c = parent.join(rel);
+                    if c.join("slicer_base64.cer").is_file() {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    extern "C" {
+        fn vmp_init_agent(
+            handle: *mut c_void,
+            config_dir: *const c_char,
+            cert_folder: *const c_char,
+        ) -> c_int;
+    }
+
+    fn reconstruct_interesting(maps: &str, plugin: &str) -> Result<Vec<u8>, String> {
         let plugin_name = Path::new(plugin)
             .file_name()
             .and_then(|n| n.to_str())
@@ -101,7 +189,16 @@ mod linux {
                 && !pathname.contains("bambunetwork")
                 && !pathname.contains(plugin_name)
             {
-                continue;
+                let anon = pathname.is_empty()
+                    || pathname == "[heap]"
+                    || pathname == "[stack]"
+                    || pathname.starts_with("[anon")
+                    || pathname.contains("memfd")
+                    || pathname.contains("libcrypto")
+                    || pathname.contains("libssl");
+                if !(perms.starts_with("rw") && anon) {
+                    continue;
+                }
             }
             let Some((start, end)) = range.split_once('-') else {
                 continue;
@@ -116,15 +213,13 @@ mod linux {
         if ranges.is_empty() {
             return Ok(Vec::new());
         }
-        let base = ranges[0].0;
-        let last = ranges.last().unwrap().1;
-        if last - base > 96 * 1024 * 1024 {
-            return Err("plugin mapping too large".into());
-        }
-        let mut image = vec![0u8; (last - base) as usize];
+        let mut image = Vec::new();
         let mut mem = File::open("/proc/self/mem").map_err(|err| err.to_string())?;
         for (start, end) in ranges {
             let len = (end - start) as usize;
+            if image.len().saturating_add(len) > 96 * 1024 * 1024 {
+                break;
+            }
             if mem.seek(SeekFrom::Start(start)).is_err() {
                 continue;
             }
@@ -132,9 +227,7 @@ mod linux {
             match mem.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     buf.truncate(n);
-                    let off = (start - base) as usize;
-                    let n = buf.len().min(image.len().saturating_sub(off));
-                    image[off..off + n].copy_from_slice(&buf[..n]);
+                    image.extend_from_slice(&buf);
                 }
                 _ => continue,
             }

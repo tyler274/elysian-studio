@@ -14,9 +14,11 @@ use std::time::{Duration, Instant};
 use crate::cloud::load_cloud_session;
 use crate::credentials::{default_config_dir, write_to_dir, CredentialError, SlicerCredentials};
 use crate::extract::{extract_pems_plain, merge_creds, ExtractReport};
-use crate::extract_elf::{harvest_maps, parse_proc_maps};
-use crate::signing::{load_private_key, slicer_cert_id};
+use crate::extract_appcert::try_unwrap_appcert_key;
+use crate::extract_elf::{harvest_maps, parse_proc_maps, scan_image, scan_key_matching};
+use crate::signing::{load_private_key, public_key_from_cert_pem, slicer_cert_id};
 use crate::studio_import::default_studio_data_dir;
+use rsa::traits::PublicKeyParts;
 
 const MINIMAL_STUDIO_CONF: &str = r#"{
   "app": {
@@ -95,11 +97,13 @@ fn extract_live_linux(
             .unwrap_or(0)
     ));
     prepare_sandbox(&sandbox, &plugin_file, &dest, report)?;
+    let hook_key = sandbox.join(".vmp-hook-slicer-key.pem");
+    let hook_rand = sandbox.join(".vmp-hook.rand");
     report.notes.push(format!(
         "sandbox HOME {} (official Studio, no dlopen in this process)",
         sandbox.display()
     ));
-    let mut child = spawn_studio(&studio_bin, &sandbox, report)?;
+    let mut child = spawn_studio(&studio_bin, &sandbox, &hook_key, &hook_rand, report)?;
     let seed_deadline = Instant::now() + timeout;
     let interactive_deadline = seed_deadline + timeout;
     let mut asked_login = false;
@@ -124,9 +128,26 @@ fn extract_live_linux(
             }
         }
         for pid in descendant_pids(child.id()) {
-            merge_creds(&mut creds, harvest_pid(pid));
+            let known_cert = creds
+                .cert_pem
+                .clone()
+                .or_else(|| report.credentials.cert_pem.clone());
+            merge_creds(
+                &mut creds,
+                harvest_pid_with_cert(pid, known_cert.as_deref()),
+            );
         }
         creds = validate_creds(&creds);
+        if creds.key_pem.is_none() {
+            if let Ok(pem) = fs::read_to_string(&hook_key) {
+                if load_private_key(&pem).is_ok() {
+                    creds.key_pem = Some(pem);
+                    report
+                        .notes
+                        .push("live: captured private key from OpenSSL/malloc hook".into());
+                }
+            }
+        }
         if creds.has_cert_and_key() {
             report
                 .notes
@@ -192,21 +213,30 @@ fn prepare_sandbox(
     } else {
         fs::write(&conf_dest, MINIMAL_STUDIO_CONF)?;
     }
-    let session = load_cloud_session(rewrite_config).unwrap_or_default();
-    let engine = engine_conf_json(
-        &session.access_token,
-        &session.refresh_token,
-        &session.region,
-    );
-    fs::write(studio_cfg.join("BambuNetworkEngine.conf"), engine)?;
-    if session.access_token.is_empty() {
+    let engine_dest = studio_cfg.join("BambuNetworkEngine.conf");
+    let official_engine = default_studio_data_dir().join("BambuNetworkEngine.conf");
+    if official_engine.is_file() {
+        fs::copy(&official_engine, &engine_dest)?;
         report
             .notes
-            .push("no cloud_token to seed; Studio login in the sandbox window is required".into());
+            .push("copied official BambuNetworkEngine.conf into the sandbox (not printed)".into());
     } else {
-        report
-            .notes
-            .push("seeded BambuNetworkEngine.conf from rewrite cloud tokens (not printed)".into());
+        let session = load_cloud_session(rewrite_config).unwrap_or_default();
+        let engine = engine_conf_json(
+            &session.access_token,
+            &session.refresh_token,
+            &session.region,
+        );
+        fs::write(&engine_dest, engine)?;
+        if session.access_token.is_empty() {
+            report.notes.push(
+                "no cloud_token to seed; Studio login in the sandbox window is required".into(),
+            );
+        } else {
+            report.notes.push(
+                "seeded BambuNetworkEngine.conf from rewrite cloud tokens (not printed)".into(),
+            );
+        }
     }
     Ok(())
 }
@@ -255,8 +285,11 @@ fn copy_plugin_bundle(
 fn spawn_studio(
     studio_bin: &Path,
     sandbox: &Path,
+    hook_key: &Path,
+    hook_rand: &Path,
     report: &mut ExtractReport,
 ) -> Result<Child, CredentialError> {
+    let hook = crate::extract_unpack::find_vmp_hook();
     let mut cmd = if let Some(bwrap) = find_on_path("bwrap") {
         report
             .notes
@@ -285,6 +318,9 @@ fn spawn_studio(
         }
         cmd.arg("--bind").arg(sandbox).arg(sandbox);
         bind_session_sockets(&mut cmd);
+        if let Some(ref hook) = hook {
+            cmd.arg("--ro-bind").arg(hook).arg(hook);
+        }
         pass_gui_env(&mut cmd);
         cmd.env("HOME", sandbox)
             .env("XDG_CONFIG_HOME", sandbox.join(".config"))
@@ -305,6 +341,18 @@ fn spawn_studio(
             .env("XDG_CACHE_HOME", sandbox.join(".cache"));
         cmd
     };
+    cmd.env("BAMBU_VMP_KEY_OUT", hook_key)
+        .env("BAMBU_VMP_RAND_OUT", hook_rand);
+    if let Some(ref hook) = hook {
+        report
+            .notes
+            .push(format!("live: LD_PRELOAD {}", hook.display()));
+        crate::extract_unpack::prepend_ld_preload(&mut cmd, hook);
+    } else {
+        report
+            .notes
+            .push("live: libbambu_vmp_hook.so not found; VMP anti-debug not masked".into());
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -405,8 +453,16 @@ pub fn parse_ppid(stat: &str) -> Option<u32> {
     parts.next()?.parse().ok()
 }
 
+#[allow(dead_code)]
 pub fn harvest_pid(pid: u32) -> SlicerCredentials {
+    harvest_pid_with_cert(pid, None)
+}
+
+pub fn harvest_pid_with_cert(pid: u32, known_cert: Option<&str>) -> SlicerCredentials {
     let mut creds = SlicerCredentials::default();
+    if let Some(cert) = known_cert {
+        creds.cert_pem = Some(cert.to_string());
+    }
     let Ok(maps_text) = fs::read_to_string(format!("/proc/{pid}/maps")) else {
         return creds;
     };
@@ -415,17 +471,85 @@ pub fn harvest_pid(pid: u32) -> SlicerCredentials {
         return creds;
     };
     for map in harvest_maps(&maps) {
-        harvest_range(&mut mem, map.start, map.end, &mut creds);
+        let scan_der = map.perms.starts_with("rw");
+        harvest_range(&mut mem, map.start, map.end, scan_der, &mut creds);
         if creds.has_cert_and_key() && creds.crl_pem.is_some() {
             break;
+        }
+    }
+    if creds.key_pem.is_none() {
+        if let Some(cert) = creds.cert_pem.clone() {
+            if let Some(key) = harvest_key_from_rw(&mut mem, &maps, &cert) {
+                creds.key_pem = Some(key);
+            }
         }
     }
     creds
 }
 
-fn harvest_range(mem: &mut File, start: u64, end: u64, creds: &mut SlicerCredentials) {
+fn harvest_key_from_rw(mem: &mut File, maps: &[crate::extract_elf::ProcMap], cert: &str) -> Option<String> {
+    let want = public_key_from_cert_pem(cert).ok()?;
+    let n_le = want.n().to_bytes_le();
+    let mut blob = Vec::new();
+    let mut saw_n_le = false;
+    for map in harvest_maps(maps) {
+        if !map.perms.starts_with("rw") {
+            continue;
+        }
+        let Some(chunk) = read_map(mem, map.start, map.end) else {
+            continue;
+        };
+        if !saw_n_le && crate::extract_elf::find_bytes(&chunk, &n_le).is_some() {
+            saw_n_le = true;
+        }
+        if blob.len().saturating_add(chunk.len()) > 32 * 1024 * 1024 {
+            continue;
+        }
+        blob.extend_from_slice(&chunk);
+        if let Some(found) = try_unwrap_appcert_key(&chunk, None)
+            .or_else(|| crate::extract_appcert::harvest_appcert(&chunk).and_then(|c| c.key_pem))
+        {
+            return Some(found);
+        }
+        if let Some(key) = try_unwrap_appcert_key(&chunk, Some(cert)) {
+            return Some(key);
+        }
+    }
+    if let Some(key) = try_unwrap_appcert_key(&blob, None)
+        .or_else(|| try_unwrap_appcert_key(&blob, Some(cert)))
+    {
+        return Some(key);
+    }
+    if !saw_n_le {
+        return None;
+    }
+    scan_key_matching(&blob, cert)
+}
+
+fn read_map(mem: &mut File, start: u64, end: u64) -> Option<Vec<u8>> {
+    if mem.seek(SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let len = end.saturating_sub(start) as usize;
+    let mut buf = vec![0u8; len];
+    match mem.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            buf.truncate(n);
+            Some(buf)
+        }
+        _ => None,
+    }
+}
+
+fn harvest_range(
+    mem: &mut File,
+    start: u64,
+    end: u64,
+    scan_der: bool,
+    creds: &mut SlicerCredentials,
+) {
     const CHUNK: u64 = 1024 * 1024;
-    const OVERLAP: usize = 80;
+    const OVERLAP: usize = 8192;
     let mut offset = start;
     let mut carry = Vec::new();
     while offset < end {
@@ -442,7 +566,23 @@ fn harvest_range(mem: &mut File, start: u64, end: u64, creds: &mut SlicerCredent
         buf.truncate(n);
         let mut combined = carry;
         combined.extend_from_slice(&buf);
-        merge_creds(creds, extract_pems_plain(&combined));
+        if scan_der {
+            if creds.key_pem.is_none() {
+                if let Some(found) = crate::extract_appcert::harvest_appcert(&combined) {
+                    merge_creds(creds, found);
+                }
+            }
+            merge_creds(creds, scan_image(&combined));
+            if creds.key_pem.is_none() {
+                if let Some(cert) = &creds.cert_pem {
+                    if let Some(key) = scan_key_matching(&combined, cert) {
+                        creds.key_pem = Some(key);
+                    }
+                }
+            }
+        } else {
+            merge_creds(creds, extract_pems_plain(&combined));
+        }
         if creds.has_cert_and_key() {
             return;
         }

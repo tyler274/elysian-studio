@@ -8,3 +8,6 @@ description = "Isolated dlopen helper to dump a self-unpacked libbambu_networkin
 
 [lints.rust]
 unsafe_code = "allow"
+
+[build-dependencies]
+cc = "1"

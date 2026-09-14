@@ -5,6 +5,7 @@ mod cloud;
 mod cloud_api;
 mod credentials;
 mod extract;
+mod extract_appcert;
 mod extract_elf;
 mod extract_live;
 mod extract_unpack;
