@@ -84,7 +84,7 @@ impl crate::App {
                 .style(|_, status| theme::quiet(status))
                 .on_press(message)
         };
-        row![
+        column![
             chip("Select", PlaterTool::Orbit),
             chip("Move", PlaterTool::Move),
             chip("Rotate", PlaterTool::Rotate),
@@ -98,7 +98,7 @@ impl crate::App {
             quiet("Rot 90°", Message::Rotate90),
         ]
         .spacing(4)
-        .padding([4, 8])
+        .padding([4, 4])
         .into()
     }
 

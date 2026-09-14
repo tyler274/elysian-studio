@@ -28,6 +28,7 @@ pub struct GuiSnapshot {
     pub fps_visible: bool,
     pub fps: u32,
     pub sidebar_width: u32,
+    pub sidebar_collapsed: bool,
     pub active_tab_fill: String,
     pub seam: String,
     pub sparse_infill_pct: u32,
@@ -67,7 +68,12 @@ impl App {
             quality_tab: self.quality_tab.as_str().into(),
             fps_visible: self.workspace == Workspace::Preview,
             fps: self.fps.round() as u32,
-            sidebar_width: SIDEBAR_WIDTH as u32,
+            sidebar_width: if self.sidebar_collapsed {
+                0
+            } else {
+                SIDEBAR_WIDTH as u32
+            },
+            sidebar_collapsed: self.sidebar_collapsed,
             active_tab_fill: theme::active_tab_hex(self.workspace).into(),
             seam: self.settings.seam.as_str().into(),
             sparse_infill_pct: (self.settings.infill_density * 100.0).round() as u32,
@@ -83,6 +89,9 @@ impl App {
                 "AMS".into(),
                 "Quality".into(),
                 "Seam".into(),
+                "Iso".into(),
+                "Top".into(),
+                "Front".into(),
             ],
             window: [WINDOW_SIZE.width as u32, WINDOW_SIZE.height as u32],
         }

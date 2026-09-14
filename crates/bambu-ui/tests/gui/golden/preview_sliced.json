@@ -17,6 +17,7 @@
   "fps_visible": true,
   "fps": 60,
   "sidebar_width": 300,
+  "sidebar_collapsed": false,
   "active_tab_fill": "#1A9B8A",
   "seam": "aligned",
   "sparse_infill_pct": 15,
@@ -31,7 +32,10 @@
     "Print plate",
     "AMS",
     "Quality",
-    "Seam"
+    "Seam",
+    "Iso",
+    "Top",
+    "Front"
   ],
   "window": [
     1200,

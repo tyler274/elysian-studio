@@ -1,6 +1,6 @@
 //! iced `shader::Program`: Z-up bed, mesh, and orbit camera on Vulkan.
 
-pub use crate::camera::OrbitCamera;
+pub use crate::camera::{CameraView, OrbitCamera};
 
 use bambu_config::{BedRect, BedShape};
 use bambu_geom::{Aabb3, TriangleMesh};

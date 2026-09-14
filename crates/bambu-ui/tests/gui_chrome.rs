@@ -101,6 +101,9 @@ fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
         "AMS",
         "Quality",
         "Seam",
+        "Iso",
+        "Top",
+        "Front",
     ] {
         assert!(
             snap.labels.iter().any(|s| s == needle),
@@ -108,6 +111,7 @@ fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
         );
     }
     assert_eq!(snap.sidebar_width, 300);
+    assert!(!snap.sidebar_collapsed);
     assert_eq!(snap.window, [1200, 800]);
     if prepare {
         assert_eq!(snap.workspace, "prepare");
@@ -185,6 +189,14 @@ fn gui_chrome_prepare_preview_goldens() {
     assert_eq!(snap.seam, "rear");
     assert_eq!(snap.process_search, "Standard");
 
+    drive(&mut app, [Message::CollapseSidebar]);
+    let collapsed = app.snapshot();
+    assert!(collapsed.sidebar_collapsed);
+    assert_eq!(collapsed.sidebar_width, 0);
+    drive(&mut app, [Message::CollapseSidebar]);
+    assert!(!app.snapshot().sidebar_collapsed);
+    assert_eq!(app.snapshot().sidebar_width, 300);
+
     if png.is_none() {
         eprintln!("skipping GUI PNG goldens (no wgpu adapter)");
     }
@@ -203,10 +215,14 @@ fn gui_snapshot_labels_cover_reference_chrome() {
         "AMS",
         "Quality",
         "Seam",
+        "Iso",
+        "Top",
+        "Front",
     ] {
         assert!(snap.labels.iter().any(|s| s == needle), "{needle}");
     }
     assert_eq!(snap.sidebar_width, 300);
+    assert!(!snap.sidebar_collapsed);
 }
 
 #[test]

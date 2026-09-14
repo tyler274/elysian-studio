@@ -29,8 +29,8 @@ use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
-    slice_with_gpu_or_cpu, AxisGizmo, ExtrusionRole, PlaterTool, ToolpathBuffer, ViewportEvent,
-    ViewportScene,
+    slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole, PlaterTool, ToolpathBuffer,
+    ViewportEvent, ViewportScene,
 };
 use bambu_io::{load_mesh, load_model};
 use bambu_model::{Model, TrianglePaint};
@@ -209,6 +209,7 @@ pub struct App {
     slice_all: bool,
     print_export: bool,
     recent_models: Vec<PathBuf>,
+    sidebar_collapsed: bool,
 }
 
 #[allow(private_interfaces)]
@@ -227,6 +228,8 @@ pub enum Message {
     PrintExport(bool),
     Sliced(Result<Box<SliceOutcome>, String>),
     ResetCamera,
+    CameraView(CameraView),
+    CollapseSidebar,
     ExtractKeys,
     KeysExtracted(Result<ExtractUi, String>),
     Discover,
@@ -653,6 +656,7 @@ impl App {
             slice_all: false,
             print_export: false,
             recent_models: Vec::new(),
+            sidebar_collapsed: false,
         };
         app.reload_user_filaments();
         app.catalog = load_default_catalog();
@@ -848,6 +852,15 @@ impl App {
                     glam::Vec3::new(cx, cy, 0.0),
                     self.scene.bed_mm,
                 );
+            }
+            Message::CameraView(view) => {
+                let (cx, cy) = self.scene.bed.center();
+                self.scene
+                    .camera
+                    .apply_view(view, glam::Vec3::new(cx, cy, 0.0), self.scene.bed_mm);
+            }
+            Message::CollapseSidebar => {
+                self.sidebar_collapsed = !self.sidebar_collapsed;
             }
             Message::ExtractKeys => {
                 if !self.begin_work("extracting keys…") {
@@ -1625,14 +1638,19 @@ impl App {
                 "Calibration wizard lives in C++ Studio — stub pane here.",
             ),
             Workspace::Prepare | Workspace::Preview => {
-                let sidebar = container(match self.workspace {
-                    Workspace::Preview => self.preview_sidebar(),
-                    _ => self.prepare_sidebar(),
-                })
-                .style(|_| theme::sidebar_pane())
-                .width(SIDEBAR_WIDTH)
-                .height(Fill);
-                row![self.viewport_stage(), sidebar].into()
+                let stage = self.viewport_stage();
+                if self.sidebar_collapsed {
+                    stage
+                } else {
+                    let sidebar = container(match self.workspace {
+                        Workspace::Preview => self.preview_sidebar(),
+                        _ => self.prepare_sidebar(),
+                    })
+                    .style(|_| theme::sidebar_pane())
+                    .width(SIDEBAR_WIDTH)
+                    .height(Fill);
+                    row![stage, sidebar].into()
+                }
             }
         };
         column![

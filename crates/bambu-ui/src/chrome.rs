@@ -1,11 +1,14 @@
 //! Studio notebook header: Home · Prepare / Preview / Device / Project /
 //! Calibration / Filament Manager · Slice plate / Print plate.
 
-use iced::widget::{button, column, container, row, shader, stack, text, vertical_slider, Space};
+use iced::widget::{
+    button, column, container, row, shader, slider, stack, text, vertical_slider, Space,
+};
 use iced::{Alignment, Element, Fill};
 
 use crate::theme;
 use crate::{Message, ProcessTab, Workspace};
+use bambu_gpu::CameraView;
 
 impl crate::App {
     pub(crate) fn top_bar(&self) -> Element<'_, Message> {
@@ -244,21 +247,10 @@ impl crate::App {
 
     pub(crate) fn viewport_stage(&self) -> Element<'_, Message> {
         let viewport = shader(&self.scene).width(Fill).height(Fill);
-        let overlays = self.viewport_overlays();
-        let stacked: Element<'_, Message> =
-            stack![viewport, overlays].width(Fill).height(Fill).into();
-        if self.workspace == Workspace::Prepare {
-            column![
-                container(self.plater_toolbar())
-                    .width(Fill)
-                    .style(|_| theme::header_bar()),
-                stacked
-            ]
+        stack![viewport, self.viewport_overlays()]
+            .width(Fill)
             .height(Fill)
             .into()
-        } else {
-            stacked
-        }
     }
 
     fn viewport_overlays(&self) -> Element<'_, Message> {
@@ -268,18 +260,18 @@ impl crate::App {
         let badge = text(format!("{:02}", self.plate + 1))
             .size(18)
             .color(theme::TEXT);
-        let mut bottom = column![row![plate_name, badge].spacing(8)];
+        let mut meta = column![row![plate_name, badge].spacing(8)];
         if self.show_left_nozzle_only() {
-            bottom = bottom.push(
+            meta = meta.push(
                 text("Left nozzle only area")
                     .size(12)
                     .color(theme::TEXT_MUTED),
             );
         }
         for toast in self.toasts.iter().rev().take(3) {
-            bottom = bottom.push(text(toast).size(12).color(theme::TEXT));
+            meta = meta.push(text(toast).size(12).color(theme::TEXT));
         }
-        bottom = bottom.push(text(self.plate_hint()).size(11).color(theme::TEXT_MUTED));
+        meta = meta.push(text(self.plate_hint()).size(11).color(theme::TEXT_MUTED));
 
         let mut top = row![].spacing(8).align_y(Alignment::Center);
         if self.workspace == Workspace::Preview {
@@ -294,6 +286,19 @@ impl crate::App {
             top = top.push(Space::new().width(Fill));
         }
 
+        let mut bottom = column![self.view_cube(), meta].spacing(8);
+        if self.workspace == Workspace::Preview {
+            let max_move = self.scene.toolpaths.vertices.len().saturating_sub(1) as f64;
+            bottom = bottom.push(
+                slider(
+                    0.0..=max_move.max(1.0),
+                    f64::from(self.scene.preview_vertices),
+                    |v| Message::PreviewMove(v as u32),
+                )
+                .step(1.0),
+            );
+        }
+
         let chrome: Element<'_, Message> =
             column![top, Space::new().width(Fill).height(Fill), bottom]
                 .padding(8)
@@ -301,31 +306,113 @@ impl crate::App {
                 .height(Fill)
                 .into();
 
-        if self.workspace != Workspace::Preview {
-            return chrome;
+        let mut left = row![self.plate_thumb_strip()].spacing(4);
+        if self.workspace == Workspace::Prepare {
+            left = left.push(self.plater_toolbar());
+        }
+        if self.workspace == Workspace::Preview {
+            let max_layer = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as f64;
+            let layer = vertical_slider(
+                0.0..=max_layer.max(1.0),
+                f64::from(self.scene.preview_layer),
+                |v| Message::PreviewLayer(v as u32),
+            )
+            .step(1.0);
+            left = left.push(
+                container(layer)
+                    .padding(iced::Padding {
+                        top: 48.0,
+                        right: 4.0,
+                        bottom: 72.0,
+                        left: 4.0,
+                    })
+                    .height(Fill)
+                    .width(28),
+            );
         }
 
-        let max_layer = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as f64;
-        let layer = vertical_slider(
-            0.0..=max_layer.max(1.0),
-            f64::from(self.scene.preview_layer),
-            |v| Message::PreviewLayer(v as u32),
-        )
-        .step(1.0);
-        row![
-            container(layer)
-                .padding(iced::Padding {
-                    top: 48.0,
-                    right: 4.0,
-                    bottom: 72.0,
-                    left: 8.0,
-                })
-                .height(Fill)
-                .width(28),
-            chrome,
+        row![left, chrome, self.collapse_chevron()]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+
+    fn plate_thumb_strip(&self) -> Element<'_, Message> {
+        let n = self.plate_count();
+        let mut col = column![].spacing(4);
+        for i in 0..n.max(1) {
+            let active = i == self.plate;
+            let color = if active {
+                iced::Color::WHITE
+            } else {
+                theme::TEXT_MUTED
+            };
+            col = col.push(
+                container(
+                    button(text(format!("{}", i + 1)).size(12).color(color))
+                        .padding([6, 10])
+                        .style(move |_, status| theme::process_tab(active, status))
+                        .on_press(Message::Plate(i)),
+                )
+                .style(move |_| {
+                    if active {
+                        container::Style {
+                            background: Some(iced::Background::Color(theme::PREPARE)),
+                            border: iced::Border {
+                                radius: theme::RADIUS.into(),
+                                width: 0.0,
+                                color: iced::Color::TRANSPARENT,
+                            },
+                            ..container::Style::default()
+                        }
+                    } else {
+                        theme::chip()
+                    }
+                }),
+            );
+        }
+        col.padding([8, 4]).into()
+    }
+
+    fn view_cube(&self) -> Element<'_, Message> {
+        let face = |label: &'static str, view: CameraView| {
+            button(text(label).size(11))
+                .padding([2, 6])
+                .style(|_, status| theme::quiet(status))
+                .on_press(Message::CameraView(view))
+        };
+        column![
+            row![
+                face("Iso", CameraView::Iso),
+                face("Top", CameraView::Top),
+                face("Fit", CameraView::Fit),
+            ]
+            .spacing(2),
+            row![
+                face("Front", CameraView::Front),
+                face("Back", CameraView::Back),
+            ]
+            .spacing(2),
+            row![
+                face("Left", CameraView::Left),
+                face("Right", CameraView::Right),
+            ]
+            .spacing(2),
         ]
-        .width(Fill)
+        .spacing(2)
+        .into()
+    }
+
+    fn collapse_chevron(&self) -> Element<'_, Message> {
+        let label = if self.sidebar_collapsed { "‹" } else { "›" };
+        container(
+            button(text(label).size(16))
+                .padding([8, 6])
+                .style(|_, status| theme::quiet(status))
+                .on_press(Message::CollapseSidebar),
+        )
         .height(Fill)
+        .align_y(Alignment::Center)
         .into()
     }
 
