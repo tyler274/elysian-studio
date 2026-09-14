@@ -127,7 +127,8 @@
                     --set LIB_VULKAN_PATH ${pkgs.vulkan-loader}/lib \
                     --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath gpuLibs} \
                     --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib \
-                    --prefix XDG_DATA_DIRS : /run/opengl-driver/share
+                    --prefix XDG_DATA_DIRS : /run/opengl-driver/share \
+                    --prefix XDG_DATA_DIRS : "$out/share"
                 done
               '';
             });
