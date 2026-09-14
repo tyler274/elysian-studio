@@ -5,6 +5,7 @@ use iced::{Background, Border, Color, Element};
 
 use bambu_config::FilamentMapMode;
 
+use crate::theme;
 use crate::{slot_colour_hex, FilamentPage, FilamentSource, Message};
 
 const PALETTE: [&str; 8] = [
@@ -18,12 +19,18 @@ const PALETTE: [&str; 8] = [
     "#212121FF",
 ];
 
+fn quiet_btn<'a>(content: impl Into<Element<'a, Message>>) -> button::Button<'a, Message> {
+    button(content)
+        .padding([3, 8])
+        .style(|_, status| theme::quiet(status))
+}
+
 impl crate::App {
     pub(crate) fn filament_library(&self) -> Element<'_, Message> {
         let picks = self.filament_pick_labels();
         let mut slots = column![row![
-            button("+").on_press(Message::AddFilamentSlot),
-            button("-").on_press(Message::RemoveFilamentSlot),
+            quiet_btn("+").on_press(Message::AddFilamentSlot),
+            quiet_btn("-").on_press(Message::RemoveFilamentSlot),
         ]
         .spacing(6)];
         for (i, slot) in self.filament_slots.iter().enumerate() {
@@ -42,17 +49,20 @@ impl crate::App {
             slots = slots.push(
                 column![
                     row![
-                        button(text(format!("{mark} {} {ams}", i + 1)).size(12))
+                        quiet_btn(text(format!("{mark} {} {ams}", i + 1)).size(12))
                             .on_press(Message::SelectFilamentSlot(i)),
-                        button(swatch).on_press(Message::CycleFilamentColour(i)),
+                        quiet_btn(swatch).on_press(Message::CycleFilamentColour(i)),
                         pick_list(picks.clone(), selected, move |label| {
                             Message::FilamentSlotPreset { slot: i, label }
                         })
-                        .placeholder("preset"),
+                        .placeholder("preset")
+                        .style(theme::choice)
+                        .menu_style(theme::menu),
                     ]
                     .spacing(6),
                     text_input("#RRGGBBAA", &slot.colour)
-                        .on_input(move |colour| Message::FilamentSlotColour { slot: i, colour }),
+                        .on_input(move |colour| Message::FilamentSlotColour { slot: i, colour })
+                        .style(theme::field),
                 ]
                 .spacing(4),
             );
@@ -68,29 +78,33 @@ impl crate::App {
             .size(12),
         );
         slots = slots.push(self.ams_chips());
-        slots = slots.push(button("Sync AMS").on_press(Message::SyncAms));
+        slots = slots.push(quiet_btn("Sync AMS").on_press(Message::SyncAms));
         slots = slots.push(
             checkbox(self.show_bbl_presets)
                 .label("Bambu system presets")
-                .on_toggle(Message::ShowBblPresets),
+                .on_toggle(Message::ShowBblPresets)
+                .style(theme::tick),
         );
         slots = slots.push(
-            text_input("catalog search", &self.catalog_query).on_input(Message::CatalogQuery),
+            text_input("catalog search", &self.catalog_query)
+                .on_input(Message::CatalogQuery)
+                .style(theme::field),
         );
         slots = slots.push(self.filament_group_ui());
         slots = slots.push(self.filament_params());
         slots = slots.push(text("New user preset…").size(13));
         slots = slots.push(
             text_input("name (clone selected)", &self.user_preset_name)
-                .on_input(Message::UserPresetName),
+                .on_input(Message::UserPresetName)
+                .style(theme::field),
         );
-        slots = slots.push(button("Save user preset").on_press(Message::SaveUserPreset));
+        slots = slots.push(quiet_btn("Save user preset").on_press(Message::SaveUserPreset));
         if self
             .filament_slots
             .get(self.active_filament)
             .is_some_and(|s| s.source == FilamentSource::User)
         {
-            slots = slots.push(button("Delete user preset").on_press(Message::DeleteUserPreset));
+            slots = slots.push(quiet_btn("Delete user preset").on_press(Message::DeleteUserPreset));
         }
         slots.spacing(6).into()
     }
@@ -145,7 +159,9 @@ impl crate::App {
                 ],
                 Some(self.settings.filament_map_mode),
                 Message::FilamentMapMode
-            ),
+            )
+            .style(theme::choice)
+            .menu_style(theme::menu),
         ];
         if nozzles <= 1 {
             col = col.push(text("Single nozzle — map stays T1 (H2C dual shows 1/2).").size(11));
@@ -155,11 +171,11 @@ impl crate::App {
                 col = col.push(
                     row![
                         text(format!("F{} → T{mapped}", i + 1)).size(12),
-                        button("1").on_press(Message::AssignSlotExtruder {
+                        quiet_btn("1").on_press(Message::AssignSlotExtruder {
                             slot: i,
                             extruder: 1
                         }),
-                        button("2").on_press(Message::AssignSlotExtruder {
+                        quiet_btn("2").on_press(Message::AssignSlotExtruder {
                             slot: i,
                             extruder: 2
                         }),
@@ -182,7 +198,9 @@ impl crate::App {
         ];
         let mut col = column![
             text("Selected slot").size(16),
-            pick_list(pages, Some(self.filament_page), Message::FilamentPage),
+            pick_list(pages, Some(self.filament_page), Message::FilamentPage)
+                .style(theme::choice)
+                .menu_style(theme::menu),
         ];
         col = col.push(match self.filament_page {
             FilamentPage::Filament => self.page_filament_basic(),
@@ -210,18 +228,24 @@ impl crate::App {
             .size(12),
             checkbox(self.settings.filament_soluble)
                 .label("Soluble")
-                .on_toggle(Message::ParamSoluble),
+                .on_toggle(Message::ParamSoluble)
+                .style(theme::tick),
             checkbox(self.settings.filament_is_support)
                 .label("Support filament")
-                .on_toggle(Message::ParamSupport),
+                .on_toggle(Message::ParamSupport)
+                .style(theme::tick),
             checkbox(self.settings.filament_printable != 0)
                 .label("Printable")
-                .on_toggle(Message::ParamPrintable),
+                .on_toggle(Message::ParamPrintable)
+                .style(theme::tick),
             checkbox(self.settings.enable_pressure_advance)
                 .label("Pressure advance")
-                .on_toggle(Message::ParamPaEnable),
+                .on_toggle(Message::ParamPaEnable)
+                .style(theme::tick),
             text(format!("K {:.3}", self.settings.pressure_advance)).size(12),
-            slider(0.0..=0.1, self.settings.pressure_advance, Message::ParamPa).step(0.001),
+            slider(0.0..=0.1, self.settings.pressure_advance, Message::ParamPa)
+                .step(0.001)
+                .style(theme::range),
             text(format!(
                 "Range low {}°C · high {}°C",
                 self.settings.nozzle_temperature_range_low,
@@ -233,12 +257,16 @@ impl crate::App {
                 f64::from(self.settings.nozzle_temperature_range_low),
                 Message::ParamRangeLow
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             text(format!("Cost {:.2} / kg", self.settings.filament_cost)).size(12),
-            slider(0.0..=80.0, self.settings.filament_cost, Message::ParamCost).step(0.5),
+            slider(0.0..=80.0, self.settings.filament_cost, Message::ParamCost)
+                .step(0.5)
+                .style(theme::range),
             checkbox(self.settings.filament_adaptive_volumetric_speed)
                 .label("Adaptive volumetric")
-                .on_toggle(Message::ParamAdaptiveVol),
+                .on_toggle(Message::ParamAdaptiveVol)
+                .style(theme::tick),
             text(format!(
                 "Prime volume {:.1} mm³",
                 self.settings.filament_prime_volume
@@ -249,7 +277,8 @@ impl crate::App {
                 self.settings.filament_prime_volume,
                 Message::ParamPrime
             )
-            .step(0.5),
+            .step(0.5)
+            .style(theme::range),
         ]
         .spacing(4)
         .into()
@@ -263,14 +292,16 @@ impl crate::App {
                 f64::from(self.settings.fan_min_speed),
                 Message::CoolingFanMin
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             text(format!("Fan max {}", self.settings.fan_max_speed)).size(12),
             slider(
                 0.0..=100.0,
                 f64::from(self.settings.fan_max_speed),
                 Message::CoolingFanMax
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             text(format!(
                 "Slow down layer time {:.0}s",
                 self.settings.slow_down_layer_time_s
@@ -281,7 +312,8 @@ impl crate::App {
                 self.settings.slow_down_layer_time_s,
                 Message::CoolingSlowdown
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
         ]
         .spacing(4)
         .into()
@@ -299,10 +331,12 @@ impl crate::App {
                 self.settings.retraction_length_mm,
                 Message::ParamRetract
             )
-            .step(0.05),
+            .step(0.05)
+            .style(theme::range),
             checkbox(self.settings.wipe)
                 .label("Wipe")
-                .on_toggle(Message::ParamWipe),
+                .on_toggle(Message::ParamWipe)
+                .style(theme::tick),
         ]
         .spacing(4)
         .into()
@@ -312,10 +346,12 @@ impl crate::App {
         column![
             text("Start gcode").size(12),
             text_input("filament start", &self.settings.filament_start_gcode)
-                .on_input(Message::ParamStartGcode),
+                .on_input(Message::ParamStartGcode)
+                .style(theme::field),
             text("End gcode").size(12),
             text_input("filament end", &self.settings.filament_end_gcode)
-                .on_input(Message::ParamEndGcode),
+                .on_input(Message::ParamEndGcode)
+                .style(theme::field),
         ]
         .spacing(4)
         .into()
@@ -325,7 +361,8 @@ impl crate::App {
         column![
             text("Notes").size(12),
             text_input("filament notes", &self.settings.filament_notes)
-                .on_input(Message::ParamNotes),
+                .on_input(Message::ParamNotes)
+                .style(theme::field),
         ]
         .spacing(4)
         .into()
@@ -343,7 +380,8 @@ impl crate::App {
                 f64::from(self.settings.filament_flush_temp.max(0) as u16),
                 Message::ParamFlushTemp
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             text(format!(
                 "Flush temp fast {}°C",
                 self.settings.filament_flush_temp_fast
@@ -354,7 +392,8 @@ impl crate::App {
                 f64::from(self.settings.filament_flush_temp_fast.max(0) as u16),
                 Message::ParamFlushTempFast
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             text(format!(
                 "Flush volumetric {:.1}",
                 self.settings.filament_flush_volumetric_speed
@@ -365,7 +404,8 @@ impl crate::App {
                 self.settings.filament_flush_volumetric_speed,
                 Message::ParamFlushVol
             )
-            .step(0.5),
+            .step(0.5)
+            .style(theme::range),
             text(format!(
                 "Ramming volumetric {:.1} (−1 = max)",
                 self.settings.filament_ramming_volumetric_speed
@@ -376,7 +416,8 @@ impl crate::App {
                 self.settings.filament_ramming_volumetric_speed,
                 Message::ParamRammingVol
             )
-            .step(0.5),
+            .step(0.5)
+            .style(theme::range),
             text(format!(
                 "Ramming travel {:.2}s",
                 self.settings.filament_ramming_travel_time
@@ -387,7 +428,8 @@ impl crate::App {
                 self.settings.filament_ramming_travel_time,
                 Message::ParamRammingTravel
             )
-            .step(0.05),
+            .step(0.05)
+            .style(theme::range),
             text(format!(
                 "Precool {}°C",
                 self.settings.filament_pre_cooling_temperature
@@ -398,10 +440,12 @@ impl crate::App {
                 f64::from(self.settings.filament_pre_cooling_temperature.max(0) as u16),
                 Message::ParamPrecool
             )
-            .step(1.0),
+            .step(1.0)
+            .style(theme::range),
             checkbox(self.settings.long_retraction_when_ec)
                 .label("Long retraction when EC")
-                .on_toggle(Message::ParamLongEc),
+                .on_toggle(Message::ParamLongEc)
+                .style(theme::tick),
         ]
         .spacing(4)
         .into()

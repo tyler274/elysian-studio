@@ -150,12 +150,16 @@ impl crate::App {
                 CoordSpace::MOVE.as_slice(),
                 Some(space),
                 Message::CoordSpace
-            ),
+            )
+            .style(theme::choice)
+            .menu_style(theme::menu),
             text(pos_label).size(12),
             axis_input("X", &self.pos_edit[0], XformField::Pos(0), "mm"),
             axis_input("Y", &self.pos_edit[1], XformField::Pos(1), "mm"),
             axis_input("Z", &self.pos_edit[2], XformField::Pos(2), "mm"),
-            button(text("Drop to bed").size(12)).on_press(Message::DropToBed),
+            button(text("Drop to bed").size(12))
+                .style(|_, status| theme::quiet(status))
+                .on_press(Message::DropToBed),
             text("Enter applies a typed value.").size(11),
         ]
         .spacing(4)
@@ -173,7 +177,9 @@ impl crate::App {
             axis_input("X", &self.rot_abs_edit[0], XformField::RotAbs(0), "°"),
             axis_input("Y", &self.rot_abs_edit[1], XformField::RotAbs(1), "°"),
             axis_input("Z", &self.rot_abs_edit[2], XformField::RotAbs(2), "°"),
-            button(text("Reset rotation").size(12)).on_press(Message::ResetRotation),
+            button(text("Reset rotation").size(12))
+                .style(|_, status| theme::quiet(status))
+                .on_press(Message::ResetRotation),
             text("Enter applies a typed value.").size(11),
         ]
         .spacing(4)
@@ -186,7 +192,9 @@ impl crate::App {
                 CoordSpace::SCALE.as_slice(),
                 Some(self.coord_space),
                 Message::CoordSpace
-            ),
+            )
+            .style(theme::choice)
+            .menu_style(theme::menu),
             text("Scale").size(12),
             axis_input("X", &self.scale_pct_edit[0], XformField::ScalePct(0), "%"),
             axis_input("Y", &self.scale_pct_edit[1], XformField::ScalePct(1), "%"),
@@ -197,8 +205,11 @@ impl crate::App {
             axis_input("Z", &self.size_edit[2], XformField::Size(2), "mm"),
             checkbox(self.uniform_scale)
                 .label("uniform scale")
-                .on_toggle(Message::UniformScale),
-            button(text("Reset scale").size(12)).on_press(Message::ResetScale),
+                .on_toggle(Message::UniformScale)
+                .style(theme::tick),
+            button(text("Reset scale").size(12))
+                .style(|_, status| theme::quiet(status))
+                .on_press(Message::ResetScale),
             text("Enter applies a typed value.").size(11),
         ]
         .spacing(4)
@@ -691,6 +702,7 @@ fn axis_input<'a>(
         text_input(unit, draft)
             .on_input(move |text| Message::XformDraft { field, text })
             .on_submit(Message::XformCommit(field))
+            .style(theme::field)
             .width(Fill),
         text(unit).size(12).width(28),
     ]

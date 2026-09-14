@@ -295,7 +295,8 @@ impl crate::App {
                     f64::from(self.scene.preview_vertices),
                     |v| Message::PreviewMove(v as u32),
                 )
-                .step(1.0),
+                .step(1.0)
+                .style(theme::range),
             );
         }
 
@@ -317,7 +318,8 @@ impl crate::App {
                 f64::from(self.scene.preview_layer),
                 |v| Message::PreviewLayer(v as u32),
             )
-            .step(1.0);
+            .step(1.0)
+            .style(theme::range);
             left = left.push(
                 container(layer)
                     .padding(iced::Padding {

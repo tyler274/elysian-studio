@@ -85,6 +85,7 @@ pub fn run() -> iced::Result {
         .subscription(App::subscription)
         .title("Bambu Studio")
         .theme(App::theme)
+        .style(|_, t| theme::window(t))
         .settings(Settings {
             antialiasing: true,
             default_text_size: iced::Pixels(13.0),
@@ -1661,13 +1662,13 @@ impl App {
                     .style(|_| theme::sidebar_pane())
                     .width(SIDEBAR_WIDTH)
                     .height(Fill);
-                    row![stage, sidebar].into()
+                    row![stage, sidebar].height(Fill).into()
                 }
             }
         };
         column![
             container(self.top_bar()).style(|_| theme::header_bar()),
-            body,
+            container(body).height(Fill),
         ]
         .height(Fill)
         .into()
@@ -2005,7 +2006,8 @@ impl App {
                 col = col.push(
                     checkbox(vol.hidden)
                         .label("Hide volume")
-                        .on_toggle(Message::HideVolume),
+                        .on_toggle(Message::HideVolume)
+                        .style(theme::tick),
                 );
             }
         }

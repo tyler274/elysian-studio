@@ -206,6 +206,37 @@ fn gui_chrome_prepare_preview_goldens() {
     assert!(!app.snapshot().sidebar_collapsed);
     assert_eq!(app.snapshot().sidebar_width, 300);
 
+    drive(
+        &mut app,
+        [
+            Message::ToggleFilamentSection,
+            Message::TogglePrinterSection,
+            Message::ToggleProcessSection,
+        ],
+    );
+    assert_eq!(app.snapshot().active_tab_fill, "#00AE42");
+    if let Some(rgba) = app.screenshot_rgba() {
+        assert!(
+            header_has_fill(&rgba, 1200, theme::PREPARE),
+            "collapsing sidebar groups must keep Prepare tab fill"
+        );
+        assert!(
+            sidebar_is_width(&rgba, 1200, 800),
+            "collapsing sidebar groups must keep Studio sidebar chrome"
+        );
+    }
+    drive(
+        &mut app,
+        [
+            Message::ToggleFilamentSection,
+            Message::TogglePrinterSection,
+            Message::ToggleProcessSection,
+        ],
+    );
+    assert!(
+        app.snapshot().printer_open && app.snapshot().filament_open && app.snapshot().process_open
+    );
+
     if png.is_none() {
         eprintln!("skipping GUI PNG goldens (no wgpu adapter)");
     }

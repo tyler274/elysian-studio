@@ -2,8 +2,9 @@
 //! iced's stock `Theme::Dark` greens/purples.
 
 use iced::theme::Palette;
-use iced::widget::{button, container};
-use iced::{Background, Border, Color, Theme};
+use iced::widget::overlay::menu;
+use iced::widget::{button, checkbox, container, pick_list, scrollable, slider, text_input};
+use iced::{Background, Border, Color, Shadow, Theme, Vector};
 
 /// Header bar ~`rgb(0.07, 0.08, 0.10)`.
 pub const HEADER: Color = Color::from_rgb(0.07, 0.08, 0.10);
@@ -191,4 +192,159 @@ pub fn quiet(status: button::Status) -> button::Style {
 
 pub fn process_tab(active: bool, status: button::Status) -> button::Style {
     notebook_tab(active, PREPARE, status)
+}
+
+/// Window fill — keep this off iced's generated extended palette so collapsing
+/// sidebar groups cannot flip the shell between Custom and Light/Dark.
+pub fn window(_theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style {
+        background_color: HEADER,
+        text_color: TEXT,
+    }
+}
+
+pub fn field(_theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let border_color = match status {
+        text_input::Status::Focused { .. } => PREPARE,
+        text_input::Status::Hovered => INACTIVE_HOVER,
+        _ => CARD_BORDER,
+    };
+    text_input::Style {
+        background: Background::Color(INACTIVE),
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        icon: TEXT_MUTED,
+        placeholder: TEXT_MUTED,
+        value: TEXT,
+        selection: PREPARE,
+    }
+}
+
+pub fn choice(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let bg = match status {
+        pick_list::Status::Hovered | pick_list::Status::Opened { .. } => INACTIVE_HOVER,
+        pick_list::Status::Active => INACTIVE,
+    };
+    pick_list::Style {
+        text_color: TEXT,
+        placeholder_color: TEXT_MUTED,
+        handle_color: TEXT_MUTED,
+        background: Background::Color(bg),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+    }
+}
+
+pub fn menu(_theme: &Theme) -> menu::Style {
+    menu::Style {
+        background: Background::Color(CARD),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        text_color: TEXT,
+        selected_text_color: Color::WHITE,
+        selected_background: Background::Color(PREPARE),
+        shadow: Shadow::default(),
+    }
+}
+
+pub fn tick(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let (is_checked, hovered) = match status {
+        checkbox::Status::Active { is_checked } => (is_checked, false),
+        checkbox::Status::Hovered { is_checked } => (is_checked, true),
+        checkbox::Status::Disabled { is_checked } => (is_checked, false),
+    };
+    let fill = if is_checked {
+        PREPARE
+    } else if hovered {
+        INACTIVE_HOVER
+    } else {
+        INACTIVE
+    };
+    checkbox::Style {
+        background: Background::Color(fill),
+        icon_color: Color::WHITE,
+        border: Border {
+            color: if is_checked { PREPARE } else { CARD_BORDER },
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        text_color: Some(TEXT),
+    }
+}
+
+pub fn range(_theme: &Theme, status: slider::Status) -> slider::Style {
+    let handle = match status {
+        slider::Status::Hovered | slider::Status::Dragged => Color {
+            r: (PREPARE.r * 1.08).min(1.0),
+            g: (PREPARE.g * 1.08).min(1.0),
+            b: (PREPARE.b * 1.08).min(1.0),
+            a: PREPARE.a,
+        },
+        slider::Status::Active => PREPARE,
+    };
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (Background::Color(PREPARE), Background::Color(INACTIVE)),
+            width: 4.0,
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 2.0.into(),
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 7.0 },
+            background: Background::Color(handle),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+    }
+}
+
+pub fn scroll(_theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
+    let rail = scrollable::Rail {
+        background: Some(Background::Color(SIDEBAR)),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: 2.0.into(),
+        },
+        scroller: scrollable::Scroller {
+            background: Background::Color(INACTIVE_HOVER),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: 2.0.into(),
+            },
+        },
+    };
+    scrollable::Style {
+        container: sidebar_pane(),
+        vertical_rail: rail,
+        horizontal_rail: rail,
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Background::Color(Color { a: 0.9, ..HEADER }),
+            border: Border {
+                color: CARD_BORDER,
+                width: 1.0,
+                radius: 16.0.into(),
+            },
+            shadow: Shadow {
+                color: Color::BLACK,
+                offset: Vector::ZERO,
+                blur_radius: 2.0,
+            },
+            icon: TEXT_MUTED,
+        },
+    }
 }

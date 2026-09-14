@@ -2,9 +2,10 @@
 
 use bambu_config::{SeamPosition, TopOneWallType};
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, slider, text, text_input,
+    button, checkbox, column, container, keyed_column, pick_list, row, scrollable, slider, text,
+    text_input,
 };
-use iced::{Alignment, Element, Fill};
+use iced::{Alignment, Element, Fill, Length};
 
 use crate::theme;
 use crate::{format_eta, role_legend, Message, ProcessTab, SIDEBAR_WIDTH};
@@ -14,30 +15,40 @@ const SEAM_LABELS: [&str; 4] = ["aligned", "rear", "nearest", "random"];
 impl crate::App {
     pub(crate) fn prepare_sidebar(&self) -> Element<'_, Message> {
         scrollable(
-            column![
-                self.section(
-                    "Printer",
-                    self.printer_open,
-                    Message::TogglePrinterSection,
-                    self.printer_body(true),
+            keyed_column([
+                (
+                    0u8,
+                    self.section(
+                        "Printer",
+                        self.printer_open,
+                        Message::TogglePrinterSection,
+                        self.printer_body(true),
+                    ),
                 ),
-                self.section(
-                    "Filament",
-                    self.filament_open,
-                    Message::ToggleFilamentSection,
-                    self.filament_library(),
+                (
+                    1u8,
+                    self.section(
+                        "Filament",
+                        self.filament_open,
+                        Message::ToggleFilamentSection,
+                        self.filament_library(),
+                    ),
                 ),
-                self.section(
-                    "Process",
-                    self.process_open,
-                    Message::ToggleProcessSection,
-                    self.process_pane(true),
+                (
+                    2u8,
+                    self.section(
+                        "Process",
+                        self.process_open,
+                        Message::ToggleProcessSection,
+                        self.process_pane(true),
+                    ),
                 ),
-            ]
+            ])
             .spacing(8)
             .padding(theme::SIDEBAR_PAD)
             .width(SIDEBAR_WIDTH),
         )
+        .style(theme::scroll)
         .height(Fill)
         .into()
     }
@@ -62,24 +73,36 @@ impl crate::App {
             .unwrap_or_else(|| "—".into());
         scrollable(
             column![
-                self.section(
-                    "Printer",
-                    self.printer_open,
-                    Message::TogglePrinterSection,
-                    self.printer_body(false),
-                ),
-                self.section(
-                    "Filament",
-                    self.filament_open,
-                    Message::ToggleFilamentSection,
-                    self.preview_filament_chips(),
-                ),
-                self.section(
-                    "Process",
-                    self.process_open,
-                    Message::ToggleProcessSection,
-                    self.process_pane(false),
-                ),
+                keyed_column([
+                    (
+                        0u8,
+                        self.section(
+                            "Printer",
+                            self.printer_open,
+                            Message::TogglePrinterSection,
+                            self.printer_body(false),
+                        ),
+                    ),
+                    (
+                        1u8,
+                        self.section(
+                            "Filament",
+                            self.filament_open,
+                            Message::ToggleFilamentSection,
+                            self.preview_filament_chips(),
+                        ),
+                    ),
+                    (
+                        2u8,
+                        self.section(
+                            "Process",
+                            self.process_open,
+                            Message::ToggleProcessSection,
+                            self.process_pane(false),
+                        ),
+                    ),
+                ])
+                .spacing(8),
                 text(format!(
                     "Layer {}  Z {:.2} mm  ~{eta}",
                     self.scene.preview_layer + 1,
@@ -92,28 +115,34 @@ impl crate::App {
                     f64::from(self.scene.preview_layer),
                     |v| Message::PreviewLayer(v as u32)
                 )
-                .step(1.0),
+                .step(1.0)
+                .style(theme::range),
                 slider(
                     0.0..=max_move.max(1.0),
                     f64::from(self.scene.preview_vertices),
                     |v| Message::PreviewMove(v as u32)
                 )
-                .step(1.0),
+                .step(1.0)
+                .style(theme::range),
                 text(role_legend()).size(11).color(theme::TEXT_MUTED),
                 checkbox(self.scene.hide_infill)
                     .label("Hide infill")
-                    .on_toggle(Message::HideInfill),
+                    .on_toggle(Message::HideInfill)
+                    .style(theme::tick),
                 checkbox(self.scene.hide_support)
                     .label("Hide support")
-                    .on_toggle(Message::HideSupport),
+                    .on_toggle(Message::HideSupport)
+                    .style(theme::tick),
                 checkbox(self.scene.realistic)
                     .label("Realistic")
-                    .on_toggle(Message::Realistic),
+                    .on_toggle(Message::Realistic)
+                    .style(theme::tick),
             ]
             .spacing(8)
             .padding(theme::SIDEBAR_PAD)
             .width(SIDEBAR_WIDTH),
         )
+        .style(theme::scroll)
         .height(Fill)
         .into()
     }
@@ -140,11 +169,13 @@ impl crate::App {
         .width(Fill)
         .style(|_, status| theme::quiet(status))
         .on_press(toggle);
-        let mut col = column![header].spacing(6);
-        if open {
-            col = col.push(body);
-        }
-        container(col)
+        let body = container(body).width(Fill).clip(true);
+        let body = if open {
+            body
+        } else {
+            body.height(Length::Fixed(0.0))
+        };
+        container(column![header, body].spacing(6))
             .padding(8)
             .width(Fill)
             .style(|_| theme::card())
@@ -165,7 +196,9 @@ impl crate::App {
             )
             .placeholder("machine JSON")
             .padding([3, 8])
-            .text_size(theme::BODY_SIZE),
+            .text_size(theme::BODY_SIZE)
+            .style(theme::choice)
+            .menu_style(theme::menu),
             text(format!(
                 "Bed {:.0}×{:.0} mm · {}",
                 self.scene.bed.width(),
@@ -295,7 +328,9 @@ impl crate::App {
                     .on_press(Message::ProcessObjects(true)),
             ]
             .spacing(4),
-            text_input("search process", &self.process_search).on_input(Message::ProcessSearch),
+            text_input("search process", &self.process_search)
+                .on_input(Message::ProcessSearch)
+                .style(theme::field),
             pick_list(
                 process_names,
                 self.process_name.clone(),
@@ -303,7 +338,9 @@ impl crate::App {
             )
             .placeholder("process JSON")
             .padding([3, 8])
-            .text_size(theme::BODY_SIZE),
+            .text_size(theme::BODY_SIZE)
+            .style(theme::choice)
+            .menu_style(theme::menu),
         ]
         .spacing(6);
         if full_notebook {
@@ -326,14 +363,16 @@ impl crate::App {
             text("Paint").size(theme::TITLE_SIZE).color(theme::TEXT),
             checkbox(self.paint_blocker)
                 .label("Blocker (else Enforcer)")
-                .on_toggle(Message::PaintBlocker),
+                .on_toggle(Message::PaintBlocker)
+                .style(theme::tick),
             text(format!("Brush {:.1} mm", self.brush_mm))
                 .size(12)
                 .color(theme::TEXT_MUTED),
             slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
                 Message::BrushRadius(v as f32)
             })
-            .step(0.5),
+            .step(0.5)
+            .style(theme::range),
             row![
                 button(text("Support").size(12))
                     .padding([3, 8])
@@ -381,7 +420,9 @@ impl crate::App {
                     self.settings.infill_density * 100.0
                 ))
                 .size(theme::BODY_SIZE),
-                slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
+                slider(0.0..=1.0, self.settings.infill_density, Message::Infill)
+                    .step(0.01)
+                    .style(theme::range),
             ]
             .spacing(6)
             .into(),
@@ -393,31 +434,36 @@ impl crate::App {
                     self.settings.layer_height_mm,
                     Message::LayerHeight
                 )
-                .step(0.01),
+                .step(0.01)
+                .style(theme::range),
                 text(format!("Nozzle {}°C", self.settings.temperature_c)).size(theme::BODY_SIZE),
                 slider(
                     180.0..=280.0,
                     f64::from(self.settings.temperature_c),
                     Message::NozzleTemp,
                 )
-                .step(1.0),
+                .step(1.0)
+                .style(theme::range),
             ]
             .spacing(6)
             .into(),
             ProcessTab::Support => column![
                 checkbox(self.settings.enable_support)
                     .label("Supports")
-                    .on_toggle(Message::EnableSupport),
+                    .on_toggle(Message::EnableSupport)
+                    .style(theme::tick),
                 checkbox(self.by_object)
                     .label("By-object sequence")
-                    .on_toggle(Message::ByObject),
+                    .on_toggle(Message::ByObject)
+                    .style(theme::tick),
             ]
             .spacing(6)
             .into(),
             ProcessTab::Others => column![
                 checkbox(self.scene.realistic)
                     .label("Realistic preview")
-                    .on_toggle(Message::Realistic),
+                    .on_toggle(Message::Realistic)
+                    .style(theme::tick),
                 button(text("Reset camera").size(12))
                     .padding([3, 8])
                     .style(|_, status| theme::quiet(status))
@@ -437,7 +483,9 @@ impl crate::App {
             ))
             .size(theme::BODY_SIZE)
             .color(theme::TEXT),
-            slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
+            slider(0.0..=1.0, self.settings.infill_density, Message::Infill)
+                .step(0.01)
+                .style(theme::range),
             text(format!(
                 "Line width {:.2} · outer {:.2} · inner {:.2} · sparse {:.2}",
                 self.settings.line_width_mm,
@@ -462,7 +510,8 @@ impl crate::App {
                 self.settings.layer_height_mm,
                 Message::LayerHeight
             )
-            .step(0.01),
+            .step(0.01)
+            .style(theme::range),
             text(format!(
                 "First layer {:.2} mm",
                 self.settings.first_layer_height_mm
@@ -473,17 +522,21 @@ impl crate::App {
                 self.settings.first_layer_height_mm,
                 Message::FirstLayerHeight
             )
-            .step(0.01),
+            .step(0.01)
+            .style(theme::range),
             self.seam_pick(),
             checkbox(self.settings.precise_outer_wall)
                 .label("Precise wall")
-                .on_toggle(Message::PreciseOuterWall),
+                .on_toggle(Message::PreciseOuterWall)
+                .style(theme::tick),
             checkbox(self.settings.only_one_wall_first_layer)
                 .label("Only one wall first layer")
-                .on_toggle(Message::OnlyOneWallFirst),
+                .on_toggle(Message::OnlyOneWallFirst)
+                .style(theme::tick),
             checkbox(self.settings.top_one_wall == TopOneWallType::AllTop)
                 .label("Only one wall top")
-                .on_toggle(Message::OnlyOneWallTop),
+                .on_toggle(Message::OnlyOneWallTop)
+                .style(theme::tick),
         ]
         .spacing(6)
         .into()
@@ -495,10 +548,12 @@ impl crate::App {
             self.seam_pick(),
             checkbox(self.settings.seam_placement_away_from_overhangs)
                 .label("Staggered inner seams")
-                .on_toggle(Message::SeamAway),
+                .on_toggle(Message::SeamAway)
+                .style(theme::tick),
             checkbox(self.settings.seam_slope_conditional)
                 .label("Apply scarf around sharp corners")
-                .on_toggle(Message::ScarfConditional),
+                .on_toggle(Message::ScarfConditional)
+                .style(theme::tick),
             text(format!(
                 "Scarf angle ≥ {}°",
                 self.settings.scarf_angle_threshold_deg
@@ -507,16 +562,19 @@ impl crate::App {
             .color(theme::TEXT_MUTED),
             checkbox(self.settings.seam_slope_entire_loop)
                 .label("Scarf around entire wall")
-                .on_toggle(Message::ScarfEntireLoop),
+                .on_toggle(Message::ScarfEntireLoop)
+                .style(theme::tick),
             text(format!("Scarf steps {}", self.settings.seam_slope_steps))
                 .size(12)
                 .color(theme::TEXT_MUTED),
             checkbox(self.settings.seam_slope_inner_walls)
                 .label("Scarf on inner walls")
-                .on_toggle(Message::ScarfInnerWalls),
+                .on_toggle(Message::ScarfInnerWalls)
+                .style(theme::tick),
             checkbox(self.settings.override_filament_scarf_seam_setting)
                 .label("Override filament scarf settings")
-                .on_toggle(Message::OverrideScarf),
+                .on_toggle(Message::OverrideScarf)
+                .style(theme::tick),
         ]
         .spacing(4)
         .into()
@@ -536,7 +594,9 @@ impl crate::App {
                 }
             )
             .padding([3, 8])
-            .text_size(theme::BODY_SIZE),
+            .text_size(theme::BODY_SIZE)
+            .style(theme::choice)
+            .menu_style(theme::menu),
         ]
         .spacing(4)
         .into()

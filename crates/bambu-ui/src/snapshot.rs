@@ -210,7 +210,7 @@ pub fn png_delta(a: &[u8], b: &[u8]) -> (f64, u8) {
     let mut sse = 0.0;
     let mut max = 0u8;
     for (x, y) in a.iter().zip(b) {
-        let d = i16::from(*x) - i16::from(*y);
+        let d = i32::from(*x) - i32::from(*y);
         sse += f64::from(d * d);
         max = max.max(d.unsigned_abs() as u8);
     }

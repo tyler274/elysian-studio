@@ -49,7 +49,9 @@ impl Model {
         }
     }
 
-    /// Pack object AABBs left-to-right, wrapping in Y, inside the printable AABB.
+    /// Pack object AABBs with a gap, then translate the pile so its center
+    /// matches the bed center (`ArrangeParams::do_final_align` + `align_center`
+    /// `{0.5, 0.5}` in Bambu Studio). A single object therefore stays centered.
     pub fn arrange_on_plate(&mut self, plate: usize, bed: &BedShape, gap: f32) {
         let (x0, y0, x1, y1) = bed.printable_aabb();
         let indices: Vec<usize> = match self.plates.get(plate) {
@@ -57,43 +59,131 @@ impl Model {
             None => (0..self.objects.len()).collect(),
         };
         let gap = gap.max(1.0);
+        for &i in &indices {
+            if let Some(obj) = self.objects.get_mut(i) {
+                if obj.instances.is_empty() {
+                    obj.instances.push(Instance::default());
+                }
+            }
+        }
+
+        struct Item {
+            object: usize,
+            instance: usize,
+            w: f32,
+            d: f32,
+            min_x: f32,
+            min_y: f32,
+            min_z: f32,
+        }
+        let mut items = Vec::new();
+        for &i in &indices {
+            let Some(obj) = self.objects.get(i) else {
+                continue;
+            };
+            let mesh = obj.printable_mesh();
+            for (j, inst) in obj.instances.iter().enumerate() {
+                let local = {
+                    let mut without_xy = *inst;
+                    without_xy.offset = Vec3::ZERO;
+                    without_xy.apply_to_mesh(&mesh)
+                };
+                let Some(aabb) = local.aabb() else {
+                    continue;
+                };
+                items.push(Item {
+                    object: i,
+                    instance: j,
+                    w: aabb.size().x,
+                    d: aabb.size().y,
+                    min_x: aabb.min.x,
+                    min_y: aabb.min.y,
+                    min_z: aabb.min.z,
+                });
+            }
+        }
+
         let mut x = x0 + 1.0;
         let mut y = y0 + 1.0;
         let mut row_h = 0.0_f32;
-        for i in indices {
-            let Some(obj) = self.objects.get_mut(i) else {
-                continue;
-            };
-            if obj.instances.is_empty() {
-                obj.instances.push(Instance::default());
-            }
-            let mesh = obj.printable_mesh();
-            let Some(inst) = obj.instances.first_mut() else {
-                continue;
-            };
-            let local = {
-                let mut without_xy = *inst;
-                without_xy.offset = Vec3::ZERO;
-                without_xy.apply_to_mesh(&mesh)
-            };
-            let Some(aabb) = local.aabb() else {
-                continue;
-            };
-            let w = aabb.size().x;
-            let d = aabb.size().y;
-            if x > x0 + 1.5 && x + w > x1 - 1.0 {
+        let mut placed = Vec::new();
+        for item in items {
+            if x > x0 + 1.5 && x + item.w > x1 - 1.0 {
                 x = x0 + 1.0;
                 y += row_h + gap;
                 row_h = 0.0;
             }
-            if y + d > y1 {
+            if y + item.d > y1 {
                 break;
             }
-            inst.offset.x = x - aabb.min.x;
-            inst.offset.y = y - aabb.min.y;
-            inst.offset.z = -aabb.min.z;
-            x += w + gap;
-            row_h = row_h.max(d);
+            placed.push((
+                item.object,
+                item.instance,
+                x - item.min_x,
+                y - item.min_y,
+                -item.min_z,
+            ));
+            x += item.w + gap;
+            row_h = row_h.max(item.d);
+        }
+
+        for &(object, instance, ox, oy, oz) in &placed {
+            if let Some(inst) = self
+                .objects
+                .get_mut(object)
+                .and_then(|o| o.instances.get_mut(instance))
+            {
+                inst.offset.x = ox;
+                inst.offset.y = oy;
+                inst.offset.z = oz;
+            }
+        }
+
+        let mut pile = None;
+        for &(object, instance, ..) in &placed {
+            let Some(obj) = self.objects.get(object) else {
+                continue;
+            };
+            let Some(inst) = obj.instances.get(instance) else {
+                continue;
+            };
+            let Some(aabb) = inst.apply_to_mesh(&obj.printable_mesh()).aabb() else {
+                continue;
+            };
+            pile = Some(match pile {
+                Some(prev) => aabb.union(prev),
+                None => aabb,
+            });
+        }
+        let Some(pile) = pile else {
+            return;
+        };
+        let (bed_cx, bed_cy) = bed.center();
+        let pile_cx = (pile.min.x + pile.max.x) * 0.5;
+        let pile_cy = (pile.min.y + pile.max.y) * 0.5;
+        let mut dx = bed_cx - pile_cx;
+        let mut dy = bed_cy - pile_cy;
+        if pile.min.x + dx < x0 {
+            dx = x0 - pile.min.x;
+        }
+        if pile.max.x + dx > x1 {
+            dx = x1 - pile.max.x;
+        }
+        if pile.min.y + dy < y0 {
+            dy = y0 - pile.min.y;
+        }
+        if pile.max.y + dy > y1 {
+            dy = y1 - pile.max.y;
+        }
+        for &(object, instance, ..) in &placed {
+            if let Some(inst) = self
+                .objects
+                .get_mut(object)
+                .and_then(|o| o.instances.get_mut(instance))
+            {
+                inst.offset.x += dx;
+                inst.offset.y += dy;
+            }
         }
     }
 }
@@ -189,6 +279,19 @@ mod tests {
         model.place_on_bed_if_needed(&bed);
         let aabb = model.mesh_for_plate(0).unwrap().aabb().unwrap();
         assert!((aabb.min.z).abs() < 1e-3);
+        let cx = (aabb.min.x + aabb.max.x) * 0.5;
+        let cy = (aabb.min.y + aabb.max.y) * 0.5;
+        assert!((cx - 128.0).abs() < 0.5, "cx {cx}");
+        assert!((cy - 128.0).abs() < 0.5, "cy {cy}");
+    }
+
+    #[test]
+    fn arrange_lone_cube_centers_on_square_bed() {
+        let mut model = Model::from_mesh("cube", TriangleMesh::cube(20.0));
+        let bed = BedShape::square(256.0);
+        model.arrange_on_plate(0, &bed, 8.0);
+        let aabb = model.mesh_for_plate(0).unwrap().aabb().unwrap();
+        assert!(aabb.min.z.abs() < 1e-3);
         let cx = (aabb.min.x + aabb.max.x) * 0.5;
         let cy = (aabb.min.y + aabb.max.y) * 0.5;
         assert!((cx - 128.0).abs() < 0.5, "cx {cx}");
