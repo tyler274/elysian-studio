@@ -194,14 +194,40 @@ pub fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         .next_frame(&mut buf)
         .map_err(|e| format!("png frame: {e}"))?;
     buf.truncate(info.buffer_size());
-    if info.color_type != png::ColorType::Rgba {
-        return Err(format!("png color {:?}", info.color_type));
-    }
-    Ok((info.width, info.height, buf))
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        other => return Err(format!("png color {other:?}")),
+    };
+    Ok((info.width, info.height, rgba))
 }
 
 pub fn write_png(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
     std::fs::write(path, encode_png(rgba, width, height)?).map_err(|e| e.to_string())
+}
+
+/// Nearest-neighbor scale of packed RGBA8. Used to compare upstream captures at 1200×800.
+pub fn scale_rgba(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
+    let out_len = (dw as usize).saturating_mul(dh as usize).saturating_mul(4);
+    let mut out = vec![0u8; out_len];
+    if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
+        return out;
+    }
+    for y in 0..dh {
+        let sy = y * sh / dh;
+        for x in 0..dw {
+            let sx = x * sw / dw;
+            let si = ((sy * sw + sx) * 4) as usize;
+            let di = ((y * dw + x) * 4) as usize;
+            if let Some(px) = src.get(si..si + 4) {
+                out[di..di + 4].copy_from_slice(px);
+            }
+        }
+    }
+    out
 }
 
 /// GPU-tolerant compare: RMSE plus a max-channel delta.
@@ -291,4 +317,40 @@ pub fn sidebar_is_width(rgba: &[u8], width: u32, height: u32) -> bool {
 
 fn chroma_sidebar(px: &[u8]) -> bool {
     px.len() >= 3 && px[0] < 70 && px[1] < 70 && px[2] < 80 && px[1] >= px[0]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scale_rgba_identity() {
+        let src = vec![1u8, 2, 3, 255, 4, 5, 6, 255];
+        assert_eq!(scale_rgba(&src, 2, 1, 2, 1), src);
+    }
+
+    #[test]
+    fn scale_rgba_nearest_up() {
+        let src = vec![10u8, 20, 30, 255];
+        let out = scale_rgba(&src, 1, 1, 2, 2);
+        assert_eq!(out.len(), 16);
+        assert_eq!(&out[0..4], &[10, 20, 30, 255]);
+        assert_eq!(&out[12..16], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn decode_png_expands_rgb() {
+        let rgb = vec![1u8, 2, 3, 4, 5, 6];
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 2, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&rgb).unwrap();
+        }
+        let (w, h, rgba) = decode_png(&out).expect("rgb png");
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+    }
 }

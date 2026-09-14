@@ -30,8 +30,9 @@ use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, Printer
 use thiserror::Error;
 
 pub use camera::{
-    auth_packet, capture_chamber, describe_rtsps, jpeg_to_frame, probe_rtsps, rtsps_url,
-    snapshot_jpeg, ChamberCapture, RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
+    auth_packet, capture_chamber, describe_rtsps, jpeg_payload_len, jpeg_to_frame, probe_rtsps,
+    read_jpeg_frame, rtsps_url, snapshot_jpeg, ChamberCapture, JpegStream, RtspsSession,
+    LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
 pub use cloud::{
     cloud_mqtt_host, cloud_mqtt_user, load_cloud_session, load_cloud_session_default,

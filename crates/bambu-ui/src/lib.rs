@@ -10,7 +10,8 @@ mod snapshot;
 pub mod theme;
 
 pub use snapshot::{
-    decode_png, encode_png, header_has_fill, png_delta, sidebar_is_width, write_png, GuiSnapshot,
+    decode_png, encode_png, header_has_fill, png_delta, scale_rgba, sidebar_is_width, write_png,
+    GuiSnapshot,
 };
 
 use bambu_alloc as _;
@@ -25,7 +26,7 @@ use bambu_config::{
     BblProfileKind, CatalogFilament, CatalogIndex, FilamentMapMode, SeamPosition, SliceSettings,
     TopOneWallType,
 };
-use bambu_device::{AmsState, MachineState, PrintJob, PrinterBackend};
+use bambu_device::{AmsState, AmsTray, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
@@ -48,7 +49,6 @@ pub const WINDOW_SIZE: Size = Size::new(1200.0, 800.0);
 const WINDOW_MIN: Size = Size::new(960.0, 640.0);
 pub const SIDEBAR_WIDTH: f32 = 300.0;
 
-use monitor::JpegThumb;
 use plater::{CoordSpace, XformField};
 
 pub fn run() -> iced::Result {
@@ -186,7 +186,9 @@ pub struct App {
     login_account: String,
     login_password: String,
     login_code: String,
-    chamber_thumb: Option<JpegThumb>,
+    chamber_handle: Option<iced::widget::image::Handle>,
+    chamber_width: u32,
+    chamber_height: u32,
     camera_note: String,
     control_bed: String,
     control_nozzle: String,
@@ -551,8 +553,26 @@ struct SliceJob {
 
 #[derive(Debug, Clone)]
 enum ChamberResult {
-    Jpeg { bytes: usize, thumb: JpegThumb },
-    Rtsps { detail: String },
+    Jpeg {
+        bytes: usize,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    Rtsps {
+        detail: String,
+    },
+}
+
+impl ChamberResult {
+    fn from_frame(bytes: usize, frame: bambu_device::Frame) -> Self {
+        Self::Jpeg {
+            bytes,
+            width: frame.width,
+            height: frame.height,
+            rgba: frame.rgba,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -639,7 +659,9 @@ impl App {
             login_account: String::new(),
             login_password: String::new(),
             login_code: String::new(),
-            chamber_thumb: None,
+            chamber_handle: None,
+            chamber_width: 0,
+            chamber_height: 0,
             camera_note: String::new(),
             control_bed: String::new(),
             control_nozzle: String::new(),
@@ -700,8 +722,57 @@ impl App {
         app.process_objects = false;
         app.quality_tab = ProcessTab::Quality;
         app.status = "20mm cube on bed".into();
+        app.has_bearer = false;
+        app.live_monitor = false;
         app.sync_filament_map();
         app
+    }
+
+    /// Deterministic Device StatusPanel for headless goldens (no live MQTT).
+    pub fn seed_device_monitor(&mut self) {
+        self.has_bearer = false;
+        self.host.clear();
+        self.access_code.clear();
+        self.live_monitor = false;
+        self.machine = MachineState {
+            online: true,
+            gcode_state: "RUNNING".into(),
+            gcode_file: "cube.gcode".into(),
+            mc_percent: 42,
+            layer_num: 48,
+            total_layer_num: 120,
+            mc_remaining_time_min: 73,
+            nozzle_temp_c: 219.0,
+            nozzle_target_c: 220.0,
+            bed_temp_c: 59.0,
+            bed_target_c: 60.0,
+            chamber_temp_c: 32.0,
+            wifi_signal: "-44dBm".into(),
+            spd_lvl: 2,
+            cooling_fan: 128,
+            ..MachineState::default()
+        };
+        self.ams = AmsState {
+            slot_count: 4,
+            active_slot: Some(1),
+            humidity: Some(2),
+            trays: vec![
+                seed_tray(0, "PLA", "00AE42FF", Some(80)),
+                seed_tray(1, "PLA", "FF0000FF", Some(55)),
+                seed_tray(2, "PETG", "2979FFFF", Some(30)),
+                seed_tray(3, "", "", None),
+            ],
+            ..AmsState::default()
+        };
+        self.mqtt_status = "RUNNING · 42% · L48/120 · 73m · nozzle 219/220°C · bed 59/60°C · wifi -44dBm · spd 2 RH2".into();
+        self.control_bed = "60".into();
+        self.control_nozzle = "220".into();
+        self.control_fan = 128;
+        self.hms_lines.clear();
+        self.camera_note.clear();
+        self.chamber_handle = None;
+        self.chamber_width = 0;
+        self.chamber_height = 0;
     }
 
     fn load_account_from_disk(&mut self) {
@@ -783,21 +854,36 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let mut subs = Vec::new();
         if self.live_monitor {
-            iced::time::every(std::time::Duration::from_secs(5)).map(|_| Message::RefreshStatus)
-        } else {
-            Subscription::none()
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(5))
+                    .map(|_| Message::RefreshStatus),
+            );
+            if monitor::lan_ready(&self.host, &self.access_code) {
+                let host = self.host.clone();
+                let code = self.access_code.clone();
+                subs.push(Subscription::run_with((host, code), |(host, code)| {
+                    monitor::camera_frames(host.clone(), code.clone())
+                }));
+            }
         }
+        Subscription::batch(subs)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Viewport(event) => self.handle_viewport(event),
             Message::Workspace(workspace) => {
+                let entered_device =
+                    workspace == Workspace::Device && self.workspace != Workspace::Device;
                 self.workspace = workspace;
                 self.slice_menu_open = false;
                 self.print_menu_open = false;
                 self.sync_keep_solid();
+                if entered_device {
+                    return self.start_live_sync();
+                }
             }
             Message::OpenModel => {
                 if self.busy {
@@ -941,6 +1027,7 @@ impl App {
             }
             Message::StudioImported(Ok(imported)) => {
                 self.apply_studio_import(*imported);
+                return self.start_live_sync();
             }
             Message::StudioImported(Err(err)) => {
                 self.status = format!("import failed: {err}");
@@ -993,6 +1080,7 @@ impl App {
                     .cloned()
                 {
                     self.apply_device(&dev.dev_id);
+                    return self.start_live_sync();
                 }
             }
             Message::LoginAccount(s) => self.login_account = s,
@@ -1078,6 +1166,7 @@ impl App {
                 self.login_password.clear();
                 self.login_code.clear();
                 self.status = msg;
+                return Task::batch([Task::done(Message::RefreshDevices), self.start_live_sync()]);
             }
             Message::CloudLogged(Err(err)) => self.status = format!("login: {err}"),
             Message::Discover => {
@@ -1098,21 +1187,32 @@ impl App {
                 self.status = "no printers on UDP 2021 (3s)".into();
             }
             Message::Discovered(Ok(list)) => {
-                if let Some(first) = list.first() {
+                if let Some(first) = list.first().cloned() {
                     self.host = first.dev_ip.clone();
-                    self.serial = first.dev_id.clone();
+                    self.apply_device(&first.dev_id);
                 }
                 self.status = list
                     .iter()
                     .map(|p| format!("{} {}", p.dev_ip, p.dev_name))
                     .collect::<Vec<_>>()
                     .join(" · ");
+                return self.start_live_sync();
             }
             Message::Discovered(Err(err)) => {
                 self.status = format!("discover failed: {err}");
             }
-            Message::Host(s) => self.host = s,
-            Message::AccessCode(s) => self.access_code = s,
+            Message::Host(s) => {
+                self.host = s;
+                if self.can_monitor() && !self.live_monitor {
+                    return self.start_live_sync();
+                }
+            }
+            Message::AccessCode(s) => {
+                self.access_code = s;
+                if self.can_monitor() && !self.live_monitor {
+                    return self.start_live_sync();
+                }
+            }
             Message::Serial(s) => self.serial = s,
             Message::Send => {
                 let Some(gcode) = self.last_gcode.clone() else {
@@ -1192,6 +1292,10 @@ impl App {
                     self.status = "printer IP and LAN access code required".into();
                     return Task::none();
                 }
+                if self.live_monitor {
+                    self.status = "live camera already running".into();
+                    return Task::none();
+                }
                 let host = self.host.clone();
                 let code = self.access_code.clone();
                 self.status = format!("chamber JPEG :6000 / RTSPS :322 {host}…");
@@ -1204,21 +1308,33 @@ impl App {
                     Message::ChamberShot,
                 );
             }
-            Message::ChamberShot(Ok(ChamberResult::Jpeg { bytes, thumb })) => {
-                self.status = format!(
-                    "chamber JPEG {}×{} ({} bytes)",
-                    thumb.width, thumb.height, bytes
-                );
+            Message::ChamberShot(Ok(ChamberResult::Jpeg {
+                bytes,
+                width,
+                height,
+                rgba,
+            })) => {
+                self.chamber_handle =
+                    Some(iced::widget::image::Handle::from_rgba(width, height, rgba));
+                self.chamber_width = width;
+                self.chamber_height = height;
                 self.camera_note.clear();
-                self.chamber_thumb = Some(thumb);
+                if !self.live_monitor {
+                    self.status = format!("chamber JPEG {width}×{height} ({bytes} bytes)");
+                }
             }
             Message::ChamberShot(Ok(ChamberResult::Rtsps { detail })) => {
-                self.chamber_thumb = None;
+                self.chamber_handle = None;
+                self.chamber_width = 0;
+                self.chamber_height = 0;
                 self.camera_note = detail.clone();
                 self.status = detail;
             }
             Message::ChamberShot(Err(err)) => {
-                self.status = format!("camera failed: {err}");
+                self.camera_note = format!("camera: {err}");
+                if !self.live_monitor {
+                    self.status = format!("camera failed: {err}");
+                }
             }
             Message::WallLoops(n) => self.settings.wall_loops = n.clamp(1, 10),
             Message::Infill(v) => self.settings.infill_density = v.clamp(0.0, 1.0),
@@ -2789,6 +2905,14 @@ impl App {
         self.sync_keep_solid();
     }
 
+    fn start_live_sync(&mut self) -> Task<Message> {
+        if !self.can_monitor() {
+            return Task::none();
+        }
+        self.live_monitor = true;
+        self.refresh_monitor()
+    }
+
     fn refresh_monitor(&self) -> Task<Message> {
         let host = self.host.clone();
         let code = self.access_code.clone();
@@ -3069,6 +3193,17 @@ fn calibration_block_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+fn seed_tray(id: u8, filament_type: &str, color: &str, remain: Option<u8>) -> AmsTray {
+    AmsTray {
+        id,
+        ams_id: 0,
+        filament_type: filament_type.into(),
+        color: color.into(),
+        remain,
+        ..AmsTray::default()
+    }
+}
+
 fn lan_from(host: String, code: String, serial: String) -> LanBackend {
     let creds = bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
         .unwrap_or_else(|_| Default::default());
@@ -3087,5 +3222,57 @@ fn default_slice_settings() -> SliceSettings {
             settings
         }
         None => SliceSettings::bbl_0_20(),
+    }
+}
+
+#[cfg(test)]
+mod device_sync {
+    use super::*;
+    use bambu_protocol::DiscoveredPrinter;
+
+    #[test]
+    fn discover_fills_lan_code_and_starts_live_monitor() {
+        let mut app = App::new_for_gui_test();
+        app.imported_printers.push(StudioPrinter {
+            serial: "01P00A000000001".into(),
+            access_code: "12345678".into(),
+        });
+        let _ = app.update(Message::Discovered(Ok(vec![DiscoveredPrinter {
+            dev_id: "01P00A000000001".into(),
+            dev_ip: "192.168.1.20".into(),
+            dev_name: "P1S".into(),
+            ..Default::default()
+        }])));
+        assert_eq!(app.host, "192.168.1.20");
+        assert_eq!(app.serial, "01P00A000000001");
+        assert_eq!(app.access_code, "12345678");
+        assert!(app.live_monitor);
+    }
+
+    #[test]
+    fn device_tab_starts_live_when_lan_ready() {
+        let mut app = App::new_for_gui_test();
+        app.host = "192.168.1.20".into();
+        app.access_code = "12345678".into();
+        let _ = app.update(Message::Workspace(Workspace::Device));
+        assert!(app.live_monitor);
+        assert_eq!(app.workspace, Workspace::Device);
+    }
+
+    #[test]
+    fn chamber_jpeg_stores_image_handle() {
+        let mut app = App::new_for_gui_test();
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let _ = app.update(Message::ChamberShot(Ok(ChamberResult::Jpeg {
+            bytes: 128,
+            width: 2,
+            height: 2,
+            rgba,
+        })));
+        assert!(app.chamber_handle.is_some());
+        assert_eq!((app.chamber_width, app.chamber_height), (2, 2));
+        assert!(app.camera_note.is_empty());
     }
 }

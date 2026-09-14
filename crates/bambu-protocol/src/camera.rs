@@ -1,7 +1,7 @@
 //! A1/P1 chamber JPEG over TLS TCP 6000 (OpenBambuAPI `video.md`).
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use rustls::{ClientConnection, StreamOwned};
@@ -14,6 +14,9 @@ use bambu_device::Frame;
 pub const LAN_CAMERA_PORT: u16 = 6000;
 /// X1 / H2 chamber is RTSPS on TCP 322 (not the P1/A1 JPEG port).
 pub const LAN_RTSPS_PORT: u16 = 322;
+
+const JPEG_MIN: u32 = 1000;
+const JPEG_MAX: u32 = 8_000_000;
 
 #[derive(Debug, Error)]
 pub enum CameraError {
@@ -38,35 +41,76 @@ pub fn auth_packet(access_code: &str) -> [u8; 80] {
     pkt
 }
 
-/// One JPEG frame from the P1/A1 TLS JPEG server.
-pub fn snapshot_jpeg(host: &str, access_code: &str) -> Result<Vec<u8>, CameraError> {
-    if access_code.is_empty() {
-        return Err(CameraError::Message("LAN access code is empty".into()));
-    }
-    let config = lan_client_config()?;
-    let tcp = TcpStream::connect((host, LAN_CAMERA_PORT))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(12)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(8)))?;
-    let name = server_name(host)?;
-    let conn =
-        ClientConnection::new(config, name).map_err(|err| CameraError::Message(err.to_string()))?;
-    let mut tls = StreamOwned::new(conn, tcp);
-    tls.write_all(&auth_packet(access_code))?;
-    tls.flush()?;
-    let mut header = [0u8; 16];
-    tls.read_exact(&mut header)?;
+/// Little-endian payload length in the 16-byte JPEG stream header.
+pub fn jpeg_payload_len(header: &[u8; 16]) -> Result<u32, CameraError> {
     let jpeg_len = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    if !(1000..=8_000_000).contains(&jpeg_len) {
+    if !(JPEG_MIN..=JPEG_MAX).contains(&jpeg_len) {
         return Err(CameraError::Message(format!(
             "implausible JPEG size {jpeg_len} (X1/H2 use RTSPS :322, not this JPEG port)"
         )));
     }
+    Ok(jpeg_len)
+}
+
+/// One header + JPEG payload from an already-authenticated TLS stream.
+pub fn read_jpeg_frame<R: Read>(tls: &mut R) -> Result<Vec<u8>, CameraError> {
+    let mut header = [0u8; 16];
+    tls.read_exact(&mut header)?;
+    let jpeg_len = jpeg_payload_len(&header)?;
     let mut jpeg = vec![0u8; jpeg_len as usize];
     tls.read_exact(&mut jpeg)?;
     if jpeg.len() < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 {
         return Err(CameraError::Message("payload is not JPEG SOI".into()));
     }
     Ok(jpeg)
+}
+
+fn tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, CameraError> {
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| CameraError::Message(format!("no address for {host}:{port}")))?;
+    Ok(TcpStream::connect_timeout(&addr, timeout)?)
+}
+
+fn tls_connect(
+    host: &str,
+    port: u16,
+) -> Result<StreamOwned<ClientConnection, TcpStream>, CameraError> {
+    let config = lan_client_config()?;
+    let tcp = tcp_connect(host, port, Duration::from_secs(5))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(12)))?;
+    tcp.set_write_timeout(Some(Duration::from_secs(8)))?;
+    let name = server_name(host)?;
+    let conn =
+        ClientConnection::new(config, name).map_err(|err| CameraError::Message(err.to_string()))?;
+    Ok(StreamOwned::new(conn, tcp))
+}
+
+/// Authenticated P1/A1 JPEG stream. Keep the connection and call [`JpegStream::next_jpeg`].
+pub struct JpegStream {
+    tls: StreamOwned<ClientConnection, TcpStream>,
+}
+
+impl JpegStream {
+    pub fn connect(host: &str, access_code: &str) -> Result<Self, CameraError> {
+        if access_code.is_empty() {
+            return Err(CameraError::Message("LAN access code is empty".into()));
+        }
+        let mut tls = tls_connect(host, LAN_CAMERA_PORT)?;
+        tls.write_all(&auth_packet(access_code))?;
+        tls.flush()?;
+        Ok(Self { tls })
+    }
+
+    pub fn next_jpeg(&mut self) -> Result<Vec<u8>, CameraError> {
+        read_jpeg_frame(&mut self.tls)
+    }
+}
+
+/// One JPEG frame from the P1/A1 TLS JPEG server.
+pub fn snapshot_jpeg(host: &str, access_code: &str) -> Result<Vec<u8>, CameraError> {
+    JpegStream::connect(host, access_code)?.next_jpeg()
 }
 
 pub fn jpeg_to_frame(jpeg: &[u8]) -> Result<Frame, CameraError> {
@@ -130,14 +174,7 @@ pub fn describe_rtsps(host: &str, access_code: &str) -> Result<RtspsSession, Cam
     if access_code.is_empty() {
         return Err(CameraError::Message("LAN access code is empty".into()));
     }
-    let config = lan_client_config()?;
-    let tcp = TcpStream::connect((host, LAN_RTSPS_PORT))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(8)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let name = server_name(host)?;
-    let conn =
-        ClientConnection::new(config, name).map_err(|err| CameraError::Message(err.to_string()))?;
-    let mut tls = StreamOwned::new(conn, tcp);
+    let mut tls = tls_connect(host, LAN_RTSPS_PORT)?;
     let options = format!(
         "OPTIONS rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
     );
@@ -194,6 +231,24 @@ pub fn capture_chamber(host: &str, access_code: &str) -> Result<ChamberCapture, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    fn fake_jpeg(len: usize) -> Vec<u8> {
+        let mut jpeg = vec![0u8; len];
+        jpeg[0] = 0xFF;
+        jpeg[1] = 0xD8;
+        jpeg[len - 2] = 0xFF;
+        jpeg[len - 1] = 0xD9;
+        jpeg
+    }
+
+    fn framed(jpeg: &[u8]) -> Vec<u8> {
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&(jpeg.len() as u32).to_le_bytes());
+        let mut out = header.to_vec();
+        out.extend_from_slice(jpeg);
+        out
+    }
 
     #[test]
     fn auth_packet_layout() {
@@ -211,5 +266,31 @@ mod tests {
         let url = rtsps_url("192.168.1.10", "12345678");
         assert!(url.starts_with("rtsps://bblp:12345678@192.168.1.10:322/"));
         assert!(url.contains("/streaming/live/1"));
+    }
+
+    #[test]
+    fn jpeg_payload_len_rejects_implausible_size() {
+        let mut header = [0u8; 16];
+        header[0..4].copy_from_slice(&40u32.to_le_bytes());
+        assert!(jpeg_payload_len(&header).is_err());
+    }
+
+    #[test]
+    fn read_jpeg_frame_reads_header_then_payload() {
+        let jpeg = fake_jpeg(2048);
+        let mut cursor = Cursor::new(framed(&jpeg));
+        let out = read_jpeg_frame(&mut cursor).unwrap();
+        assert_eq!(out, jpeg);
+    }
+
+    #[test]
+    fn read_jpeg_frame_loops_two_headers() {
+        let a = fake_jpeg(1024);
+        let b = fake_jpeg(2048);
+        let mut bytes = framed(&a);
+        bytes.extend_from_slice(&framed(&b));
+        let mut cursor = Cursor::new(bytes);
+        assert_eq!(read_jpeg_frame(&mut cursor).unwrap(), a);
+        assert_eq!(read_jpeg_frame(&mut cursor).unwrap(), b);
     }
 }

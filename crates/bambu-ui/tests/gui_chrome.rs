@@ -270,6 +270,55 @@ fn gui_snapshot_labels_cover_reference_chrome() {
 }
 
 #[test]
+fn device_page_headless_renders() {
+    let mut app = App::new_for_gui_test();
+    drive(&mut app, [Message::Workspace(Workspace::Device)]);
+    let snap = app.snapshot();
+    assert_eq!(snap.workspace, "device");
+    assert_eq!(snap.active_tab_fill, "#00AE42");
+    if let Some(rgba) = app.screenshot_rgba() {
+        assert_eq!(rgba.len(), 1200 * 800 * 4);
+        assert!(
+            header_has_fill(&rgba, 1200, theme::PREPARE),
+            "Device header tab fill missing"
+        );
+    }
+}
+
+#[test]
+fn gui_chrome_device_home_filament_goldens() {
+    let mut app = App::new_for_gui_test();
+    app.seed_device_monitor();
+    drive(&mut app, [Message::Workspace(Workspace::Device)]);
+    let (snap, png) = capture(&app, "device_seeded");
+    assert_json("device_seeded", &snap);
+    let rgba = maybe_png("device_seeded", &png);
+    assert_eq!(snap.workspace, "device");
+    assert_eq!(snap.active_tab_fill, "#00AE42");
+    if let Some(px) = rgba {
+        assert!(header_has_fill(px, 1200, theme::PREPARE));
+    }
+
+    drive(&mut app, [Message::Workspace(Workspace::Home)]);
+    let (snap, png) = capture(&app, "home_default");
+    assert_json("home_default", &snap);
+    let rgba = maybe_png("home_default", &png);
+    assert_eq!(snap.workspace, "home");
+    if let Some(px) = rgba {
+        assert!(header_has_fill(px, 1200, theme::PREPARE));
+    }
+
+    drive(&mut app, [Message::Workspace(Workspace::Filament)]);
+    let (snap, png) = capture(&app, "filament_manager");
+    assert_json("filament_manager", &snap);
+    let rgba = maybe_png("filament_manager", &png);
+    assert_eq!(snap.workspace, "filament");
+    if let Some(px) = rgba {
+        assert!(header_has_fill(px, 1200, theme::PREPARE));
+    }
+}
+
+#[test]
 fn gui_png_helpers_roundtrip() {
     let rgba = vec![10u8, 20, 30, 255, 1, 2, 3, 255];
     let encoded = encode_png(&rgba, 2, 1).expect("encode");

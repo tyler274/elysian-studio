@@ -1,137 +1,72 @@
-//! Live monitor chrome: speed/light, AMS chips, P1/A1 JPEG thumbnail.
+//! Device StatusPanel: camera stream, AMS trays, task / temps, HMS, account.
 
-use iced::advanced::layout::{self, Node};
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, Widget};
-use iced::advanced::{Layout, Renderer};
-use iced::mouse;
 use iced::widget::{
-    button, checkbox, column, pick_list, row, scrollable, slider, text, text_input,
+    button, checkbox, column, container, image, pick_list, progress_bar, row, scrollable, slider,
+    text, text_input, Space,
 };
-use iced::{Background, Border, Color, Element, Fill, Length, Rectangle, Size};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
-use bambu_device::{Frame, PrinterBackend};
+use bambu_device::{AmsTray, PrinterBackend};
 use bambu_protocol::{
-    capture_chamber, describe_hms, jpeg_to_frame, load_cached_catalog, ChamberCapture, CloudBackend,
+    capture_chamber, describe_hms, describe_rtsps, jpeg_to_frame, load_cached_catalog,
+    ChamberCapture, CloudBackend, JpegStream,
 };
 
+use crate::theme;
 use crate::{lan_from, ChamberResult, Message, MonitorSnapshot, PrintCmd, SendVia};
 
-const THUMB_W: u32 = 80;
-const THUMB_H_MAX: u32 = 56;
-
-#[derive(Debug, Clone)]
-pub(crate) struct JpegThumb {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pixels: Vec<[u8; 4]>,
+fn quiet_btn<'a>(content: impl Into<Element<'a, Message>>) -> button::Button<'a, Message> {
+    button(content)
+        .padding([4, 10])
+        .style(|_, status| theme::quiet(status))
 }
 
-impl JpegThumb {
-    pub(crate) fn from_frame(frame: &Frame) -> Self {
-        let width = THUMB_W.min(frame.width.max(1));
-        let height = ((u64::from(width) * u64::from(frame.height.max(1)))
-            / u64::from(frame.width.max(1)))
-        .max(1)
-        .min(u64::from(THUMB_H_MAX)) as u32;
-        let mut pixels = Vec::with_capacity((width * height) as usize);
-        for y in 0..height {
-            let sy = y * frame.height / height;
-            for x in 0..width {
-                let sx = x * frame.width / width;
-                let i = ((sy * frame.width + sx) * 4) as usize;
-                let px = frame
-                    .rgba
-                    .get(i..i + 4)
-                    .and_then(|s| <[u8; 4]>::try_from(s).ok())
-                    .unwrap_or([40, 40, 48, 255]);
-                pixels.push(px);
-            }
-        }
-        Self {
-            width,
-            height,
-            pixels,
-        }
-    }
+fn field<'a>(
+    placeholder: &'a str,
+    value: &str,
+    msg: fn(String) -> Message,
+) -> text_input::TextInput<'a, Message> {
+    text_input(placeholder, value)
+        .on_input(msg)
+        .style(theme::field)
 }
 
-impl<Message> Widget<Message, iced::Theme, iced::Renderer> for JpegThumb {
-    fn size(&self) -> Size<Length> {
-        Size::new(
-            Length::Fixed(self.width as f32),
-            Length::Fixed(self.height as f32),
-        )
+pub(crate) fn parse_tray_color(raw: &str) -> Color {
+    let hex: String = raw
+        .trim()
+        .trim_start_matches('#')
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(6)
+        .collect();
+    if hex.len() < 6 {
+        return Color::from_rgb(0.25, 0.26, 0.28);
     }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> Node {
-        layout::atomic(
-            limits,
-            Length::Fixed(self.width as f32),
-            Length::Fixed(self.height as f32),
-        )
-    }
-
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let cw = self.width.max(1) as f32;
-        let ch = self.height.max(1) as f32;
-        let pw = bounds.width / cw;
-        let ph = bounds.height / ch;
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let i = (y * self.width + x) as usize;
-                let Some([r, g, b, a]) = self.pixels.get(i).copied() else {
-                    continue;
-                };
-                renderer.fill_quad(
-                    Quad {
-                        bounds: Rectangle {
-                            x: bounds.x + x as f32 * pw,
-                            y: bounds.y + y as f32 * ph,
-                            width: pw.max(1.0),
-                            height: ph.max(1.0),
-                        },
-                        border: Border::default(),
-                        shadow: iced::Shadow::default(),
-                        snap: true,
-                    },
-                    Background::Color(Color::from_rgba8(r, g, b, f32::from(a) / 255.0)),
-                );
-            }
-        }
-    }
+    let n = u32::from_str_radix(&hex, 16).unwrap_or(0);
+    Color::from_rgb8(
+        ((n >> 16) & 0xFF) as u8,
+        ((n >> 8) & 0xFF) as u8,
+        (n & 0xFF) as u8,
+    )
 }
 
-impl<'a> From<JpegThumb> for Element<'a, Message> {
-    fn from(thumb: JpegThumb) -> Self {
-        Element::new(thumb)
-    }
+pub(crate) fn lan_ready(host: &str, code: &str) -> bool {
+    !host.is_empty() && !code.is_empty()
 }
 
 impl crate::App {
+    pub(crate) fn can_monitor(&self) -> bool {
+        lan_ready(&self.host, &self.access_code) || self.has_bearer
+    }
+
     pub(crate) fn ams_chips(&self) -> Element<'_, Message> {
         let mut r = row![];
         if self.settings.filament_map.is_empty() {
-            r = r.push(text("AMS map: —").size(11));
+            r = r.push(text("AMS map: —").size(11).color(theme::TEXT_MUTED));
         }
         for (i, mapped) in self.settings.filament_map.iter().enumerate() {
             r = r.push(
-                button(text(format!("F{}→T{mapped}", i + 1)).size(11))
+                quiet_btn(text(format!("F{}→T{mapped}", i + 1)).size(11))
                     .on_press(Message::CycleAmsMap(i)),
             );
         }
@@ -141,33 +76,33 @@ impl crate::App {
     pub(crate) fn ams_load_row(&self) -> Element<'_, Message> {
         let mut r = row![];
         if self.ams.trays.is_empty() && self.ams.vt_tray.is_none() {
-            r = r.push(text("AMS load: —").size(11));
+            r = r.push(text("AMS load: —").size(11).color(theme::TEXT_MUTED));
         }
         let mut unloaded = Vec::new();
         for tray in &self.ams.trays {
             let ams_id = tray.ams_id;
             let slot_id = tray.id;
             r = r.push(
-                button(text(format!("Load T{slot_id}")).size(11))
+                quiet_btn(text(format!("Load T{slot_id}")).size(11))
                     .on_press(Message::AmsLoad { ams_id, slot_id }),
             );
             if !unloaded.contains(&ams_id) {
                 unloaded.push(ams_id);
                 r = r.push(
-                    button(text(format!("Unload A{ams_id}")).size(11))
+                    quiet_btn(text(format!("Unload A{ams_id}")).size(11))
                         .on_press(Message::AmsUnload { ams_id }),
                 );
             }
         }
         if let Some(vt) = &self.ams.vt_tray {
             r = r.push(
-                button(text("Load ext").size(11)).on_press(Message::AmsLoad {
+                quiet_btn(text("Load ext").size(11)).on_press(Message::AmsLoad {
                     ams_id: vt.ams_id,
                     slot_id: 0,
                 }),
             );
         }
-        r.spacing(4).into()
+        r.spacing(4).wrap().into()
     }
 
     pub(crate) fn monitor_line(&self) -> String {
@@ -203,58 +138,220 @@ impl crate::App {
         )
     }
 
-    pub(crate) fn monitor_controls(&self) -> Element<'_, Message> {
-        let thumb: Element<'_, Message> = if let Some(thumb) = &self.chamber_thumb {
-            thumb.clone().into()
+    fn camera_pane(&self) -> Element<'_, Message> {
+        let body: Element<'_, Message> = if let Some(handle) = &self.chamber_handle {
+            image(handle.clone())
+                .width(Fill)
+                .height(360)
+                .content_fit(ContentFit::Contain)
+                .into()
         } else if !self.camera_note.is_empty() {
-            text(self.camera_note.as_str()).size(11).into()
+            text(self.camera_note.as_str())
+                .size(12)
+                .color(theme::TEXT_MUTED)
+                .into()
         } else {
-            text("P1/A1 JPEG thumbnail (X1/H2: RTSPS text)")
-                .size(11)
+            text("Chamber camera — P1/A1 JPEG :6000 stream, X1/H2 RTSPS :322")
+                .size(12)
+                .color(theme::TEXT_MUTED)
                 .into()
         };
-        column![
-            text(self.monitor_line()).size(12),
-            self.ams_chips(),
-            self.ams_load_row(),
-            row![
-                button("Pause").on_press(Message::Pause),
-                button("Resume").on_press(Message::Resume),
-                button("Stop").on_press(Message::Stop),
+        let size = if self.chamber_width > 0 {
+            format!("{}×{}", self.chamber_width, self.chamber_height)
+        } else {
+            "no frame".into()
+        };
+        card(
+            "Camera",
+            column![
+                container(body)
+                    .width(Fill)
+                    .height(360)
+                    .padding(8)
+                    .style(|_| container::Style {
+                        background: Some(Background::Color(theme::HEADER)),
+                        border: Border {
+                            color: theme::CARD_BORDER,
+                            width: 1.0,
+                            radius: 4.0.into(),
+                        },
+                        ..container::Style::default()
+                    }),
+                row![
+                    text(size).size(11).color(theme::TEXT_MUTED),
+                    Space::new().width(Fill),
+                    quiet_btn(text("Grab frame").size(12)).on_press(Message::Chamber),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             ]
-            .spacing(6),
-            text("Print speed").size(13),
-            row![
-                button("1").on_press(Message::PrintSpeed(1)),
-                button("2").on_press(Message::PrintSpeed(2)),
-                button("3").on_press(Message::PrintSpeed(3)),
-                button("4").on_press(Message::PrintSpeed(4)),
+            .spacing(8),
+        )
+    }
+
+    fn task_pane(&self) -> Element<'_, Message> {
+        let state = if self.machine.gcode_state.is_empty() {
+            "IDLE"
+        } else {
+            self.machine.gcode_state.as_str()
+        };
+        let file = if self.machine.gcode_file.is_empty() {
+            "—"
+        } else {
+            self.machine.gcode_file.as_str()
+        };
+        let remain = if self.machine.mc_remaining_time_min >= 60 {
+            format!(
+                "{}h {}m",
+                self.machine.mc_remaining_time_min / 60,
+                self.machine.mc_remaining_time_min % 60
+            )
+        } else {
+            format!("{}m", self.machine.mc_remaining_time_min)
+        };
+        card(
+            "Task",
+            column![
+                text(format!("{state} · {file}")).size(14),
+                progress_bar(0.0..=100.0, f32::from(self.machine.mc_percent)).girth(8),
+                text(format!(
+                    "{}% · layer {}/{} · remaining {remain}",
+                    self.machine.mc_percent, self.machine.layer_num, self.machine.total_layer_num
+                ))
+                .size(12)
+                .color(theme::TEXT_MUTED),
+                row![
+                    temp_chip(
+                        "Nozzle",
+                        self.machine.nozzle_temp_c,
+                        self.machine.nozzle_target_c,
+                    ),
+                    temp_chip("Bed", self.machine.bed_temp_c, self.machine.bed_target_c),
+                    temp_chip("Chamber", self.machine.chamber_temp_c, 0.0),
+                ]
+                .spacing(8),
+                text(format!(
+                    "wifi {} · speed {} · fan {}",
+                    if self.machine.wifi_signal.is_empty() {
+                        "—"
+                    } else {
+                        self.machine.wifi_signal.as_str()
+                    },
+                    self.machine.spd_lvl,
+                    self.control_fan
+                ))
+                .size(12)
+                .color(theme::TEXT_MUTED),
             ]
-            .spacing(4),
-            row![
-                button("Light on").on_press(Message::ChamberLight(true)),
-                button("Light off").on_press(Message::ChamberLight(false)),
+            .spacing(8),
+        )
+    }
+
+    fn controls_pane(&self) -> Element<'_, Message> {
+        card(
+            "Controls",
+            column![
+                row![
+                    quiet_btn("Pause").on_press(Message::Pause),
+                    quiet_btn("Resume").on_press(Message::Resume),
+                    quiet_btn("Stop").on_press(Message::Stop),
+                ]
+                .spacing(6),
+                text("Print speed").size(12).color(theme::TEXT_MUTED),
+                row![
+                    quiet_btn("1").on_press(Message::PrintSpeed(1)),
+                    quiet_btn("2").on_press(Message::PrintSpeed(2)),
+                    quiet_btn("3").on_press(Message::PrintSpeed(3)),
+                    quiet_btn("4").on_press(Message::PrintSpeed(4)),
+                ]
+                .spacing(4),
+                row![
+                    quiet_btn("Light on").on_press(Message::ChamberLight(true)),
+                    quiet_btn("Light off").on_press(Message::ChamberLight(false)),
+                ]
+                .spacing(6),
+                text("Bed / nozzle °C").size(12).color(theme::TEXT_MUTED),
+                row![
+                    field("bed", &self.control_bed, Message::BedSet),
+                    quiet_btn("Set bed").on_press(Message::SendBed),
+                ]
+                .spacing(4),
+                row![
+                    field("nozzle", &self.control_nozzle, Message::NozzleSet),
+                    quiet_btn("Set nozzle").on_press(Message::SendNozzle),
+                ]
+                .spacing(4),
+                text(format!("Cooling fan {}", self.control_fan))
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
+                slider(0.0..=255.0, f64::from(self.control_fan), Message::FanSet)
+                    .step(1.0)
+                    .style(theme::range),
+                quiet_btn("Set fan").on_press(Message::SendFan),
             ]
-            .spacing(6),
-            text("Bed / nozzle °C").size(13),
-            row![
-                text_input("bed", &self.control_bed).on_input(Message::BedSet),
-                button("Set bed").on_press(Message::SendBed),
+            .spacing(8),
+        )
+    }
+
+    fn ams_pane(&self) -> Element<'_, Message> {
+        let mut trays = row![].spacing(8);
+        if self.ams.trays.is_empty() && self.ams.vt_tray.is_none() {
+            trays = trays.push(
+                text("No AMS trays in last push_status")
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        for tray in &self.ams.trays {
+            let active = self.ams.active_slot == Some(tray.id);
+            trays = trays.push(tray_card(tray, active));
+        }
+        if let Some(vt) = &self.ams.vt_tray {
+            trays = trays.push(tray_card(vt, false));
+        }
+        let trays = trays.wrap();
+        let humidity = self
+            .ams
+            .humidity
+            .map(|h| format!("humidity {h}"))
+            .unwrap_or_else(|| "humidity —".into());
+        card(
+            "AMS",
+            column![
+                text(humidity).size(12).color(theme::TEXT_MUTED),
+                trays,
+                self.ams_chips(),
+                self.ams_load_row(),
             ]
-            .spacing(4),
-            row![
-                text_input("nozzle", &self.control_nozzle).on_input(Message::NozzleSet),
-                button("Set nozzle").on_press(Message::SendNozzle),
+            .spacing(8),
+        )
+    }
+
+    fn hms_pane(&self) -> Element<'_, Message> {
+        card(
+            "HMS",
+            column![
+                text(if self.hms_lines.is_empty() {
+                    "no HMS".into()
+                } else {
+                    self.hms_lines.join("\n")
+                })
+                .size(11),
+                row![
+                    quiet_btn("Refresh catalog").on_press(Message::RefreshHms),
+                    quiet_btn("Resume").on_press(Message::HmsResume),
+                    quiet_btn("Ignore").on_press(Message::HmsIgnore),
+                ]
+                .spacing(6),
             ]
-            .spacing(4),
-            text(format!("Cooling fan {}", self.control_fan)).size(13),
-            slider(0.0..=255.0, f64::from(self.control_fan), Message::FanSet).step(1.0),
-            button("Set fan").on_press(Message::SendFan),
-            text("Chamber").size(13),
-            thumb,
-        ]
-        .spacing(6)
-        .into()
+            .spacing(8),
+        )
+    }
+
+    pub(crate) fn monitor_controls(&self) -> Element<'_, Message> {
+        column![self.task_pane(), self.controls_pane()]
+            .spacing(10)
+            .into()
     }
 
     pub(crate) fn device_page(&self) -> Element<'_, Message> {
@@ -264,114 +361,208 @@ impl crate::App {
             .as_ref()
             .and_then(|id| self.cloud_devices.iter().find(|d| &d.dev_id == id))
             .map(|d| d.label());
+        let left = column![self.camera_pane(), self.monitor_controls()]
+            .spacing(10)
+            .width(Fill);
+        let right = column![
+            self.ams_pane(),
+            self.hms_pane(),
+            card(
+                "Connection",
+                column![
+                    checkbox(self.live_monitor)
+                        .label("Live monitor")
+                        .on_toggle(Message::LiveMonitor)
+                        .style(theme::tick),
+                    quiet_btn("MQTT / AMS status").on_press(Message::RefreshStatus),
+                    text(format!(
+                        "region {} · user {}",
+                        if self.cloud_region.is_empty() {
+                            "us"
+                        } else {
+                            self.cloud_region.as_str()
+                        },
+                        if self.cloud_user.is_empty() {
+                            "—"
+                        } else {
+                            self.cloud_user.as_str()
+                        }
+                    ))
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
+                    text(format!(
+                        "Bearer {}",
+                        if self.has_bearer {
+                            "present"
+                        } else {
+                            "missing"
+                        }
+                    ))
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
+                    row![
+                        quiet_btn("Import Studio").on_press(Message::ImportStudio),
+                        quiet_btn("Extract keys").on_press(Message::ExtractKeys),
+                    ]
+                    .spacing(6),
+                    row![
+                        quiet_btn("Discover printers").on_press(Message::Discover),
+                        quiet_btn("Refresh devices").on_press(Message::RefreshDevices),
+                    ]
+                    .spacing(6),
+                    pick_list(device_labels, selected_device, Message::PickDevice)
+                        .placeholder("cloud device")
+                        .style(theme::choice)
+                        .menu_style(theme::menu),
+                    pick_list(
+                        vec![SendVia::LanFtps, SendVia::CloudUpload],
+                        Some(self.send_via),
+                        Message::SendVia
+                    )
+                    .style(theme::choice)
+                    .menu_style(theme::menu),
+                    field("printer IP", &self.host, Message::Host),
+                    field("LAN access code", &self.access_code, Message::AccessCode).secure(true),
+                    field("serial (optional)", &self.serial, Message::Serial),
+                    self.login_fields(),
+                    checkbox(self.project_opts.bed_leveling)
+                        .label("Bed level")
+                        .on_toggle(Message::ProjectBedLevel)
+                        .style(theme::tick),
+                    checkbox(self.project_opts.flow_cali)
+                        .label("Flow cali")
+                        .on_toggle(Message::ProjectFlowCali)
+                        .style(theme::tick),
+                    checkbox(self.project_opts.vibration_cali)
+                        .label("Vibration cali")
+                        .on_toggle(Message::ProjectVibrationCali)
+                        .style(theme::tick),
+                    checkbox(self.project_opts.layer_inspect)
+                        .label("Layer inspect")
+                        .on_toggle(Message::ProjectLayerInspect)
+                        .style(theme::tick),
+                    checkbox(self.project_opts.timelapse)
+                        .label("Timelapse")
+                        .on_toggle(Message::ProjectTimelapse)
+                        .style(theme::tick),
+                ]
+                .spacing(8),
+            ),
+        ]
+        .spacing(10)
+        .width(360);
         scrollable(
             column![
                 text("Device").size(18),
-                text(format!("GPU: {}", self.adapter)).size(12),
-                self.monitor_controls(),
-                text("HMS").size(16),
-                button("Refresh HMS catalog").on_press(Message::RefreshHms),
-                text(if self.hms_lines.is_empty() {
-                    "no HMS".into()
-                } else {
-                    self.hms_lines.join("\n")
-                })
-                .size(11),
-                row![
-                    button("HMS resume").on_press(Message::HmsResume),
-                    button("HMS ignore").on_press(Message::HmsIgnore),
-                ]
-                .spacing(6),
-                checkbox(self.live_monitor)
-                    .label("Live monitor")
-                    .on_toggle(Message::LiveMonitor),
-                button("MQTT / AMS status").on_press(Message::RefreshStatus),
-                text("Account / LAN").size(16),
-                text(format!(
-                    "region {} · user {}",
-                    if self.cloud_region.is_empty() {
-                        "us"
-                    } else {
-                        self.cloud_region.as_str()
-                    },
-                    if self.cloud_user.is_empty() {
-                        "—"
-                    } else {
-                        self.cloud_user.as_str()
-                    }
-                ))
-                .size(12),
-                text(format!(
-                    "Bearer {}",
-                    if self.has_bearer {
-                        "present"
-                    } else {
-                        "missing"
-                    }
-                ))
-                .size(12),
-                button("Import Studio").on_press(Message::ImportStudio),
-                button("Extract keys").on_press(Message::ExtractKeys),
-                button("Discover printers").on_press(Message::Discover),
-                button("Refresh devices").on_press(Message::RefreshDevices),
-                pick_list(device_labels, selected_device, Message::PickDevice)
-                    .placeholder("cloud device"),
-                pick_list(
-                    vec![SendVia::LanFtps, SendVia::CloudUpload],
-                    Some(self.send_via),
-                    Message::SendVia
-                ),
-                text_input("printer IP", &self.host).on_input(Message::Host),
-                text_input("LAN access code", &self.access_code)
-                    .secure(true)
-                    .on_input(Message::AccessCode),
-                text_input("serial (optional)", &self.serial).on_input(Message::Serial),
-                self.login_fields(),
-                checkbox(self.project_opts.bed_leveling)
-                    .label("Bed level")
-                    .on_toggle(Message::ProjectBedLevel),
-                checkbox(self.project_opts.flow_cali)
-                    .label("Flow cali")
-                    .on_toggle(Message::ProjectFlowCali),
-                checkbox(self.project_opts.vibration_cali)
-                    .label("Vibration cali")
-                    .on_toggle(Message::ProjectVibrationCali),
-                checkbox(self.project_opts.layer_inspect)
-                    .label("Layer inspect")
-                    .on_toggle(Message::ProjectLayerInspect),
-                checkbox(self.project_opts.timelapse)
-                    .label("Timelapse")
-                    .on_toggle(Message::ProjectTimelapse),
-                button("Chamber / RTSPS live").on_press(Message::Chamber),
+                text(format!("GPU: {}", self.adapter))
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
+                text(self.monitor_line()).size(12).color(theme::TEXT_MUTED),
+                row![left, right].spacing(16),
             ]
-            .spacing(8)
+            .spacing(10)
             .padding(16)
-            .width(480),
+            .width(Fill),
         )
         .height(Fill)
+        .style(theme::scroll)
         .into()
     }
 
     fn login_fields(&self) -> Element<'_, Message> {
         if self.has_bearer {
-            return text("cloud token on disk").size(11).into();
+            return text("cloud token on disk")
+                .size(11)
+                .color(theme::TEXT_MUTED)
+                .into();
         }
         column![
             text("Bambu cloud (OAuth)").size(13),
-            button("Sign in with Bambu").on_press(Message::CloudOAuth),
-            text("or email / password").size(12),
-            text_input("account email", &self.login_account).on_input(Message::LoginAccount),
-            text_input("password", &self.login_password)
-                .secure(true)
-                .on_input(Message::LoginPassword),
-            text_input("email code (if asked)", &self.login_code)
-                .secure(true)
-                .on_input(Message::LoginCode),
-            button("Cloud login").on_press(Message::CloudLogin),
+            quiet_btn("Sign in with Bambu").on_press(Message::CloudOAuth),
+            text("or email / password")
+                .size(12)
+                .color(theme::TEXT_MUTED),
+            field("account email", &self.login_account, Message::LoginAccount),
+            field("password", &self.login_password, Message::LoginPassword).secure(true),
+            field(
+                "email code (if asked)",
+                &self.login_code,
+                Message::LoginCode
+            )
+            .secure(true),
+            quiet_btn("Cloud login").on_press(Message::CloudLogin),
         ]
         .spacing(6)
         .into()
     }
+}
+
+fn card<'a>(title: &'a str, body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(column![text(title).size(theme::TITLE_SIZE), body.into()].spacing(8))
+        .padding(12)
+        .width(Fill)
+        .style(|_| theme::card())
+        .into()
+}
+
+fn temp_chip<'a>(label: &str, actual: f32, target: f32) -> Element<'a, Message> {
+    let value = if target > 0.0 {
+        format!("{label} {actual:.0}/{target:.0}°C")
+    } else {
+        format!("{label} {actual:.0}°C")
+    };
+    container(text(value).size(12))
+        .padding([4, 8])
+        .style(|_| theme::chip())
+        .into()
+}
+
+fn tray_card(tray: &AmsTray, active: bool) -> Element<'_, Message> {
+    let color = parse_tray_color(&tray.color);
+    let remain = tray
+        .remain
+        .map(|r| format!("{r}%"))
+        .unwrap_or_else(|| "—".into());
+    let kind = if tray.filament_type.is_empty() {
+        "empty"
+    } else {
+        tray.filament_type.as_str()
+    };
+    let label = if tray.ams_id == 254 {
+        "Ext".to_string()
+    } else {
+        format!("A{} T{}", tray.ams_id, tray.id)
+    };
+    let border = if active {
+        theme::PREPARE
+    } else {
+        theme::CARD_BORDER
+    };
+    container(
+        column![
+            container(Space::new().width(Fill).height(22)).style(move |_| container::Style {
+                background: Some(Background::Color(color)),
+                border: Border {
+                    color: border,
+                    width: if active { 2.0 } else { 1.0 },
+                    radius: 3.0.into(),
+                },
+                ..container::Style::default()
+            }),
+            text(label).size(11),
+            text(kind).size(11).color(theme::TEXT_MUTED),
+            text(remain).size(11).color(theme::TEXT_MUTED),
+            quiet_btn(text("Load").size(11)).on_press(Message::AmsLoad {
+                ams_id: tray.ams_id,
+                slot_id: tray.id,
+            }),
+        ]
+        .spacing(4)
+        .width(88),
+    )
+    .padding(8)
+    .style(|_| theme::chip())
+    .into()
 }
 
 pub(crate) async fn snapshot_backend<B: PrinterBackend>(
@@ -422,24 +613,21 @@ pub(crate) async fn snapshot_backend<B: PrinterBackend>(
 }
 
 pub(crate) async fn fetch_monitor(
-    send_via: SendVia,
+    _send_via: SendVia,
     host: String,
     code: String,
     serial: String,
 ) -> Result<MonitorSnapshot, String> {
-    if send_via == SendVia::CloudUpload {
-        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
-            .map_err(|e| e.to_string())?;
-        return snapshot_backend(backend).await;
+    if lan_ready(&host, &code) {
+        return snapshot_backend(lan_from(host, code, serial)).await;
     }
-    if host.is_empty() || code.is_empty() {
-        return Err("printer IP and LAN access code required".into());
-    }
-    snapshot_backend(lan_from(host, code, serial)).await
+    let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
+        .map_err(|e| e.to_string())?;
+    snapshot_backend(backend).await
 }
 
 pub(crate) async fn run_cmd(
-    send_via: SendVia,
+    _send_via: SendVia,
     host: String,
     code: String,
     serial: String,
@@ -481,25 +669,19 @@ pub(crate) async fn run_cmd(
             PrintCmd::HmsIgnore { .. } => "hms ignore sent".into(),
         })
     }
-    if send_via == SendVia::CloudUpload {
-        let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
-            .map_err(|e| e.to_string())?;
-        return go(backend, cmd).await;
+    if lan_ready(&host, &code) {
+        return go(lan_from(host, code, serial), cmd).await;
     }
-    if host.is_empty() || code.is_empty() {
-        return Err("printer IP and LAN access code required".into());
-    }
-    go(lan_from(host, code, serial), cmd).await
+    let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
+        .map_err(|e| e.to_string())?;
+    go(backend, cmd).await
 }
 
 pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, String> {
     match capture_chamber(&host, &code) {
         Ok(ChamberCapture::Jpeg(jpeg)) => {
             let frame = jpeg_to_frame(&jpeg).map_err(|err| err.to_string())?;
-            Ok(ChamberResult::Jpeg {
-                bytes: jpeg.len(),
-                thumb: JpegThumb::from_frame(&frame),
-            })
+            Ok(ChamberResult::from_frame(jpeg.len(), frame))
         }
         Ok(ChamberCapture::Rtsps { url, options }) => {
             let first = options.lines().next().unwrap_or("RTSPS");
@@ -508,5 +690,130 @@ pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, 
             })
         }
         Err(err) => Err(err.to_string()),
+    }
+}
+
+fn emit(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Message) -> bool {
+    match tx.try_send(msg) {
+        Ok(()) => true,
+        Err(err) if err.is_full() => true,
+        Err(_) => false,
+    }
+}
+
+fn camera_worker(
+    host: String,
+    code: String,
+    mut tx: iced::futures::channel::mpsc::Sender<Message>,
+) {
+    loop {
+        match JpegStream::connect(&host, &code) {
+            Ok(mut stream) => loop {
+                match stream.next_jpeg() {
+                    Ok(jpeg) => {
+                        let bytes = jpeg.len();
+                        match jpeg_to_frame(&jpeg) {
+                            Ok(frame) => {
+                                if !emit(
+                                    &mut tx,
+                                    Message::ChamberShot(Ok(ChamberResult::from_frame(
+                                        bytes, frame,
+                                    ))),
+                                ) {
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                if !emit(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
+                                    return;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if err.to_string().contains("implausible JPEG") {
+                            match describe_rtsps(&host, &code) {
+                                Ok(live) => {
+                                    let first = live.sdp.lines().next().unwrap_or("RTSPS");
+                                    let _ = emit(
+                                        &mut tx,
+                                        Message::ChamberShot(Ok(ChamberResult::Rtsps {
+                                            detail: format!("chamber RTSPS {} · {first}", live.url),
+                                        })),
+                                    );
+                                    return;
+                                }
+                                Err(rtsps_err) => {
+                                    if !emit(
+                                        &mut tx,
+                                        Message::ChamberShot(Err(format!(
+                                            "{err}; RTSPS: {rtsps_err}"
+                                        ))),
+                                    ) {
+                                        return;
+                                    }
+                                }
+                            }
+                        } else if !emit(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
+                            return;
+                        }
+                        break;
+                    }
+                }
+            },
+            Err(err) => match describe_rtsps(&host, &code) {
+                Ok(live) => {
+                    let first = live.sdp.lines().next().unwrap_or("RTSPS");
+                    let _ = emit(
+                        &mut tx,
+                        Message::ChamberShot(Ok(ChamberResult::Rtsps {
+                            detail: format!("chamber RTSPS {} · {first}", live.url),
+                        })),
+                    );
+                    return;
+                }
+                Err(rtsps_err) => {
+                    if !emit(
+                        &mut tx,
+                        Message::ChamberShot(Err(format!("{err}; RTSPS: {rtsps_err}"))),
+                    ) {
+                        return;
+                    }
+                }
+            },
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+pub(crate) fn camera_frames(
+    host: String,
+    code: String,
+) -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(1, async move |output| {
+        let _ = std::thread::Builder::new()
+            .name("bambu-camera".into())
+            .spawn(move || camera_worker(host, code, output));
+        std::future::pending::<()>().await;
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tray_color_rrggbb() {
+        let c = parse_tray_color("00AE42FF");
+        assert!((c.r - 0.0).abs() < 0.01);
+        assert!(c.g > 0.6);
+    }
+
+    #[test]
+    fn lan_ready_needs_host_and_code() {
+        assert!(lan_ready("192.168.1.9", "12345678"));
+        assert!(!lan_ready("", "12345678"));
+        assert!(!lan_ready("192.168.1.9", ""));
     }
 }
