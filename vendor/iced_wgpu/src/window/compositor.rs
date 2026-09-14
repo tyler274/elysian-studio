@@ -52,6 +52,7 @@ impl Compositor {
         compatible_window: Option<W>,
         shell: Shell,
     ) -> Result<Self, Error> {
+        bambu_wgpu_exp::pin_linux_nvidia_vulkan();
         let instance = wgpu::util::new_instance_with_webgpu_detection(
             wgpu::InstanceDescriptor {
                 backends: settings.backends,

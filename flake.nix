@@ -105,12 +105,15 @@
               pkgs.pkg-config
               pkgs.makeWrapper
               pkgs.wild
+              pkgs.autoAddDriverRunpath
             ];
             buildInputs = gpuLibs ++ [
               pkgs.openssl
             ];
             env = {
               WGPU_BACKEND = "vulkan";
+              LIB_VULKAN_PATH = "${pkgs.vulkan-loader}/lib";
+              PKG_CONFIG_PATH = "${pkgs.vulkan-loader.dev}/lib/pkgconfig";
             };
             postUnpack = placeMimalloc;
           };
@@ -121,7 +124,10 @@
                 for bin in "$out"/bin/*; do
                   wrapProgram "$bin" \
                     --set WGPU_BACKEND vulkan \
-                    --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath gpuLibs}
+                    --set LIB_VULKAN_PATH ${pkgs.vulkan-loader}/lib \
+                    --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath gpuLibs} \
+                    --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib \
+                    --prefix XDG_DATA_DIRS : /run/opengl-driver/share
                 done
               '';
             });
@@ -194,7 +200,13 @@
             ]
             ++ gpuLibs;
             WGPU_BACKEND = "vulkan";
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath gpuLibs;
+            LIB_VULKAN_PATH = "${pkgs.vulkan-loader}/lib";
+            PKG_CONFIG_PATH = "${pkgs.vulkan-loader.dev}/lib/pkgconfig";
+            LD_LIBRARY_PATH = "${pkgs.lib.makeLibraryPath gpuLibs}:/run/opengl-driver/lib";
+            # Prefer the proprietary ICD when the host has it (NixOS NVIDIA).
+            # Mesa nouveau/lvp JSONs sit in the same directory otherwise.
+            VK_ICD_FILENAMES = "/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json";
+            VK_DRIVER_FILES = "/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json";
           };
         }
       );

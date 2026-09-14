@@ -45,6 +45,9 @@ use monitor::JpegThumb;
 use plater::{CoordSpace, XformField};
 
 fn main() -> iced::Result {
+    // ICD + loader lookup must be set before the WGPU_BACKEND re-exec so the
+    // child inherits NVIDIA's JSON instead of Mesa nouveau/lvp.
+    force_vulkan_env();
     reexec_with_vulkan_if_needed();
 
     tracing_subscriber::fmt()

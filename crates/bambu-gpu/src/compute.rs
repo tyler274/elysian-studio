@@ -101,6 +101,7 @@ pub struct VulkanSliceAccel {
 
 impl VulkanSliceAccel {
     pub fn new() -> Result<Self, GpuError> {
+        crate::force_vulkan_env();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()

@@ -1,3 +1,5 @@
+enable wgpu_ray_query;
+
 struct RtUniforms {
     view_inv: mat4x4<f32>,
     proj_inv: mat4x4<f32>,
@@ -57,18 +59,6 @@ fn intersect(origin: vec3<f32>, direction: vec3<f32>, tmin: f32) -> RayIntersect
     rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xffu, tmin, 4000.0, origin, direction));
     rayQueryProceed(&rq);
     return rayQueryGetCommittedIntersection(&rq);
-}
-
-fn hit_point(origin: vec3<f32>, direction: vec3<f32>, hit: RayIntersection) -> vec3<f32> {
-    let base = hit.instance_custom_data + hit.primitive_index * 3u;
-    let a = positions[indices[base]].xyz;
-    let b = positions[indices[base + 1u]].xyz;
-    let c = positions[indices[base + 2u]].xyz;
-    var n = normalize(cross(b - a, c - a));
-    if dot(n, -direction) < 0.0 {
-        n = -n;
-    }
-    return origin + direction * hit.t + n * 0.08;
 }
 
 fn hit_normal(direction: vec3<f32>, hit: RayIntersection) -> vec3<f32> {

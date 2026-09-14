@@ -52,6 +52,17 @@ impl RtGpu {
         if !bambu_wgpu_exp::device_has_ray_query(device) {
             return None;
         }
+        // wgpu treats uncaptured validation as fatal; keep Fast raster if RT SPIR-V/WGSL fails.
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let built = Self::create(device, format, sample_count);
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            tracing::error!("path tracer unavailable, using Fast raster: {err}");
+            return None;
+        }
+        Some(built)
+    }
+
+    fn create(device: &wgpu::Device, format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bambu-gpu-path"),
             source: wgpu::ShaderSource::Wgsl(include_str!("path.wgsl").into()),
@@ -195,7 +206,7 @@ impl RtGpu {
                 },
             ],
         });
-        Some(Self {
+        Self {
             pipeline,
             bgl,
             uniform_buf,
@@ -216,7 +227,7 @@ impl RtGpu {
             sampler,
             built_key: u64::MAX,
             ready: false,
-        })
+        }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -507,6 +518,7 @@ mod tests {
     use bambu_geom::TriangleMesh;
 
     fn rt_device() -> Result<(wgpu::Device, wgpu::Queue), GpuError> {
+        crate::force_vulkan_env();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -592,5 +604,30 @@ mod tests {
             timeout: None,
         });
         assert!(rt.ready);
+        eprintln!("hardware ray query traced the cube");
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    fn parse_and_validate(src: &str, label: &str, caps: naga::valid::Capabilities) {
+        let module = naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|err| panic!("{label} parse: {}", err.emit_to_string(src)));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
+            .validate(&module)
+            .unwrap_or_else(|err| panic!("{label} validate: {err:?}"));
+    }
+
+    #[test]
+    fn viewport_shaders_parse() {
+        let rq = naga::valid::Capabilities::default() | naga::valid::Capabilities::RAY_QUERY;
+        parse_and_validate(include_str!("path.wgsl"), "path.wgsl", rq);
+        let base = naga::valid::Capabilities::default();
+        parse_and_validate(include_str!("solid.wgsl"), "solid.wgsl", base);
+        parse_and_validate(include_str!("blit.wgsl"), "blit.wgsl", base);
+        parse_and_validate(include_str!("label.wgsl"), "label.wgsl", base);
+        parse_and_validate(include_str!("slice.wgsl"), "slice.wgsl", base);
+        parse_and_validate(include_str!("occupancy.wgsl"), "occupancy.wgsl", base);
+        parse_and_validate(include_str!("gyroid.wgsl"), "gyroid.wgsl", base);
     }
 }

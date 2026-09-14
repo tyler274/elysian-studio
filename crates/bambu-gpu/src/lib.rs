@@ -41,6 +41,7 @@ pub struct AdapterReport {
 /// Enumerate a Vulkan adapter. On Linux this is required before the iced
 /// compositor starts (`WGPU_BACKEND=vulkan`).
 pub fn probe_vulkan() -> Result<AdapterReport, GpuError> {
+    force_vulkan_env();
     let instance = wgpu::Instance::new(InstanceDescriptor {
         backends: Backends::VULKAN,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -64,8 +65,7 @@ pub fn probe_vulkan() -> Result<AdapterReport, GpuError> {
 }
 
 pub fn force_vulkan_env() {
-    // std::env::set_var is unsafe since Rust 1.87; workspace forbids unsafe.
-    // Probe uses Backends::VULKAN. Nix wrapper sets WGPU_BACKEND=vulkan for iced.
+    bambu_wgpu_exp::pin_linux_nvidia_vulkan();
     if std::env::var("WGPU_BACKEND").ok().as_deref() != Some("vulkan") {
         tracing::warn!("WGPU_BACKEND is not vulkan; iced may pick a non-Vulkan backend");
     }
@@ -79,6 +79,7 @@ mod tests {
     fn probe_vulkan_or_skip_without_gpu() {
         match probe_vulkan() {
             Ok(report) => {
+                eprintln!("vulkan adapter: {} ({})", report.name, report.backend);
                 assert!(
                     report.is_vulkan,
                     "expected Vulkan adapter, got {} ({})",

@@ -465,6 +465,7 @@ dependencies = [
  "bytemuck",
  "glam 0.29.3",
  "iced",
+ "naga",
  "pollster",
  "thiserror 2.0.20",
  "tracing",
