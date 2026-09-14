@@ -188,6 +188,12 @@ enum KeysCommand {
         /// Skip sandboxed official Studio memory harvest if the on-disk scan misses.
         #[arg(long)]
         no_live: bool,
+        /// Skip the isolated helper that lets the plugin self-decrypt (VMProtect).
+        #[arg(long)]
+        no_unpack: bool,
+        /// Write the reconstructed in-memory plugin image (not committed; default scan-and-delete).
+        #[arg(long)]
+        dump_elf: Option<PathBuf>,
         /// Seconds to wait for seeded login, then again for interactive Studio login.
         #[arg(long, default_value_t = 90)]
         timeout: u64,
@@ -637,12 +643,16 @@ fn run() -> Result<(), CliError> {
                 plugin,
                 out,
                 no_live,
+                no_unpack,
+                dump_elf,
                 timeout,
             } => {
                 let report = bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts {
                     plugin,
                     out_dir: out,
                     live: !no_live,
+                    unpack: !no_unpack,
+                    dump_elf,
                     timeout: std::time::Duration::from_secs(timeout.max(1)),
                 })
                 .map_err(|err| CliError::Message(err.to_string()))?;

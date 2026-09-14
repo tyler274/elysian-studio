@@ -39,3 +39,7 @@ slicer_key.pem
 slicer_crl.pem
 obn.auth.json
 obn.state.json
+
+# VMProtect self-unpack dumps (never commit)
+*.vmp.dump
+bambu-vmp-dump-*.bin

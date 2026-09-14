@@ -1,0 +1,10 @@
+[package]
+name = "bambu-vmp-dump"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Isolated dlopen helper to dump a self-unpacked libbambu_networking mapping"
+
+[lints.rust]
+unsafe_code = "allow"

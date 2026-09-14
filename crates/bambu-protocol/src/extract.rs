@@ -84,6 +84,8 @@ pub struct ExtractKeysOpts {
     pub plugin: Option<PathBuf>,
     pub out_dir: Option<PathBuf>,
     pub live: bool,
+    pub unpack: bool,
+    pub dump_elf: Option<PathBuf>,
     pub timeout: Duration,
 }
 
@@ -93,17 +95,44 @@ impl Default for ExtractKeysOpts {
             plugin: None,
             out_dir: None,
             live: true,
+            unpack: true,
+            dump_elf: None,
             timeout: Duration::from_secs(90),
         }
     }
 }
 
-/// Static plugin scan, then (on Linux) a sandboxed official Studio harvest.
+/// Static plugin scan, optional self-unpack dump, then sandboxed official Studio harvest.
 pub fn extract_keys(
     opts: ExtractKeysOpts,
 ) -> Result<ExtractReport, crate::credentials::CredentialError> {
     let mut report = extract_to_config_dir(opts.plugin.as_deref(), opts.out_dir.as_deref())?;
-    if report.credentials.has_cert_and_key() || !opts.live {
+    if report.credentials.has_cert_and_key() {
+        return Ok(report);
+    }
+    if !opts.unpack {
+        if let Some(path) = opts
+            .plugin
+            .clone()
+            .or_else(|| report.plugin.clone())
+            .or_else(find_stock_plugin)
+        {
+            report.notes.extend(crate::extract_elf::map_notes(&path));
+        }
+    }
+    if opts.unpack {
+        crate::extract_unpack::extract_unpack(
+            &mut report,
+            opts.plugin.as_deref(),
+            opts.out_dir.as_deref(),
+            opts.dump_elf.as_deref(),
+            opts.timeout,
+        )?;
+        if report.credentials.has_cert_and_key() {
+            return Ok(report);
+        }
+    }
+    if !opts.live {
         return Ok(report);
     }
     report.notes.push(
@@ -132,12 +161,21 @@ pub(crate) fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials)
 }
 
 pub fn extract_pems_from_bytes(data: &[u8]) -> SlicerCredentials {
+    extract_pems_from_bytes_ex(data, true)
+}
+
+/// ASCII / UTF-16 PEM scan without a 255-key XOR pass (too slow on 32MB dumps).
+pub(crate) fn extract_pems_plain(data: &[u8]) -> SlicerCredentials {
+    extract_pems_from_bytes_ex(data, false)
+}
+
+fn extract_pems_from_bytes_ex(data: &[u8], xor: bool) -> SlicerCredentials {
     let mut creds = SlicerCredentials::default();
     collect_pems(&mut creds, &decode_ascii(data));
-    if !creds.can_sign() || creds.cert_pem.is_none() {
+    if data.len() <= 4 * 1024 * 1024 && (!creds.can_sign() || creds.cert_pem.is_none()) {
         collect_pems(&mut creds, &decode_utf16le(data));
     }
-    if !creds.can_sign() || creds.cert_pem.is_none() {
+    if xor && data.len() <= 4 * 1024 * 1024 && (!creds.can_sign() || creds.cert_pem.is_none()) {
         if let Some(decoded) = decode_xor_pem(data) {
             collect_pems(&mut creds, &decoded);
         }

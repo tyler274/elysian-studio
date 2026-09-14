@@ -567,6 +567,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bambu-vmp-dump"
+version = "0.1.0"
+
+[[package]]
 name = "bambu-wgpu-exp"
 version = "0.1.0"
 dependencies = [

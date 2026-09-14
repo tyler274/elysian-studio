@@ -83,11 +83,12 @@ cargo run -p bambu-cli -- slice tests/golden/cube_20mm.stl -o /tmp/cube.gcode \
 
 ## Printer network (open-bamboo-networking)
 
-[Option A](https://github.com/ClusterM/open-bamboo-networking#option-a-developer-mode) is Developer Mode LAN (no signing keys). [Option B](https://github.com/ClusterM/open-bamboo-networking#option-b-cloud-mode-without-developer-mode) needs `slicer_cert.pem`, `slicer_key.pem`, and `slicer_crl.pem` from the stock plugin **you already have**. Put them in `$XDG_CONFIG_HOME/bambu-studio-rs/` (never commit them). `keys extract` first scans the on-disk plugin (including Orca `libbambu_networking_*.so`). If that misses, it launches official `bambu-studio` in a throwaway HOME under `bwrap`, seeds `BambuNetworkEngine.conf` from rewrite cloud tokens, and harvests decrypted PEMs from the child process — this workspace still does **not** `dlopen` `libbambu_networking`. Use `--no-live` to skip Studio. `--timeout` (default 90s) is the seeded wait; the same duration is allowed again for interactive Studio login if PEMs never appear.
+[Option A](https://github.com/ClusterM/open-bamboo-networking#option-a-developer-mode) is Developer Mode LAN (no signing keys). [Option B](https://github.com/ClusterM/open-bamboo-networking#option-b-cloud-mode-without-developer-mode) needs `slicer_cert.pem`, `slicer_key.pem`, and `slicer_crl.pem` from the stock plugin **you already have**. Put them in `$XDG_CONFIG_HOME/bambu-studio-rs/` (never commit them). `keys extract` first scans the on-disk plugin (including Orca `libbambu_networking_*.so`). If that misses, it maps the packed ELF (PT_LOAD / entropy / `bambu_network_*` exports), then spawns the isolated `bambu-vmp-dump` helper so VMProtect can self-decrypt in a **separate process** — `bambu-protocol` still does **not** `dlopen` the plugin. Optional `--dump-elf PATH` keeps that reconstructed image (gitignored); the default is scan-and-delete. If the dump still has no usable PEM/DER, extract launches official `bambu-studio` in a throwaway HOME under `bwrap`, seeds `BambuNetworkEngine.conf` from rewrite cloud tokens, and harvests decrypted PEMs from the child (including `r-x` plugin mappings). Use `--no-unpack` to skip the helper and `--no-live` to skip Studio. `--timeout` (default 90s) is the seeded wait; the same duration is allowed again for interactive Studio login if PEMs never appear.
 
 ```bash
 cargo run -p bambu-cli -- keys extract
 cargo run -p bambu-cli -- keys extract --no-live --plugin /path/to/libbambu_networking.so
+cargo run -p bambu-cli -- keys extract --no-unpack --dump-elf /tmp/plugin.vmp.dump
 cargo run -p bambu-cli -- keys status
 cargo run -p bambu-cli -- device discover --timeout 3
 cargo run -p bambu-cli -- device status --host 192.168.1.42 --code 12345678

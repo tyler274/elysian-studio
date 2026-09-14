@@ -141,6 +141,8 @@
                 cargoBuildFlags = [
                   "-p"
                   "bambu-cli"
+                  "-p"
+                  "bambu-vmp-dump"
                 ];
                 cargoTestFlags = [
                   "-p"
@@ -162,6 +164,8 @@
                 cargoBuildFlags = [
                   "-p"
                   "bambu-ui"
+                  "-p"
+                  "bambu-vmp-dump"
                 ];
                 doCheck = false;
               }

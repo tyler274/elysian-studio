@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use crate::cloud::load_cloud_session;
 use crate::credentials::{default_config_dir, write_to_dir, CredentialError, SlicerCredentials};
-use crate::extract::{extract_pems_from_bytes, merge_creds, ExtractReport};
+use crate::extract::{extract_pems_plain, merge_creds, ExtractReport};
+use crate::extract_elf::{harvest_maps, parse_proc_maps};
 use crate::signing::{load_private_key, slicer_cert_id};
 use crate::studio_import::default_studio_data_dir;
 
@@ -406,60 +407,20 @@ pub fn parse_ppid(stat: &str) -> Option<u32> {
 
 pub fn harvest_pid(pid: u32) -> SlicerCredentials {
     let mut creds = SlicerCredentials::default();
-    let Ok(maps) = fs::read_to_string(format!("/proc/{pid}/maps")) else {
+    let Ok(maps_text) = fs::read_to_string(format!("/proc/{pid}/maps")) else {
         return creds;
     };
+    let maps = parse_proc_maps(&maps_text);
     let Ok(mut mem) = File::open(format!("/proc/{pid}/mem")) else {
         return creds;
     };
-    for map in parse_rw_maps(&maps) {
+    for map in harvest_maps(&maps) {
         harvest_range(&mut mem, map.start, map.end, &mut creds);
         if creds.has_cert_and_key() && creds.crl_pem.is_some() {
             break;
         }
     }
     creds
-}
-
-struct MapRange {
-    start: u64,
-    end: u64,
-}
-
-fn parse_rw_maps(maps: &str) -> Vec<MapRange> {
-    let mut out = Vec::new();
-    for line in maps.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(range) = parts.next() else {
-            continue;
-        };
-        let Some(perms) = parts.next() else {
-            continue;
-        };
-        if !perms.starts_with("rw") {
-            continue;
-        }
-        let pathname = parts.nth(3).unwrap_or("");
-        let interesting = pathname.is_empty()
-            || pathname == "[heap]"
-            || pathname.contains("bambu_networking")
-            || pathname.contains("bambunetwork");
-        if !interesting {
-            continue;
-        }
-        let Some((start, end)) = range.split_once('-') else {
-            continue;
-        };
-        let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
-        else {
-            continue;
-        };
-        if end <= start || end - start > 64 * 1024 * 1024 {
-            continue;
-        }
-        out.push(MapRange { start, end });
-    }
-    out
 }
 
 fn harvest_range(mem: &mut File, start: u64, end: u64, creds: &mut SlicerCredentials) {
@@ -481,7 +442,7 @@ fn harvest_range(mem: &mut File, start: u64, end: u64, creds: &mut SlicerCredent
         buf.truncate(n);
         let mut combined = carry;
         combined.extend_from_slice(&buf);
-        merge_creds(creds, extract_pems_from_bytes(&combined));
+        merge_creds(creds, extract_pems_plain(&combined));
         if creds.has_cert_and_key() {
             return;
         }
@@ -533,14 +494,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_rw_maps_keeps_heap_and_plugin() {
-        let maps = "\
-7f000000-7f001000 r-xp 00000000 00:00 0 /usr/lib/libc.so.6\n\
-7f100000-7f180000 rw-p 00000000 00:00 0 [heap]\n\
-7f200000-7f210000 rw-p 00000000 00:00 0 /home/u/.config/BambuStudio/plugins/libbambu_networking.so\n\
-7f300000-7f400000 rw-p 00000000 00:00 0\n";
-        let ranges = parse_rw_maps(maps);
-        assert_eq!(ranges.len(), 3);
+    fn harvest_maps_keeps_heap_anon_and_rx_plugin() {
+        let maps = parse_proc_maps(
+            "7f000000-7f001000 r-xp 00000000 00:00 0 /usr/lib/libc.so.6\n\
+             7f100000-7f180000 rw-p 00000000 00:00 0 [heap]\n\
+             7f1a0000-7f1b0000 r-xp 00000000 00:00 1 /home/u/.config/BambuStudio/plugins/libbambu_networking.so\n\
+             7f200000-7f210000 rw-p 00000000 00:00 0 /home/u/.config/BambuStudio/plugins/libbambu_networking.so\n\
+             7f300000-7f400000 rw-p 00000000 00:00 0\n",
+        );
+        let ranges = harvest_maps(&maps);
+        assert_eq!(ranges.len(), 4, "{ranges:?}");
+        assert!(crate::extract_elf::plugin_readable_maps(&maps)
+            .iter()
+            .any(|m| m.perms.contains("r-x")));
     }
 
     #[test]
