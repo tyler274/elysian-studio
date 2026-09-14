@@ -4,7 +4,7 @@ use bambu_config::{SeamPosition, TopOneWallType};
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, slider, text, text_input,
 };
-use iced::{Element, Fill};
+use iced::{Alignment, Element, Fill};
 
 use crate::theme;
 use crate::{format_eta, role_legend, Message, ProcessTab, SIDEBAR_WIDTH};
@@ -15,43 +15,24 @@ impl crate::App {
     pub(crate) fn prepare_sidebar(&self) -> Element<'_, Message> {
         scrollable(
             column![
-                self.printer_card(),
-                self.ams_cards(),
-                self.process_pane(true),
-                self.project_filaments(),
-                text("Objects").size(theme::TITLE_SIZE).color(theme::TEXT),
-                self.object_panel(),
-                self.transform_panel(),
-                text("Paint").size(theme::TITLE_SIZE).color(theme::TEXT),
-                checkbox(self.paint_blocker)
-                    .label("Blocker (else Enforcer)")
-                    .on_toggle(Message::PaintBlocker),
-                text(format!("Brush {:.1} mm", self.brush_mm))
-                    .size(12)
-                    .color(theme::TEXT_MUTED),
-                slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
-                    Message::BrushRadius(v as f32)
-                })
-                .step(0.5),
-                row![
-                    button(text("Support").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::PaintSupport),
-                    button(text("Seam").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::PaintSeam),
-                    button(text("Fuzzy").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::PaintFuzzy),
-                    button(text("Off").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::PaintClear),
-                ]
-                .spacing(4),
+                self.section(
+                    "Printer",
+                    self.printer_open,
+                    Message::TogglePrinterSection,
+                    self.printer_body(true),
+                ),
+                self.section(
+                    "Filament",
+                    self.filament_open,
+                    Message::ToggleFilamentSection,
+                    self.filament_library(),
+                ),
+                self.section(
+                    "Process",
+                    self.process_open,
+                    Message::ToggleProcessSection,
+                    self.process_pane(true),
+                ),
             ]
             .spacing(8)
             .padding(theme::SIDEBAR_PAD)
@@ -81,9 +62,24 @@ impl crate::App {
             .unwrap_or_else(|| "—".into());
         scrollable(
             column![
-                self.printer_card(),
-                self.preview_filament_chips(),
-                self.process_pane(false),
+                self.section(
+                    "Printer",
+                    self.printer_open,
+                    Message::TogglePrinterSection,
+                    self.printer_body(false),
+                ),
+                self.section(
+                    "Filament",
+                    self.filament_open,
+                    Message::ToggleFilamentSection,
+                    self.preview_filament_chips(),
+                ),
+                self.section(
+                    "Process",
+                    self.process_open,
+                    Message::ToggleProcessSection,
+                    self.process_pane(false),
+                ),
                 text(format!(
                     "Layer {}  Z {:.2} mm  ~{eta}",
                     self.scene.preview_layer + 1,
@@ -122,52 +118,82 @@ impl crate::App {
         .into()
     }
 
-    fn printer_card(&self) -> Element<'_, Message> {
+    fn section<'a>(
+        &self,
+        title: &'static str,
+        open: bool,
+        toggle: Message,
+        body: Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        let chevron = if open { "▾" } else { "▸" };
+        let header = button(
+            row![
+                text(chevron)
+                    .size(theme::BODY_SIZE)
+                    .color(theme::TEXT_MUTED),
+                text(title).size(theme::TITLE_SIZE).color(theme::TEXT),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .padding([4, 8])
+        .width(Fill)
+        .style(|_, status| theme::quiet(status))
+        .on_press(toggle);
+        let mut col = column![header].spacing(6);
+        if open {
+            col = col.push(body);
+        }
+        container(col)
+            .padding(8)
+            .width(Fill)
+            .style(|_| theme::card())
+            .into()
+    }
+
+    fn printer_body(&self, with_ams: bool) -> Element<'_, Message> {
         let machine_names: Vec<String> = self
             .machine_profiles
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        container(
-            column![
-                text("Printer").size(theme::TITLE_SIZE).color(theme::TEXT),
-                pick_list(
-                    machine_names,
-                    self.machine_name.clone(),
-                    Message::MachineProfile
-                )
-                .placeholder("machine JSON")
-                .padding([3, 8])
-                .text_size(theme::BODY_SIZE),
-                text(format!(
-                    "Bed {:.0}×{:.0} mm · {}",
-                    self.scene.bed.width(),
-                    self.scene.bed.height(),
-                    self.settings.curr_bed_type
-                ))
-                .size(12)
-                .color(theme::TEXT_MUTED),
-                row![
-                    button(text("Bed texture").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::Toast(
-                            "Bed texture uses the printer profile".into()
-                        )),
-                    button(text("Sync").size(12))
-                        .padding([3, 8])
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::Toast("Printer sync is a placeholder".into())),
-                ]
-                .spacing(6),
-                self.plate_buttons(),
+        let mut col = column![
+            pick_list(
+                machine_names,
+                self.machine_name.clone(),
+                Message::MachineProfile
+            )
+            .placeholder("machine JSON")
+            .padding([3, 8])
+            .text_size(theme::BODY_SIZE),
+            text(format!(
+                "Bed {:.0}×{:.0} mm · {}",
+                self.scene.bed.width(),
+                self.scene.bed.height(),
+                self.settings.curr_bed_type
+            ))
+            .size(12)
+            .color(theme::TEXT_MUTED),
+            row![
+                button(text("Bed texture").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::Toast(
+                        "Bed texture uses the printer profile".into()
+                    )),
+                button(text("Sync").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::Toast("Printer sync is a placeholder".into())),
             ]
             .spacing(6),
-        )
-        .padding(10)
-        .width(Fill)
-        .style(|_| theme::card())
-        .into()
+            self.plate_buttons(),
+        ]
+        .spacing(6);
+        if with_ams {
+            col = col.push(self.ams_cards());
+        }
+        col.into()
     }
 
     fn ams_cards(&self) -> Element<'_, Message> {
@@ -194,14 +220,6 @@ impl crate::App {
         .width(Fill)
         .style(|_| theme::card())
         .into()
-    }
-
-    fn project_filaments(&self) -> Element<'_, Message> {
-        container(self.filament_library())
-            .padding(10)
-            .width(Fill)
-            .style(|_| theme::card())
-            .into()
     }
 
     fn preview_filament_chips(&self) -> Element<'_, Message> {
@@ -242,17 +260,7 @@ impl crate::App {
             );
             let _ = label;
         }
-        container(
-            column![
-                text("Filament").size(theme::TITLE_SIZE).color(theme::TEXT),
-                chips,
-            ]
-            .spacing(6),
-        )
-        .padding(10)
-        .width(Fill)
-        .style(|_| theme::card())
-        .into()
+        chips.into()
     }
 
     fn process_pane(&self, full_notebook: bool) -> Element<'_, Message> {
@@ -268,7 +276,6 @@ impl crate::App {
             .map(|p| p.name.clone())
             .collect();
         let mut col = column![
-            text("Process").size(theme::TITLE_SIZE).color(theme::TEXT),
             row![
                 button(text("Global").size(12))
                     .padding([3, 8])
@@ -300,16 +307,55 @@ impl crate::App {
         ]
         .spacing(6);
         if full_notebook {
-            col = col.push(self.process_tabs());
-            col = col.push(self.process_page());
+            if self.process_objects {
+                col = col.push(self.object_panel());
+                col = col.push(self.transform_panel());
+                col = col.push(self.paint_panel());
+            } else {
+                col = col.push(self.process_tabs());
+                col = col.push(self.process_page());
+            }
         } else {
             col = col.push(self.preview_quality());
         }
-        container(col)
-            .padding(10)
-            .width(Fill)
-            .style(|_| theme::card())
-            .into()
+        col.into()
+    }
+
+    fn paint_panel(&self) -> Element<'_, Message> {
+        column![
+            text("Paint").size(theme::TITLE_SIZE).color(theme::TEXT),
+            checkbox(self.paint_blocker)
+                .label("Blocker (else Enforcer)")
+                .on_toggle(Message::PaintBlocker),
+            text(format!("Brush {:.1} mm", self.brush_mm))
+                .size(12)
+                .color(theme::TEXT_MUTED),
+            slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
+                Message::BrushRadius(v as f32)
+            })
+            .step(0.5),
+            row![
+                button(text("Support").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::PaintSupport),
+                button(text("Seam").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::PaintSeam),
+                button(text("Fuzzy").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::PaintFuzzy),
+                button(text("Off").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::PaintClear),
+            ]
+            .spacing(4),
+        ]
+        .spacing(4)
+        .into()
     }
 
     fn process_page(&self) -> Element<'_, Message> {

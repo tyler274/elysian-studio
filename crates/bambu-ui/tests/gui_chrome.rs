@@ -99,6 +99,9 @@ fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
         "Slice plate",
         "Print plate",
         "AMS",
+        "Printer",
+        "Filament",
+        "Process",
         "Quality",
         "Seam",
         "Iso",
@@ -112,6 +115,7 @@ fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
     }
     assert_eq!(snap.sidebar_width, 300);
     assert!(!snap.sidebar_collapsed);
+    assert!(snap.printer_open && snap.filament_open && snap.process_open);
     assert_eq!(snap.window, [1200, 800]);
     if prepare {
         assert_eq!(snap.workspace, "prepare");
@@ -170,6 +174,11 @@ fn gui_chrome_prepare_preview_goldens() {
     let rgba = maybe_png("preview_sliced", &png);
     assert_structure(&snap, rgba, false);
 
+    drive(&mut app, [Message::ProcessObjects(true)]);
+    assert!(app.snapshot().process_objects);
+    drive(&mut app, [Message::ProcessObjects(false)]);
+    assert!(!app.snapshot().process_objects);
+
     drive(
         &mut app,
         [
@@ -213,6 +222,9 @@ fn gui_snapshot_labels_cover_reference_chrome() {
         "Slice plate",
         "Print plate",
         "AMS",
+        "Printer",
+        "Filament",
+        "Process",
         "Quality",
         "Seam",
         "Iso",
@@ -223,6 +235,7 @@ fn gui_snapshot_labels_cover_reference_chrome() {
     }
     assert_eq!(snap.sidebar_width, 300);
     assert!(!snap.sidebar_collapsed);
+    assert!(snap.printer_open && snap.filament_open && snap.process_open);
 }
 
 #[test]

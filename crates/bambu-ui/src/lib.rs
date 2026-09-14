@@ -210,6 +210,9 @@ pub struct App {
     print_export: bool,
     recent_models: Vec<PathBuf>,
     sidebar_collapsed: bool,
+    printer_open: bool,
+    filament_open: bool,
+    process_open: bool,
 }
 
 #[allow(private_interfaces)]
@@ -395,6 +398,9 @@ pub enum Message {
     PlatePrev,
     PlateNext,
     Toast(String),
+    TogglePrinterSection,
+    ToggleFilamentSection,
+    ToggleProcessSection,
 }
 
 impl From<ViewportEvent> for Message {
@@ -657,6 +663,9 @@ impl App {
             print_export: false,
             recent_models: Vec::new(),
             sidebar_collapsed: false,
+            printer_open: true,
+            filament_open: true,
+            process_open: true,
         };
         app.reload_user_filaments();
         app.catalog = load_default_catalog();
@@ -1589,6 +1598,9 @@ impl App {
             Message::ProcessTab(tab) => self.quality_tab = tab,
             Message::ProcessSearch(q) => self.process_search = q,
             Message::ProcessObjects(v) => self.process_objects = v,
+            Message::TogglePrinterSection => self.printer_open = !self.printer_open,
+            Message::ToggleFilamentSection => self.filament_open = !self.filament_open,
+            Message::ToggleProcessSection => self.process_open = !self.process_open,
             Message::Seam(pos) => self.settings.seam = pos,
             Message::SeamAway(v) => self.settings.seam_placement_away_from_overhangs = v,
             Message::ScarfConditional(v) => self.settings.seam_slope_conditional = v,
@@ -1960,26 +1972,34 @@ impl App {
             } else {
                 obj.name.clone()
             };
-            col = col.push(button(text(name).size(12)).on_press(Message::SelectObject(i)));
-        }
-        if let Some(obj) = model.objects.get(self.selected_object) {
-            for (i, vol) in obj.volumes.iter().enumerate() {
+            col = col.push(tree_chip(
+                name,
+                i == self.selected_object,
+                Message::SelectObject(i),
+            ));
+            if i != self.selected_object {
+                continue;
+            }
+            for (vi, vol) in obj.volumes.iter().enumerate() {
                 let extruder = vol
                     .config
                     .get("extruder")
                     .cloned()
                     .unwrap_or_else(|| "—".into());
-                let label = format!(
-                    "{} {} ext {extruder}{}",
-                    vol.volume_type.as_str(),
-                    if vol.name.is_empty() {
-                        format!("v{}", i + 1)
-                    } else {
-                        vol.name.clone()
-                    },
-                    if vol.hidden { " (hidden)" } else { "" }
-                );
-                col = col.push(button(text(label).size(11)).on_press(Message::SelectVolume(i)));
+                let vol_name = if vol.name.is_empty() {
+                    format!("v{}", vi + 1)
+                } else {
+                    vol.name.clone()
+                };
+                let hidden = if vol.hidden { " (hidden)" } else { "" };
+                col = col.push(tree_chip(
+                    format!(
+                        "  · {} {vol_name} ext {extruder}{hidden}",
+                        vol.volume_type.as_str()
+                    ),
+                    vi == self.selected_volume,
+                    Message::SelectVolume(vi),
+                ));
             }
             if let Some(vol) = obj.volumes.get(self.selected_volume) {
                 col = col.push(
@@ -2909,6 +2929,38 @@ async fn pick_mesh_path() -> Option<PathBuf> {
         .pick_file()
         .await
         .map(|file| file.path().to_path_buf())
+}
+
+fn tree_chip<'a>(label: String, active: bool, message: Message) -> Element<'a, Message> {
+    let color = if active {
+        iced::Color::WHITE
+    } else {
+        theme::TEXT_MUTED
+    };
+    container(
+        button(text(label).size(12).color(color))
+            .padding([3, 8])
+            .width(Fill)
+            .style(move |_, status| theme::process_tab(active, status))
+            .on_press(message),
+    )
+    .width(Fill)
+    .style(move |_| {
+        if active {
+            container::Style {
+                background: Some(iced::Background::Color(theme::PREPARE)),
+                border: iced::Border {
+                    radius: theme::RADIUS.into(),
+                    width: 0.0,
+                    color: iced::Color::TRANSPARENT,
+                },
+                ..container::Style::default()
+            }
+        } else {
+            container::Style::default()
+        }
+    })
+    .into()
 }
 
 fn offload<T, M>(
