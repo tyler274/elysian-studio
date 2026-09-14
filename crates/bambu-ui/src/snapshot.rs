@@ -92,6 +92,7 @@ impl App {
                 "Preview".into(),
                 "Slice plate".into(),
                 "Print plate".into(),
+                "File".into(),
                 "AMS".into(),
                 "Printer".into(),
                 "Filament".into(),

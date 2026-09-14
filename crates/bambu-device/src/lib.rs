@@ -71,6 +71,9 @@ pub struct MachineState {
     /// `print.wifi_signal` (e.g. `-44dBm`).
     pub wifi_signal: String,
     pub hms: Vec<HmsCode>,
+    /// H2C induction rack (`print.device.holder` + rack nozzles). Empty on P1/A1.
+    #[serde(default)]
+    pub nozzle_rack: NozzleRackState,
 }
 
 impl Default for MachineState {
@@ -104,6 +107,7 @@ impl Default for MachineState {
             gcode_state: String::new(),
             wifi_signal: String::new(),
             hms: Vec::new(),
+            nozzle_rack: NozzleRackState::default(),
         }
     }
 }
@@ -120,17 +124,84 @@ pub struct AmsTray {
     pub temp: Option<f32>,
 }
 
+/// One physical AMS / AMS 2 Pro / N3S unit (`print.ams.ams[]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AmsUnit {
+    pub id: u8,
+    pub humidity: Option<u8>,
+    pub humidity_percent: Option<u8>,
+    pub temp: Option<f32>,
+    /// Remaining drying time in minutes.
+    pub dry_time_min: Option<u32>,
+    /// Studio `DevAms::DryStatus` from `info` bits 4..8.
+    pub dry_status: u8,
+}
+
+impl AmsUnit {
+    pub fn is_drying(&self) -> bool {
+        self.dry_status == 2 || self.dry_time_min.is_some_and(|t| t > 0)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AmsState {
     pub slot_count: u8,
     pub active_slot: Option<u8>,
     pub trays: Vec<AmsTray>,
     pub mapping: Vec<i32>,
-    /// Unit humidity (firmware enum / percent; printer-dependent).
+    /// First unit humidity (legacy single-line UI).
     pub humidity: Option<u8>,
     pub unit_temp: Option<f32>,
     /// External spool (`print.vt_tray`).
     pub vt_tray: Option<AmsTray>,
+    #[serde(default)]
+    pub units: Vec<AmsUnit>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NozzleSlot {
+    pub id: i32,
+    pub diameter: f32,
+    pub nozzle_type: String,
+    pub color: String,
+    pub empty: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NozzleRackState {
+    pub supported: bool,
+    pub status: i32,
+    pub position: i32,
+    pub cali: i32,
+    pub toolhead: Vec<NozzleSlot>,
+    pub rack: Vec<NozzleSlot>,
+}
+
+impl NozzleRackState {
+    pub fn status_label(&self) -> &'static str {
+        match self.status {
+            0 => "idle",
+            1 => "hotend centre",
+            2 => "toolhead centre",
+            3 => "calibrate",
+            4 => "cut material",
+            5 => "unlock hotend",
+            6 => "lift rack",
+            7 => "place hotend",
+            8 => "pick hotend",
+            9 => "lock hotend",
+            _ => "unknown",
+        }
+    }
+
+    pub fn position_label(&self) -> &'static str {
+        match self.position {
+            1 => "A-top",
+            2 => "B-top",
+            3 => "centre",
+            _ => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +242,25 @@ pub trait PrinterBackend {
         new_temp: u16,
     ) -> impl Future<Output = Result<(), DeviceError>> + Send;
     fn ams_unload(&self, ams_id: u8) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn ams_drying(
+        &self,
+        ams_id: u8,
+        filament: &str,
+        temp_c: u16,
+        duration_h: u16,
+        rotate_tray: bool,
+        cooling_temp: u16,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn ams_drying_stop(&self, ams_id: u8) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn nozzle_holder_ctrl(
+        &self,
+        action: u8,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn holder_nozzle_refresh(
+        &self,
+        id: u32,
+    ) -> impl Future<Output = Result<(), DeviceError>> + Send;
+    fn nozzle_info_confirm(&self, id: u32) -> impl Future<Output = Result<(), DeviceError>> + Send;
     fn hms_resume(
         &self,
         err: &str,

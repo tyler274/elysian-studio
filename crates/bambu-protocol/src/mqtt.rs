@@ -2,7 +2,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bambu_device::{AmsState, AmsTray, HmsCode, MachineState};
+use bambu_device::{
+    AmsState, AmsTray, AmsUnit, HmsCode, MachineState, NozzleRackState, NozzleSlot,
+};
 use serde_json::Value;
 
 pub const LAN_MQTT_PORT: u16 = 8883;
@@ -215,6 +217,86 @@ pub fn skip_objects(sequence_id: u64, obj_list: &[u32]) -> String {
             "command": "skip_objects",
             "obj_list": obj_list,
             "sequence_id": sequence_id.to_string(),
+        }
+    })
+    .to_string()
+}
+
+/// Studio `DevAms::DryCtrlMode`.
+pub const AMS_DRY_MODE_OFF: i32 = 0;
+pub const AMS_DRY_MODE_ON_TIME: i32 = 1;
+
+/// Studio `DevFilaSystem::CtrlAmsStartDryingHour` / `CtrlAmsStopDrying`.
+pub fn ams_filament_drying(
+    sequence_id: u64,
+    ams_id: u8,
+    mode: i32,
+    filament: &str,
+    temp_c: u16,
+    duration_h: u16,
+    rotate_tray: bool,
+    cooling_temp: u16,
+) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "ams_filament_drying",
+            "sequence_id": sequence_id.to_string(),
+            "ams_id": ams_id,
+            "mode": mode,
+            "filament": filament,
+            "temp": temp_c,
+            "duration": duration_h,
+            "humidity": 0,
+            "rotate_tray": rotate_tray,
+            "cooling_temp": cooling_temp,
+            "close_power_conflict": false,
+        }
+    })
+    .to_string()
+}
+
+/// Studio `MachineObject::command_ams_drying_stop`.
+pub fn auto_stop_ams_dry(sequence_id: u64) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "auto_stop_ams_dry",
+            "sequence_id": sequence_id.to_string(),
+        }
+    })
+    .to_string()
+}
+
+/// Studio `DevNozzleRack::CtrlRackPosGoHome` / `CtrlRackPosMove` (`action` 0/1/2).
+pub fn nozzle_holder_ctrl(sequence_id: u64, action: u8) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "nozzle_holder_ctrl",
+            "sequence_id": sequence_id.to_string(),
+            "action": action,
+        }
+    })
+    .to_string()
+}
+
+/// Studio `DevNozzleRack::CrtlRackReadNozzle` (`id` = slot+16 or `0xff`).
+pub fn holder_nozzle_refresh(sequence_id: u64, id: u32) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "holder_nozzle_refresh",
+            "sequence_id": sequence_id.to_string(),
+            "id": id,
+        }
+    })
+    .to_string()
+}
+
+/// Studio `DevNozzleRack::CtrlRackConfirmNozzle` / `CtrlRackConfirmAll`.
+pub fn nozzle_info_confirm(sequence_id: u64, id: u32) -> String {
+    serde_json::json!({
+        "print": {
+            "command": "nozzle_info_confirm",
+            "sequence_id": sequence_id.to_string(),
+            "id": id,
         }
     })
     .to_string()
@@ -445,7 +527,55 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
         gcode_state: textish(print, "gcode_state").unwrap_or_default(),
         wifi_signal: textish(print, "wifi_signal").unwrap_or_default(),
         hms: parse_hms_items(print.get("hms")),
+        nozzle_rack: parse_nozzle_rack(print.get("device")),
     })
+}
+
+/// C++ `DevNozzleSystemParser` + `DevNozzleRack::ParseRackInfo` on `print.device`.
+pub fn parse_nozzle_rack(device: Option<&Value>) -> NozzleRackState {
+    let Some(device) = device else {
+        return NozzleRackState::default();
+    };
+    let holder = device.get("holder");
+    let info = device
+        .get("nozzle")
+        .and_then(|n| n.get("info"))
+        .and_then(Value::as_array);
+    if holder.is_none() && info.is_none() {
+        return NozzleRackState::default();
+    }
+    let mut toolhead = Vec::new();
+    let mut rack = Vec::new();
+    if let Some(arr) = info {
+        for item in arr {
+            let raw_id = optional_i32(item, "id").unwrap_or(0);
+            let slot = NozzleSlot {
+                id: hex_nibble(raw_id, 0),
+                diameter: optional_f32(item, "diameter").unwrap_or(0.0),
+                nozzle_type: textish(item, "type").unwrap_or_default(),
+                color: textish(item, "color_m")
+                    .or_else(|| textish(item, "color"))
+                    .unwrap_or_default(),
+                empty: optional_i32(item, "stat").unwrap_or(0) != 0
+                    || optional_f32(item, "diameter").unwrap_or(0.0) <= 0.0,
+            };
+            if hex_nibble(raw_id, 1) == 1 {
+                rack.push(slot);
+            } else {
+                toolhead.push(slot);
+            }
+        }
+    }
+    rack.sort_by_key(|s| s.id);
+    toolhead.sort_by_key(|s| s.id);
+    NozzleRackState {
+        supported: true,
+        status: holder.and_then(|h| optional_i32(h, "stat")).unwrap_or(-1),
+        position: holder.and_then(|h| optional_i32(h, "pos")).unwrap_or(-1),
+        cali: holder.and_then(|h| optional_i32(h, "info")).unwrap_or(0),
+        toolhead,
+        rack,
+    }
 }
 
 /// C++ `DevHMS::ParseHMSItems` on `print.hms`.
@@ -484,12 +614,24 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
             .or_else(|| a.get("tray_now").and_then(Value::as_u64).map(|n| n as u8))
     });
     let mut trays = Vec::new();
+    let mut units = Vec::new();
     let mut unit_temp = None;
     for unit in slots {
-        if unit_temp.is_none() {
-            unit_temp = optional_f32(unit, "temp");
-        }
         let ams_id = unit.get("id").and_then(as_u8).unwrap_or(0);
+        let humidity = optional_u8(unit, "humidity");
+        let temp = optional_f32(unit, "temp");
+        if unit_temp.is_none() {
+            unit_temp = temp;
+        }
+        let info = textish(unit, "info").unwrap_or_default();
+        units.push(AmsUnit {
+            id: ams_id,
+            humidity,
+            humidity_percent: optional_u8(unit, "humidity_raw"),
+            temp,
+            dry_time_min: optional_u32(unit, "dry_time"),
+            dry_status: flag_bits_hex(&info, 4, 4),
+        });
         let Some(tray_list) = unit.get("tray").and_then(Value::as_array) else {
             continue;
         };
@@ -523,6 +665,7 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
         humidity,
         unit_temp,
         vt_tray,
+        units,
     })
 }
 
@@ -582,6 +725,40 @@ fn optional_u8(v: &Value, key: &str) -> Option<u8> {
             .map(|n| n as u8)
             .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
     })
+}
+
+fn optional_u32(v: &Value, key: &str) -> Option<u32> {
+    v.get(key).and_then(|n| {
+        n.as_u64()
+            .map(|n| n as u32)
+            .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+
+fn optional_i32(v: &Value, key: &str) -> Option<i32> {
+    v.get(key).and_then(|n| {
+        n.as_i64()
+            .map(|n| n as i32)
+            .or_else(|| n.as_u64().map(|n| n as i32))
+            .or_else(|| n.as_str().and_then(|s| s.parse().ok()))
+    })
+}
+
+fn hex_nibble(num: i32, pos: u32) -> i32 {
+    (num >> (pos * 4)) & 0xF
+}
+
+fn flag_bits_hex(info: &str, start: u32, count: u32) -> u8 {
+    let trimmed = info.trim();
+    if trimmed.is_empty() || count == 0 || count > 16 {
+        return 0;
+    }
+    let val = u64::from_str_radix(
+        trimmed.trim_start_matches("0x").trim_start_matches("0X"),
+        16,
+    )
+    .unwrap_or(0);
+    ((val >> start) & ((1u64 << count) - 1)) as u8
 }
 
 fn uint(v: &Value, key: &str) -> u32 {
@@ -777,6 +954,8 @@ mod tests {
         let ams = parse_ams(json).unwrap();
         assert_eq!(ams.humidity, Some(3));
         assert_eq!(ams.trays[0].humidity, Some(4));
+        assert_eq!(ams.units.len(), 1);
+        assert_eq!(ams.units[0].humidity, Some(3));
     }
 
     #[test]
@@ -889,5 +1068,101 @@ mod tests {
         let c: Value = serde_json::from_str(&cloud).unwrap();
         assert_eq!(c["print"]["timelapse"], true);
         assert!(c["print"]["url"].as_str().unwrap().starts_with("https://"));
+    }
+
+    #[test]
+    fn parse_ams_two_units_humidity_temp_dry() {
+        let json = include_str!("../tests/fixtures/ams_two_pro.json");
+        let ams = parse_ams(json).unwrap();
+        assert_eq!(ams.units.len(), 2);
+        assert_eq!(ams.units[0].id, 0);
+        assert_eq!(ams.units[0].humidity, Some(2));
+        assert_eq!(ams.units[0].humidity_percent, Some(28));
+        assert!((ams.units[0].temp.unwrap() - 32.5).abs() < 0.01);
+        assert_eq!(ams.units[0].dry_time_min, Some(90));
+        assert_eq!(ams.units[0].dry_status, 2);
+        assert!(ams.units[0].is_drying());
+        assert_eq!(ams.units[1].id, 1);
+        assert_eq!(ams.units[1].humidity, Some(4));
+        assert_eq!(ams.units[1].humidity_percent, Some(55));
+        assert!((ams.units[1].temp.unwrap() - 27.0).abs() < 0.01);
+        assert_eq!(ams.units[1].dry_time_min, None);
+        assert!(!ams.units[1].is_drying());
+        assert_eq!(ams.humidity, Some(2));
+        assert!((ams.unit_temp.unwrap() - 32.5).abs() < 0.01);
+        assert_eq!(ams.trays.len(), 8);
+    }
+
+    #[test]
+    fn ams_filament_drying_matches_studio_fields() {
+        let start: Value = serde_json::from_str(&ams_filament_drying(
+            20020,
+            1,
+            AMS_DRY_MODE_ON_TIME,
+            "PLA",
+            55,
+            8,
+            true,
+            30,
+        ))
+        .unwrap();
+        assert_eq!(start["print"]["command"], "ams_filament_drying");
+        assert_eq!(start["print"]["ams_id"], 1);
+        assert_eq!(start["print"]["mode"], AMS_DRY_MODE_ON_TIME);
+        assert_eq!(start["print"]["filament"], "PLA");
+        assert_eq!(start["print"]["temp"], 55);
+        assert_eq!(start["print"]["duration"], 8);
+        assert_eq!(start["print"]["humidity"], 0);
+        assert_eq!(start["print"]["rotate_tray"], true);
+        assert_eq!(start["print"]["cooling_temp"], 30);
+        let stop: Value = serde_json::from_str(&ams_filament_drying(
+            20021,
+            1,
+            AMS_DRY_MODE_OFF,
+            "",
+            0,
+            0,
+            false,
+            0,
+        ))
+        .unwrap();
+        assert_eq!(stop["print"]["mode"], AMS_DRY_MODE_OFF);
+        let estop: Value = serde_json::from_str(&auto_stop_ams_dry(20022)).unwrap();
+        assert_eq!(estop["print"]["command"], "auto_stop_ams_dry");
+    }
+
+    #[test]
+    fn parse_h2c_holder_and_nozzle_rack() {
+        let json = include_str!("../tests/fixtures/h2c_holder.json");
+        let st = parse_push_status(json).unwrap();
+        assert!(st.nozzle_rack.supported);
+        assert_eq!(st.nozzle_rack.status, 0);
+        assert_eq!(st.nozzle_rack.position, 1);
+        assert_eq!(st.nozzle_rack.status_label(), "idle");
+        assert_eq!(st.nozzle_rack.position_label(), "A-top");
+        assert_eq!(st.nozzle_rack.toolhead.len(), 2);
+        assert_eq!(st.nozzle_rack.rack.len(), 6);
+        assert_eq!(st.nozzle_rack.rack[0].id, 0);
+        assert!((st.nozzle_rack.rack[0].diameter - 0.2).abs() < 0.01);
+        assert_eq!(st.nozzle_rack.rack[5].id, 5);
+    }
+
+    #[test]
+    fn nozzle_rack_commands_match_studio() {
+        let home: Value = serde_json::from_str(&nozzle_holder_ctrl(9, 0)).unwrap();
+        assert_eq!(home["print"]["command"], "nozzle_holder_ctrl");
+        assert_eq!(home["print"]["action"], 0);
+        let a: Value = serde_json::from_str(&nozzle_holder_ctrl(10, 1)).unwrap();
+        assert_eq!(a["print"]["action"], 1);
+        let b: Value = serde_json::from_str(&nozzle_holder_ctrl(11, 2)).unwrap();
+        assert_eq!(b["print"]["action"], 2);
+        let read: Value = serde_json::from_str(&holder_nozzle_refresh(12, 16)).unwrap();
+        assert_eq!(read["print"]["command"], "holder_nozzle_refresh");
+        assert_eq!(read["print"]["id"], 16);
+        let all: Value = serde_json::from_str(&holder_nozzle_refresh(13, 0xff)).unwrap();
+        assert_eq!(all["print"]["id"], 255);
+        let confirm: Value = serde_json::from_str(&nozzle_info_confirm(14, 0xff)).unwrap();
+        assert_eq!(confirm["print"]["command"], "nozzle_info_confirm");
+        assert_eq!(confirm["print"]["id"], 255);
     }
 }

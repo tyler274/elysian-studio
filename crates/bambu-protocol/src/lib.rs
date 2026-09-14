@@ -23,6 +23,7 @@ mod spools;
 mod ssdp;
 mod studio_import;
 mod tls;
+mod tutk;
 
 use std::time::Duration;
 
@@ -30,18 +31,21 @@ use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, Printer
 use thiserror::Error;
 
 pub use camera::{
-    auth_packet, capture_chamber, describe_rtsps, jpeg_payload_len, jpeg_to_frame, probe_rtsps,
-    read_jpeg_frame, rtsps_url, snapshot_jpeg, ChamberCapture, JpegStream, RtspsSession,
-    LAN_CAMERA_PORT, LAN_RTSPS_PORT,
+    agora_url, auth_packet, capture_chamber, describe_rtsps, jpeg_payload_len, jpeg_to_frame,
+    probe_rtsps, read_jpeg_frame, rtsps_url, snapshot_jpeg, tutk_url, ChamberCapture, JpegStream,
+    RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
 pub use cloud::{
     cloud_mqtt_host, cloud_mqtt_user, load_cloud_session, load_cloud_session_default,
     save_cloud_session, store_login_tokens, CloudBackend, CloudSession,
 };
 pub use cloud_api::{
-    api_host, bind_path, login_body, md5_hex, parse_bind_devices, parse_login, parse_profile,
-    parse_upload_ticket, profile_path, refresh_body, ticket_body, ticket_path, upload_ticket_body,
-    CloudApi, CloudApiError, CloudDevice, CloudProfile, LoginResult, UploadTicket,
+    api_host, bind_path, cloud_http_error, http_user_id, jwt_iot_user_id, jwt_user_id, login_body,
+    md5_hex, parse_bind_devices, parse_camera_creds, parse_login, parse_profile,
+    parse_upload_ticket, profile_path, refresh_body, ticket_body, ticket_path, ttcode_after_post,
+    ttcode_get_path, ttcode_path, ttcode_post_body, ttcode_should_retry_get, upload_ticket_body,
+    CameraCreds, CameraProto, CloudApi, CloudApiError, CloudDevice, CloudProfile, LoginResult,
+    UploadTicket,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
@@ -62,12 +66,13 @@ pub use inventory::{
     InventoryVendor,
 };
 pub use mqtt::{
-    ams_change_filament, app_cert_install, chamber_light, gcode_line, hms_ignore, hms_resume,
-    hms_stop, next_sequence_id, parse_ams, parse_hms_items, parse_printer_cert, parse_push_status,
-    pause, print_speed, project_file, project_file_cloud, project_file_cloud_opts,
-    project_file_with_ams, project_file_with_ams_opts, pushall, report_topic, request_topic,
-    resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts,
-    LAN_MQTT_PORT, LAN_MQTT_USER,
+    ams_change_filament, ams_filament_drying, app_cert_install, auto_stop_ams_dry, chamber_light,
+    gcode_line, hms_ignore, hms_resume, hms_stop, holder_nozzle_refresh, next_sequence_id,
+    nozzle_holder_ctrl, nozzle_info_confirm, parse_ams, parse_hms_items, parse_nozzle_rack,
+    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_cloud,
+    project_file_cloud_opts, project_file_with_ams, project_file_with_ams_opts, pushall,
+    report_topic, request_topic, resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects,
+    stop, ProjectFileOpts, AMS_DRY_MODE_OFF, AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use oauth::{
     login_with_ticket, oauth_callback_url, oauth_login, open_default_browser, persist_login,
@@ -88,6 +93,11 @@ pub use studio_import::{
     StudioImport, StudioPrinter,
 };
 pub use tls::{peek_peer_cn, peek_peer_leaf, TlsError};
+pub use tutk::{
+    for_each_jpeg as for_each_tutk_jpeg, iotc_masters, is_avc_sample, jpeg_from_av_sample,
+    stream_ttcode_jpegs, tutk_region, AvFrameInfo, IotcPeer, TutkRegion, CODEC_H264, CODEC_HEVC,
+    CODEC_MJPEG,
+};
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
@@ -401,6 +411,57 @@ impl PrinterBackend for LanBackend {
             0,
         ))
         .await
+    }
+
+    async fn ams_drying(
+        &self,
+        ams_id: u8,
+        filament: &str,
+        temp_c: u16,
+        duration_h: u16,
+        rotate_tray: bool,
+        cooling_temp: u16,
+    ) -> Result<(), DeviceError> {
+        self.command(ams_filament_drying(
+            next_sequence_id(),
+            ams_id,
+            AMS_DRY_MODE_ON_TIME,
+            filament,
+            temp_c,
+            duration_h,
+            rotate_tray,
+            cooling_temp,
+        ))
+        .await
+    }
+
+    async fn ams_drying_stop(&self, ams_id: u8) -> Result<(), DeviceError> {
+        self.command(ams_filament_drying(
+            next_sequence_id(),
+            ams_id,
+            AMS_DRY_MODE_OFF,
+            "",
+            0,
+            0,
+            false,
+            0,
+        ))
+        .await
+    }
+
+    async fn nozzle_holder_ctrl(&self, action: u8) -> Result<(), DeviceError> {
+        self.command(crate::mqtt::nozzle_holder_ctrl(next_sequence_id(), action))
+            .await
+    }
+
+    async fn holder_nozzle_refresh(&self, id: u32) -> Result<(), DeviceError> {
+        self.command(crate::mqtt::holder_nozzle_refresh(next_sequence_id(), id))
+            .await
+    }
+
+    async fn nozzle_info_confirm(&self, id: u32) -> Result<(), DeviceError> {
+        self.command(crate::mqtt::nozzle_info_confirm(next_sequence_id(), id))
+            .await
     }
 
     async fn hms_resume(&self, err: &str, job_id: &str) -> Result<(), DeviceError> {

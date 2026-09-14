@@ -295,13 +295,27 @@ impl RtGpu {
         }
         let vbytes = std::mem::size_of_val(positions) as u64;
         let ibytes = std::mem::size_of_val(indices) as u64;
+        let max_size = device.limits().max_buffer_size;
         if vbytes > self.vert_bytes {
-            self.vert_bytes = vbytes.next_power_of_two().max(256);
+            self.vert_bytes = grow_rt_bytes(vbytes, max_size);
             self.vert_buf = empty_buf(device, self.vert_bytes, true);
         }
         if ibytes > self.idx_bytes {
-            self.idx_bytes = ibytes.next_power_of_two().max(256);
+            self.idx_bytes = grow_rt_bytes(ibytes, max_size);
             self.idx_buf = empty_buf(device, self.idx_bytes, false);
+        }
+        let v_upload = vbytes.min(self.vert_bytes);
+        let i_upload = ibytes.min(self.idx_bytes);
+        if v_upload < vbytes || i_upload < ibytes {
+            tracing::warn!(
+                vbytes,
+                ibytes,
+                v_upload,
+                i_upload,
+                "RT geometry exceeds GPU max_buffer_size; skipping upload"
+            );
+            self.built_key = key;
+            return;
         }
         queue.write_buffer(&self.vert_buf, 0, bytemuck::cast_slice(positions));
         queue.write_buffer(&self.idx_buf, 0, bytemuck::cast_slice(indices));
@@ -464,6 +478,19 @@ fn storage_entry(
     }
 }
 
+fn grow_rt_bytes(needed: u64, max_buffer_size: u64) -> u64 {
+    let max_size = max_buffer_size.max(256);
+    let upload = needed.min(max_size);
+    if upload == 0 {
+        return 256.min(max_size);
+    }
+    upload
+        .next_power_of_two()
+        .max(256)
+        .min(max_size)
+        .max(upload)
+}
+
 fn empty_buf(device: &wgpu::Device, bytes: u64, verts: bool) -> wgpu::Buffer {
     let extra = if verts {
         wgpu::BufferUsages::BLAS_INPUT | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
@@ -473,13 +500,14 @@ fn empty_buf(device: &wgpu::Device, bytes: u64, verts: bool) -> wgpu::Buffer {
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::INDEX
     };
+    let size = bytes.max(256).min(device.limits().max_buffer_size).max(4);
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(if verts {
             "bambu-gpu-rt-verts"
         } else {
             "bambu-gpu-rt-idx"
         }),
-        size: bytes.max(256),
+        size,
         usage: extra,
         mapped_at_creation: false,
     })

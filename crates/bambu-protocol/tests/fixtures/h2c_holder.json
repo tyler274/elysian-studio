@@ -1,0 +1,25 @@
+{
+  "print": {
+    "command": "push_status",
+    "dev_id": "01H00AFAKE00001",
+    "device": {
+      "holder": {
+        "stat": 0,
+        "pos": 1,
+        "info": 0
+      },
+      "nozzle": {
+        "info": [
+          { "id": 0, "diameter": 0.4, "type": "HS", "color_m": "00AE42FF", "stat": 0 },
+          { "id": 1, "diameter": 0.4, "type": "HS", "color_m": "FF0000FF", "stat": 0 },
+          { "id": 16, "diameter": 0.2, "type": "HS", "color_m": "2979FFFF", "stat": 0 },
+          { "id": 17, "diameter": 0.4, "type": "HS", "color_m": "", "stat": 1 },
+          { "id": 18, "diameter": 0.6, "type": "HS", "color_m": "FFFFFFFF", "stat": 0 },
+          { "id": 19, "diameter": 0.4, "type": "HS", "color_m": "", "stat": 1 },
+          { "id": 20, "diameter": 0.4, "type": "HS", "color_m": "", "stat": 1 },
+          { "id": 21, "diameter": 0.8, "type": "HS", "color_m": "000000FF", "stat": 0 }
+        ]
+      }
+    }
+  }
+}

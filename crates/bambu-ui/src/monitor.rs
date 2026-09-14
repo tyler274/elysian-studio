@@ -6,10 +6,11 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
-use bambu_device::{AmsTray, PrinterBackend};
+use bambu_device::{AmsTray, AmsUnit, NozzleSlot, PrinterBackend};
 use bambu_protocol::{
-    capture_chamber, describe_hms, describe_rtsps, jpeg_to_frame, load_cached_catalog,
-    ChamberCapture, CloudBackend, JpegStream,
+    capture_chamber, default_config_dir, describe_hms, describe_rtsps, jpeg_to_frame,
+    load_cached_catalog, load_cloud_session, save_cloud_session, stream_ttcode_jpegs,
+    ChamberCapture, CloudApi, CloudBackend, JpegStream,
 };
 
 use crate::theme;
@@ -53,7 +54,9 @@ pub(crate) fn parse_tray_color(raw: &str) -> Color {
 pub(crate) const CAMERA_CLOUD_DISCOVER: &str =
     "Cloud MQTT has no JPEG tunnel — discovering LAN IP for :6000…";
 pub(crate) const CAMERA_CLOUD_NEED_LAN: &str =
-    "Cloud TUTK/Agora liveview is not this pass. Enter printer IP + LAN access code (same Wi‑Fi) or Discover; then Play for JPEG :6000.";
+    "Need printer IP + LAN access code (same Wi‑Fi) or a cloud serial for TUTK/Agora liveview.";
+pub(crate) const CAMERA_CLOUD_TUTK: &str =
+    "connecting TUTK/Agora (LAN JPEG :6000 if the printer is on this Wi‑Fi)…";
 
 pub(crate) fn lan_ready(host: &str, code: &str) -> bool {
     !host.is_empty() && !code.is_empty()
@@ -156,7 +159,7 @@ impl crate::App {
                 .color(theme::TEXT_MUTED)
                 .into()
         } else {
-            text("P1/A1 JPEG :6000 needs printer IP + LAN access code (cloud MQTT is not a camera tunnel). X1/H2 RTSPS :322 has no H.264 this pass.")
+            text("P1/A1 JPEG :6000 on LAN, or cloud TUTK (ttcode + IOTC). X1/H2 Agora uses LAN RTSPS :322.")
                 .size(12)
                 .color(theme::TEXT_MUTED)
                 .into()
@@ -319,38 +322,170 @@ impl crate::App {
         )
     }
 
-    fn ams_pane(&self) -> Element<'_, Message> {
-        let mut trays = row![].spacing(8);
-        if self.ams.trays.is_empty() && self.ams.vt_tray.is_none() {
-            trays = trays.push(
+    pub(crate) fn ams_pane(&self) -> Element<'_, Message> {
+        let units = if self.ams.units.is_empty()
+            && (!self.ams.trays.is_empty() || self.ams.humidity.is_some())
+        {
+            vec![AmsUnit {
+                id: 0,
+                humidity: self.ams.humidity,
+                humidity_percent: None,
+                temp: self.ams.unit_temp,
+                dry_time_min: None,
+                dry_status: 0,
+            }]
+        } else {
+            self.ams.units.clone()
+        };
+        let mut body = column![].spacing(10);
+        if units.is_empty() && self.ams.vt_tray.is_none() {
+            body = body.push(
                 text("No AMS trays in last push_status")
                     .size(12)
                     .color(theme::TEXT_MUTED),
             );
         }
-        for tray in &self.ams.trays {
-            let active = self.ams.active_slot == Some(tray.id);
-            trays = trays.push(tray_card(tray, active));
+        for unit in &units {
+            body = body.push(self.ams_unit_card(unit));
         }
         if let Some(vt) = &self.ams.vt_tray {
-            trays = trays.push(tray_card(vt, false));
+            body = body.push(tray_card(vt, false));
         }
-        let trays = trays.wrap();
-        let humidity = self
-            .ams
-            .humidity
-            .map(|h| format!("humidity {h}"))
-            .unwrap_or_else(|| "humidity —".into());
         card(
             "AMS",
+            column![body, self.ams_chips(), self.ams_load_row()].spacing(8),
+        )
+    }
+
+    fn ams_unit_card(&self, unit: &AmsUnit) -> Element<'_, Message> {
+        let trays: Vec<_> = self
+            .ams
+            .trays
+            .iter()
+            .filter(|t| t.ams_id == unit.id)
+            .collect();
+        let mut tray_row = row![].spacing(8);
+        if trays.is_empty() {
+            tray_row = tray_row.push(text("no trays").size(11).color(theme::TEXT_MUTED));
+        }
+        for tray in &trays {
+            let active = self.ams.active_slot == Some(tray.id) && trays.len() <= 4;
+            tray_row = tray_row.push(tray_card(tray, active));
+        }
+        let summary = ams_unit_summary(unit);
+        let open = self.dry_ams == Some(unit.id);
+        let mut col = column![
+            row![
+                humidity_icon(unit.humidity, unit.is_drying()),
+                quiet_btn(text(summary).size(12)).on_press(Message::AmsDryToggle(unit.id)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            tray_row.wrap(),
+        ]
+        .spacing(8);
+        if open {
+            col = col.push(
+                self.ams_dry_popup(
+                    unit,
+                    trays
+                        .first()
+                        .map(|t| t.filament_type.as_str())
+                        .unwrap_or("PLA"),
+                ),
+            );
+        }
+        container(col)
+            .padding(8)
+            .width(Fill)
+            .style(|_| theme::chip())
+            .into()
+    }
+
+    fn ams_dry_popup(&self, unit: &AmsUnit, filament: &str) -> Element<'_, Message> {
+        let remain = unit
+            .dry_time_min
+            .map(|m| format!("{m} min left"))
+            .unwrap_or_else(|| "not drying".into());
+        let level = unit
+            .humidity
+            .map(|h| format!("level {h}"))
+            .unwrap_or_else(|| "level —".into());
+        let pct = unit
+            .humidity_percent
+            .map(|p| format!("{p}%"))
+            .unwrap_or_else(|| "—".into());
+        column![
+            text(format!("{level} · {pct} · {remain} · {filament}"))
+                .size(11)
+                .color(theme::TEXT_MUTED),
+            row![
+                field("temp °C", &self.dry_temp, Message::AmsDryTemp),
+                field("hours", &self.dry_hours, Message::AmsDryHours),
+            ]
+            .spacing(6),
+            row![
+                quiet_btn(text("Start drying").size(11)).on_press(Message::AmsDryStart(unit.id)),
+                quiet_btn(text("Stop drying").size(11)).on_press(Message::AmsDryStop(unit.id)),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    pub(crate) fn rack_pane(&self) -> Option<Element<'_, Message>> {
+        if !self.machine.nozzle_rack.supported {
+            return None;
+        }
+        let rack = &self.machine.nozzle_rack;
+        let mut slots = row![].spacing(6);
+        for (i, slot) in rack.toolhead.iter().enumerate() {
+            let label = if i == 0 { "L" } else { "R" };
+            slots = slots.push(nozzle_slot_card(label, slot));
+        }
+        for slot in &rack.rack {
+            slots = slots.push(nozzle_slot_card(&format!("{}", slot.id + 1), slot));
+        }
+        let warn = if self.rack_pending.is_some() {
             column![
-                text(humidity).size(12).color(theme::TEXT_MUTED),
-                trays,
-                self.ams_chips(),
-                self.ams_load_row(),
+                text("The toolhead and hotend rack may move. Please keep your hands away from the chamber.")
+                    .size(11)
+                    .color(theme::TEXT_MUTED),
+                row![
+                    quiet_btn(text("Move").size(11)).on_press(Message::RackWarnConfirm),
+                    quiet_btn(text("Cancel").size(11)).on_press(Message::RackWarnCancel),
+                ]
+                .spacing(6),
+            ]
+            .spacing(6)
+        } else {
+            column![].spacing(0)
+        };
+        Some(card(
+            "Hotend rack",
+            column![
+                text(format!(
+                    "{} · {}",
+                    rack.status_label(),
+                    rack.position_label()
+                ))
+                .size(12)
+                .color(theme::TEXT_MUTED),
+                slots.wrap(),
+                row![
+                    quiet_btn(text("Read all").size(11)).on_press(Message::RackReadAll),
+                    quiet_btn(text("Home").size(11)).on_press(Message::RackMove(0)),
+                    quiet_btn(text("A-top").size(11)).on_press(Message::RackMove(1)),
+                    quiet_btn(text("B-top").size(11)).on_press(Message::RackMove(2)),
+                    quiet_btn(text("Confirm").size(11)).on_press(Message::RackConfirmAll),
+                ]
+                .spacing(6)
+                .wrap(),
+                warn,
             ]
             .spacing(8),
-        )
+        ))
     }
 
     fn hms_pane(&self) -> Element<'_, Message> {
@@ -390,10 +525,14 @@ impl crate::App {
         let left = column![self.camera_pane(), self.monitor_controls()]
             .spacing(10)
             .width(Fill);
-        let right = column![
-            self.ams_pane(),
-            self.hms_pane(),
-            card(
+        let mut right = column![].spacing(10);
+        if let Some(rack) = self.rack_pane() {
+            right = right.push(rack);
+        }
+        right = right
+            .push(self.ams_pane())
+            .push(self.hms_pane())
+            .push(card(
                 "Connection",
                 column![
                     checkbox(self.live_monitor)
@@ -473,10 +612,8 @@ impl crate::App {
                         .style(theme::tick),
                 ]
                 .spacing(8),
-            ),
-        ]
-        .spacing(10)
-        .width(360);
+            ))
+            .width(360);
         scrollable(
             column![
                 text("Device").size(18),
@@ -541,6 +678,104 @@ fn temp_chip<'a>(label: &str, actual: f32, target: f32) -> Element<'a, Message> 
         .padding([4, 8])
         .style(|_| theme::chip())
         .into()
+}
+
+fn humidity_icon<'a>(level: Option<u8>, drying: bool) -> Element<'a, Message> {
+    let filled = level.unwrap_or(0).min(4);
+    let mut bars = column![].spacing(2);
+    for i in (0..5).rev() {
+        let on = (i as u8) <= filled;
+        let color = if on {
+            match i {
+                0 => Color::from_rgb8(0xD0, 0x1B, 0x1B),
+                1 => Color::from_rgb8(0xE6, 0x7E, 0x22),
+                2 => Color::from_rgb8(0xF1, 0xC4, 0x0F),
+                3 => Color::from_rgb8(0x27, 0xAE, 0x60),
+                _ => Color::from_rgb8(0x1A, 0x9B, 0x8A),
+            }
+        } else {
+            Color::from_rgb8(0xC2, 0xC2, 0xC2)
+        };
+        bars = bars.push(container(Space::new().width(14).height(3)).style(move |_| {
+            container::Style {
+                background: Some(Background::Color(color)),
+                border: Border {
+                    radius: 1.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }
+        }));
+    }
+    let mut col = column![bars].spacing(2);
+    if drying {
+        col = col.push(
+            text("DRY")
+                .size(9)
+                .color(Color::from_rgb8(0xE6, 0x7E, 0x22)),
+        );
+    }
+    col.into()
+}
+
+pub(crate) fn ams_unit_summary(unit: &AmsUnit) -> String {
+    let rh = unit
+        .humidity
+        .map(|h| format!("RH{h}"))
+        .unwrap_or_else(|| "RH—".into());
+    let pct = unit
+        .humidity_percent
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "—".into());
+    let temp = unit
+        .temp
+        .map(|t| format!("{t:.0}°C"))
+        .unwrap_or_else(|| "—".into());
+    let dry = if unit.is_drying() {
+        match unit.dry_time_min {
+            Some(m) => format!(" drying {m}m"),
+            None => " drying".into(),
+        }
+    } else {
+        String::new()
+    };
+    format!("{rh} {pct} {temp}{dry}")
+}
+
+pub(crate) fn drying_preset(filament: &str) -> (u16, u16) {
+    match filament.trim().to_ascii_uppercase().as_str() {
+        "PETG" => (65, 8),
+        "ABS" | "ASA" => (80, 8),
+        "TPU" | "TPE" => (55, 8),
+        "PA" | "NYLON" | "PA-CF" => (80, 12),
+        _ => (55, 8),
+    }
+}
+
+fn nozzle_slot_card<'a>(label: &str, slot: &NozzleSlot) -> Element<'a, Message> {
+    let heading = label.to_string();
+    let dia = if slot.empty || slot.diameter <= 0.0 {
+        "empty".into()
+    } else {
+        format!("{:.1} mm", slot.diameter)
+    };
+    let kind = if slot.nozzle_type.is_empty() {
+        String::from("—")
+    } else {
+        slot.nozzle_type.clone()
+    };
+    container(
+        column![
+            text(heading).size(11),
+            text(dia).size(11).color(theme::TEXT_MUTED),
+            text(kind).size(11).color(theme::TEXT_MUTED),
+        ]
+        .spacing(2)
+        .width(56),
+    )
+    .padding(6)
+    .style(|_| theme::chip())
+    .into()
 }
 
 fn tray_card(tray: &AmsTray, active: bool) -> Element<'_, Message> {
@@ -677,6 +912,14 @@ pub(crate) async fn run_cmd(
                 new_temp,
             } => format!("ams load A{ams_id} T{slot_id} {old_temp}/{new_temp} sent"),
             PrintCmd::AmsUnload { ams_id } => format!("ams unload A{ams_id} sent"),
+            PrintCmd::AmsDry { ams_id, hours, .. } => format!("ams dry A{ams_id} {hours}h sent"),
+            PrintCmd::AmsDryStop { ams_id } => format!("ams dry stop A{ams_id} sent"),
+            PrintCmd::RackMove(0) => "rack home sent".into(),
+            PrintCmd::RackMove(1) => "rack A-top sent".into(),
+            PrintCmd::RackMove(2) => "rack B-top sent".into(),
+            PrintCmd::RackMove(action) => format!("rack move {action} sent"),
+            PrintCmd::RackRead(_) => "rack read sent".into(),
+            PrintCmd::RackConfirm(_) => "rack confirm sent".into(),
             PrintCmd::HmsResume { .. } => "hms resume sent".into(),
             PrintCmd::HmsIgnore { .. } => "hms ignore sent".into(),
         };
@@ -696,6 +939,21 @@ pub(crate) async fn run_cmd(
                 new_temp,
             } => backend.ams_load(ams_id, slot_id, old_temp, new_temp).await,
             PrintCmd::AmsUnload { ams_id } => backend.ams_unload(ams_id).await,
+            PrintCmd::AmsDry {
+                ams_id,
+                ref filament,
+                temp,
+                hours,
+                rotate,
+            } => {
+                backend
+                    .ams_drying(ams_id, filament, temp, hours, rotate, 30)
+                    .await
+            }
+            PrintCmd::AmsDryStop { ams_id } => backend.ams_drying_stop(ams_id).await,
+            PrintCmd::RackMove(action) => backend.nozzle_holder_ctrl(action).await,
+            PrintCmd::RackRead(id) => backend.holder_nozzle_refresh(id).await,
+            PrintCmd::RackConfirm(id) => backend.nozzle_info_confirm(id).await,
             PrintCmd::HmsResume { ref err, ref job } => backend.hms_resume(err, job).await,
             PrintCmd::HmsIgnore { ref err, ref job } => backend.hms_ignore(err, job).await,
         }
@@ -738,74 +996,49 @@ fn emit_latest(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Mess
     }
 }
 
-fn camera_worker(
-    host: String,
-    code: String,
-    mut tx: iced::futures::channel::mpsc::Sender<Message>,
-) {
+fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Message>) {
     loop {
-        match JpegStream::connect(&host, &code) {
-            Ok(mut stream) => loop {
-                match stream.next_jpeg() {
-                    Ok(jpeg) => {
-                        let bytes = jpeg.len();
-                        match jpeg_to_frame(&jpeg) {
-                            Ok(frame) => {
-                                if !emit_latest(
-                                    &mut tx,
-                                    Message::ChamberShot(Ok(ChamberResult::from_frame(
-                                        bytes, frame,
-                                    ))),
-                                ) {
-                                    return;
-                                }
-                            }
-                            Err(err) => {
-                                if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string())))
-                                {
-                                    return;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        if err.to_string().contains("implausible JPEG") {
-                            match describe_rtsps(&host, &code) {
-                                Ok(live) => {
-                                    let first = live.sdp.lines().next().unwrap_or("RTSPS");
+        if lan_ready(&job.host, &job.code) {
+            match JpegStream::connect(&job.host, &job.code) {
+                Ok(mut stream) => loop {
+                    match stream.next_jpeg() {
+                        Ok(jpeg) => {
+                            let bytes = jpeg.len();
+                            match jpeg_to_frame(&jpeg) {
+                                Ok(frame) => {
                                     if !emit_latest(
                                         &mut tx,
-                                        Message::ChamberShot(Ok(ChamberResult::Rtsps {
-                                            detail: format!(
-                                                "RTSPS :322 (no H.264 this pass) {} · {first}",
-                                                live.url
-                                            ),
-                                        })),
-                                    ) {
-                                        return;
-                                    }
-                                }
-                                Err(rtsps_err) => {
-                                    if !emit_latest(
-                                        &mut tx,
-                                        Message::ChamberShot(Err(format!(
-                                            "{err}; RTSPS: {rtsps_err}"
+                                        Message::ChamberShot(Ok(ChamberResult::from_frame(
+                                            bytes, frame,
                                         ))),
                                     ) {
                                         return;
                                     }
                                 }
+                                Err(err) => {
+                                    if !emit_latest(
+                                        &mut tx,
+                                        Message::ChamberShot(Err(err.to_string())),
+                                    ) {
+                                        return;
+                                    }
+                                    break;
+                                }
                             }
-                        } else if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string())))
-                        {
-                            return;
                         }
-                        break;
+                        Err(_) => break,
                     }
-                }
-            },
-            Err(err) => match describe_rtsps(&host, &code) {
+                },
+                Err(_) => {}
+            }
+        }
+        if !job.token.is_empty() && !job.serial.is_empty() {
+            match cloud_tutk_loop(&job, &mut tx) {
+                WorkerCtrl::Stop => return,
+                WorkerCtrl::Retry => {}
+            }
+        } else if lan_ready(&job.host, &job.code) {
+            match describe_rtsps(&job.host, &job.code) {
                 Ok(live) => {
                     let first = live.sdp.lines().next().unwrap_or("RTSPS");
                     if !emit_latest(
@@ -820,28 +1053,87 @@ fn camera_worker(
                         return;
                     }
                 }
-                Err(rtsps_err) => {
-                    if !emit_latest(
-                        &mut tx,
-                        Message::ChamberShot(Err(format!("{err}; RTSPS: {rtsps_err}"))),
-                    ) {
+                Err(err) => {
+                    if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
                         return;
                     }
                 }
-            },
+            }
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
 
-pub(crate) fn camera_frames(
-    host: String,
-    code: String,
-) -> impl iced::futures::Stream<Item = Message> {
+enum WorkerCtrl {
+    Stop,
+    Retry,
+}
+
+fn cloud_tutk_loop(
+    job: &CameraJob,
+    tx: &mut iced::futures::channel::mpsc::Sender<Message>,
+) -> WorkerCtrl {
+    let mut api = CloudApi::new(&job.region, &job.token, &job.refresh).with_user_id(&job.user_id);
+    let result = stream_ttcode_jpegs(
+        &mut api,
+        &job.serial,
+        &job.code,
+        |jpeg| match jpeg_to_frame(jpeg) {
+            Ok(frame) => emit_latest(
+                tx,
+                Message::ChamberShot(Ok(ChamberResult::from_frame(jpeg.len(), frame))),
+            ),
+            Err(err) => emit_latest(tx, Message::ChamberShot(Err(err.to_string()))),
+        },
+    );
+    persist_refreshed_cloud(&api, job);
+    match result {
+        Ok(()) => WorkerCtrl::Retry,
+        Err(err) => {
+            if !emit_latest(tx, Message::ChamberShot(Err(err.to_string()))) {
+                return WorkerCtrl::Stop;
+            }
+            WorkerCtrl::Retry
+        }
+    }
+}
+
+fn persist_refreshed_cloud(api: &CloudApi, job: &CameraJob) {
+    let token_changed = !api.access_token.is_empty() && api.access_token != job.token;
+    let uid_filled = !api.user_id.is_empty() && api.user_id != job.user_id;
+    if !token_changed && !uid_filled {
+        return;
+    }
+    let dir = default_config_dir();
+    let Ok(mut session) = load_cloud_session(&dir) else {
+        return;
+    };
+    session.access_token = api.access_token.clone();
+    if !api.refresh_token.is_empty() {
+        session.refresh_token = api.refresh_token.clone();
+    }
+    if !api.user_id.is_empty() {
+        session.user_id = api.user_id.clone();
+    }
+    let _ = save_cloud_session(&dir, &session);
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CameraJob {
+    pub host: String,
+    pub code: String,
+    pub serial: String,
+    pub region: String,
+    pub token: String,
+    pub refresh: String,
+    pub user_id: String,
+}
+
+pub(crate) fn camera_frames(job: CameraJob) -> impl iced::futures::Stream<Item = Message> {
     iced::stream::channel(4, async move |output| {
         let _ = std::thread::Builder::new()
             .name("bambu-camera".into())
-            .spawn(move || camera_worker(host, code, output));
+            .spawn(move || camera_worker(job, output));
         std::future::pending::<()>().await;
     })
 }
@@ -872,5 +1164,34 @@ mod tests {
         assert!(!print_speed_active("IDLE"));
         assert!(!print_speed_active("FINISH"));
         assert!(!print_speed_active(""));
+    }
+
+    #[test]
+    fn ams_unit_summary_shows_two_distinct_readings() {
+        let a = AmsUnit {
+            id: 0,
+            humidity: Some(2),
+            humidity_percent: Some(28),
+            temp: Some(32.5),
+            dry_time_min: Some(90),
+            dry_status: 2,
+        };
+        let b = AmsUnit {
+            id: 1,
+            humidity: Some(4),
+            humidity_percent: Some(55),
+            temp: Some(27.0),
+            dry_time_min: None,
+            dry_status: 0,
+        };
+        let sa = ams_unit_summary(&a);
+        let sb = ams_unit_summary(&b);
+        assert!(sa.contains("RH2"));
+        assert!(sa.contains("32°C") || sa.contains("33°C"));
+        assert!(sa.contains("drying"));
+        assert!(sb.contains("RH4"));
+        assert!(sb.contains("27°C"));
+        assert!(!sb.contains("drying"));
+        assert_ne!(sa, sb);
     }
 }

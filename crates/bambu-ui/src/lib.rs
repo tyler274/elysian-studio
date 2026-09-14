@@ -28,14 +28,14 @@ use bambu_config::{
     BblProfileKind, CatalogFilament, CatalogIndex, FilamentMapMode, SeamPosition, SliceSettings,
     TopOneWallType,
 };
-use bambu_device::{AmsState, AmsTray, MachineState, PrintJob, PrinterBackend};
+use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
     slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole, PlaterTool, ToolpathBuffer,
     ViewportEvent, ViewportScene,
 };
-use bambu_io::{load_mesh, load_model};
+use bambu_io::{load_mesh, load_model, write_model_3mf};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
     describe_hms, load_cached_catalog, load_cloud_session, load_inventory, load_lan_codes,
@@ -231,9 +231,15 @@ pub struct App {
     toasts: Vec<String>,
     slice_menu_open: bool,
     print_menu_open: bool,
+    file_menu_open: bool,
     slice_all: bool,
     print_export: bool,
     recent_models: Vec<PathBuf>,
+    project_file: Option<PathBuf>,
+    dry_ams: Option<u8>,
+    dry_temp: String,
+    dry_hours: String,
+    rack_pending: Option<u8>,
     sidebar_collapsed: bool,
     printer_open: bool,
     filament_open: bool,
@@ -246,6 +252,14 @@ pub enum Message {
     Viewport(ViewportEvent),
     Workspace(Workspace),
     OpenModel,
+    ImportModel,
+    NewProject,
+    SaveProject,
+    SaveProjectAs,
+    ToggleFileMenu,
+    FileDropped(PathBuf),
+    ProjectPicked(Option<PathBuf>),
+    ProjectSaved(Result<PathBuf, String>),
     OpenRecent(PathBuf),
     MeshPicked(Option<PathBuf>),
     ModelLoaded(Result<Box<LoadedModel>, String>),
@@ -322,6 +336,16 @@ pub enum Message {
     SendFan,
     AmsLoad { ams_id: u8, slot_id: u8 },
     AmsUnload { ams_id: u8 },
+    AmsDryToggle(u8),
+    AmsDryTemp(String),
+    AmsDryHours(String),
+    AmsDryStart(u8),
+    AmsDryStop(u8),
+    RackMove(u8),
+    RackReadAll,
+    RackConfirmAll,
+    RackWarnConfirm,
+    RackWarnCancel,
     HmsResume,
     HmsIgnore,
     ProjectBedLevel(bool),
@@ -713,9 +737,15 @@ impl App {
             toasts: vec!["Tip: right-drag to orbit, scroll to zoom.".into()],
             slice_menu_open: false,
             print_menu_open: false,
+            file_menu_open: false,
             slice_all: false,
             print_export: false,
             recent_models: Vec::new(),
+            project_file: None,
+            dry_ams: None,
+            dry_temp: "55".into(),
+            dry_hours: "8".into(),
+            rack_pending: None,
             sidebar_collapsed: false,
             printer_open: true,
             filament_open: true,
@@ -735,6 +765,7 @@ impl App {
         app.sync_gizmo();
         app.fill_xform_edits();
         app.load_account_from_disk();
+        app.load_recents();
         app
     }
 
@@ -758,6 +789,11 @@ impl App {
         app.camera_live = false;
         app.stop_confirm = false;
         app.slice_all_next = None;
+        app.recent_models.clear();
+        app.project_file = None;
+        app.file_menu_open = false;
+        app.dry_ams = None;
+        app.rack_pending = None;
         app.sync_filament_map();
         app
     }
@@ -789,14 +825,37 @@ impl App {
             ..MachineState::default()
         };
         self.ams = AmsState {
-            slot_count: 4,
+            slot_count: 8,
             active_slot: Some(1),
             humidity: Some(2),
+            unit_temp: Some(32.0),
             trays: vec![
-                seed_tray(0, "PLA", "00AE42FF", Some(80)),
-                seed_tray(1, "PLA", "FF0000FF", Some(55)),
-                seed_tray(2, "PETG", "2979FFFF", Some(30)),
-                seed_tray(3, "", "", None),
+                seed_tray(0, 0, "PLA", "00AE42FF", Some(80)),
+                seed_tray(0, 1, "PLA", "FF0000FF", Some(55)),
+                seed_tray(0, 2, "PETG", "2979FFFF", Some(30)),
+                seed_tray(0, 3, "", "", None),
+                seed_tray(1, 0, "PLA", "FFFFFFFF", Some(90)),
+                seed_tray(1, 1, "ABS", "000000FF", Some(40)),
+                seed_tray(1, 2, "TPU", "FF9800FF", Some(20)),
+                seed_tray(1, 3, "PLA", "9C27B0FF", Some(10)),
+            ],
+            units: vec![
+                AmsUnit {
+                    id: 0,
+                    humidity: Some(2),
+                    humidity_percent: Some(28),
+                    temp: Some(32.0),
+                    dry_time_min: Some(90),
+                    dry_status: 2,
+                },
+                AmsUnit {
+                    id: 1,
+                    humidity: Some(4),
+                    humidity_percent: Some(55),
+                    temp: Some(27.0),
+                    dry_time_min: None,
+                    dry_status: 0,
+                },
             ],
             ..AmsState::default()
         };
@@ -897,18 +956,17 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subs = Vec::new();
+        let mut subs = vec![iced::event::listen_with(on_window_event)];
         if self.live_monitor {
             subs.push(
                 iced::time::every(std::time::Duration::from_secs(5))
                     .map(|_| Message::RefreshStatus),
             );
         }
-        if self.camera_live && monitor::lan_ready(&self.host, &self.access_code) {
-            let host = self.host.clone();
-            let code = self.access_code.clone();
-            subs.push(Subscription::run_with((host, code), |(host, code)| {
-                monitor::camera_frames(host.clone(), code.clone())
+        if self.camera_live && self.camera_job_ready() {
+            let job = self.camera_job();
+            subs.push(Subscription::run_with(job, |job| {
+                monitor::camera_frames(job.clone())
             }));
         }
         Subscription::batch(subs)
@@ -925,6 +983,7 @@ impl App {
                 self.workspace = workspace;
                 self.slice_menu_open = false;
                 self.print_menu_open = false;
+                self.file_menu_open = false;
                 self.sync_keep_solid();
                 if entered_preview
                     && self.last_gcode.is_none()
@@ -942,20 +1001,89 @@ impl App {
                     self.status = "busy…".into();
                     return Task::none();
                 }
+                self.file_menu_open = false;
                 return Task::perform(pick_mesh_path(), Message::MeshPicked);
+            }
+            Message::ImportModel => {
+                if self.busy {
+                    self.status = "busy…".into();
+                    return Task::none();
+                }
+                self.file_menu_open = false;
+                return Task::perform(pick_import_path(), Message::MeshPicked);
+            }
+            Message::NewProject => {
+                self.file_menu_open = false;
+                return self.new_project();
+            }
+            Message::SaveProject => {
+                self.file_menu_open = false;
+                return self.save_project(false);
+            }
+            Message::SaveProjectAs => {
+                self.file_menu_open = false;
+                return self.save_project(true);
+            }
+            Message::ToggleFileMenu => {
+                self.file_menu_open = !self.file_menu_open;
+                self.slice_menu_open = false;
+                self.print_menu_open = false;
+            }
+            Message::FileDropped(path) => {
+                if self.busy {
+                    self.status = "busy…".into();
+                    return Task::none();
+                }
+                let apply_settings = is_project_3mf(&path);
+                if apply_settings {
+                    self.project_file = Some(path.clone());
+                }
+                if !self.begin_work("loading model…") {
+                    return Task::none();
+                }
+                return offload(
+                    move || load_model_job(path, apply_settings),
+                    Message::ModelLoaded,
+                );
+            }
+            Message::ProjectPicked(None) => {}
+            Message::ProjectPicked(Some(path)) => return self.write_project_to(path),
+            Message::ProjectSaved(Ok(path)) => {
+                self.busy = false;
+                self.project_file = Some(path.clone());
+                self.remember_recent(path.clone());
+                self.status = format!("saved {}", path.display());
+            }
+            Message::ProjectSaved(Err(err)) => {
+                self.busy = false;
+                self.status = format!("save failed: {err}");
             }
             Message::OpenRecent(path) => {
                 if !self.begin_work("loading model…") {
                     return Task::none();
                 }
-                return offload(move || load_model_job(path, true), Message::ModelLoaded);
+                let apply_settings = is_project_3mf(&path);
+                if apply_settings {
+                    self.project_file = Some(path.clone());
+                }
+                return offload(
+                    move || load_model_job(path, apply_settings),
+                    Message::ModelLoaded,
+                );
             }
             Message::MeshPicked(None) => {}
             Message::MeshPicked(Some(path)) => {
                 if !self.begin_work("loading model…") {
                     return Task::none();
                 }
-                return offload(move || load_model_job(path, true), Message::ModelLoaded);
+                let apply_settings = is_project_3mf(&path);
+                if apply_settings {
+                    self.project_file = Some(path.clone());
+                }
+                return offload(
+                    move || load_model_job(path, apply_settings),
+                    Message::ModelLoaded,
+                );
             }
             Message::ModelLoaded(result) => {
                 self.busy = false;
@@ -967,6 +1095,7 @@ impl App {
             Message::ToggleSliceMenu => {
                 self.slice_menu_open = !self.slice_menu_open;
                 self.print_menu_open = false;
+                self.file_menu_open = false;
             }
             Message::SliceAll(all) => {
                 self.slice_all = all;
@@ -975,6 +1104,7 @@ impl App {
             Message::TogglePrintMenu => {
                 self.print_menu_open = !self.print_menu_open;
                 self.slice_menu_open = false;
+                self.file_menu_open = false;
             }
             Message::PrintExport(export) => {
                 self.print_export = export;
@@ -1402,7 +1532,11 @@ impl App {
                 self.status = detail;
             }
             Message::ChamberShot(Err(err)) => {
-                self.camera_note = format!("camera: {err}");
+                self.camera_note = if err.starts_with("camera:") {
+                    err.clone()
+                } else {
+                    format!("camera: {err}")
+                };
                 if !self.live_monitor {
                     self.status = format!("camera failed: {err}");
                 }
@@ -1521,6 +1655,68 @@ impl App {
             }
             Message::AmsUnload { ams_id } => {
                 return self.run_print_cmd(PrintCmd::AmsUnload { ams_id });
+            }
+            Message::AmsDryToggle(ams_id) => {
+                if self.dry_ams == Some(ams_id) {
+                    self.dry_ams = None;
+                } else {
+                    self.dry_ams = Some(ams_id);
+                    let filament = self
+                        .ams
+                        .trays
+                        .iter()
+                        .find(|t| t.ams_id == ams_id)
+                        .map(|t| t.filament_type.as_str())
+                        .unwrap_or("PLA");
+                    let (temp, hours) = monitor::drying_preset(filament);
+                    if self.dry_temp.is_empty() {
+                        self.dry_temp = temp.to_string();
+                    }
+                    if self.dry_hours.is_empty() {
+                        self.dry_hours = hours.to_string();
+                    }
+                }
+            }
+            Message::AmsDryTemp(s) => self.dry_temp = s,
+            Message::AmsDryHours(s) => self.dry_hours = s,
+            Message::AmsDryStart(ams_id) => {
+                let filament = self
+                    .ams
+                    .trays
+                    .iter()
+                    .find(|t| t.ams_id == ams_id)
+                    .map(|t| t.filament_type.clone())
+                    .unwrap_or_else(|| "PLA".into());
+                let temp = parse_temp_c(&self.dry_temp);
+                let hours = parse_temp_c(&self.dry_hours).min(48);
+                return self.run_print_cmd(PrintCmd::AmsDry {
+                    ams_id,
+                    filament,
+                    temp,
+                    hours,
+                    rotate: true,
+                });
+            }
+            Message::AmsDryStop(ams_id) => {
+                return self.run_print_cmd(PrintCmd::AmsDryStop { ams_id });
+            }
+            Message::RackMove(action) => {
+                self.rack_pending = Some(action);
+            }
+            Message::RackWarnCancel => {
+                self.rack_pending = None;
+            }
+            Message::RackWarnConfirm => {
+                let Some(action) = self.rack_pending.take() else {
+                    return Task::none();
+                };
+                return self.run_print_cmd(PrintCmd::RackMove(action));
+            }
+            Message::RackReadAll => {
+                return self.run_print_cmd(PrintCmd::RackRead(0xff));
+            }
+            Message::RackConfirmAll => {
+                return self.run_print_cmd(PrintCmd::RackConfirm(0xff));
             }
             Message::HmsResume => {
                 let Some(cmd) = self.hms_cmd(true) else {
@@ -2286,6 +2482,88 @@ impl App {
         self.recent_models.retain(|p| p != &path);
         self.recent_models.insert(0, path);
         self.recent_models.truncate(8);
+        self.save_recents();
+    }
+
+    fn recents_path() -> PathBuf {
+        bambu_protocol::default_config_dir().join("recent_projects.json")
+    }
+
+    fn load_recents(&mut self) {
+        let Ok(bytes) = std::fs::read(Self::recents_path()) else {
+            return;
+        };
+        if let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
+            self.recent_models = paths.into_iter().filter(|p| p.exists()).take(8).collect();
+        }
+    }
+
+    fn save_recents(&self) {
+        let path = Self::recents_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_vec_pretty(&self.recent_models) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+
+    fn new_project(&mut self) -> Task<Message> {
+        self.model = Some(bambu_model::Model {
+            objects: Vec::new(),
+            plates: vec![bambu_model::PartPlate {
+                name: "Plate 1".into(),
+                object_indices: Vec::new(),
+                locked: false,
+            }],
+            settings: None,
+        });
+        self.project_file = None;
+        self.last_gcode = None;
+        self.estimated_seconds = None;
+        self.plate = 0;
+        self.selected_object = 0;
+        self.selected_volume = 0;
+        self.scene.set_mesh(bambu_geom::TriangleMesh {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+        });
+        self.workspace = Workspace::Prepare;
+        self.sync_keep_solid();
+        self.status = "new project".into();
+        Task::none()
+    }
+
+    fn save_project(&self, save_as: bool) -> Task<Message> {
+        if self.model.is_none() {
+            return Task::none();
+        }
+        if !save_as {
+            if let Some(path) = self.project_file.clone() {
+                return self.write_project_to(path);
+            }
+        }
+        let suggested = self
+            .project_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("project.3mf")
+            .to_string();
+        Task::perform(pick_save_project_path(suggested), Message::ProjectPicked)
+    }
+
+    fn write_project_to(&self, path: PathBuf) -> Task<Message> {
+        let Some(model) = self.model.clone() else {
+            return Task::none();
+        };
+        offload(
+            move || {
+                write_model_3mf(&path, &model).map_err(|e| e.to_string())?;
+                Ok(path)
+            },
+            Message::ProjectSaved,
+        )
     }
 
     fn apply_loaded_model(&mut self, mut loaded: LoadedModel) {
@@ -3007,6 +3285,11 @@ impl App {
             if self.chamber_handle.is_none() && self.camera_note.is_empty() {
                 self.camera_note = "connecting JPEG :6000…".into();
             }
+        } else if self.cloud_camera_ready() {
+            self.camera_live = true;
+            if self.chamber_handle.is_none() && self.camera_note.is_empty() {
+                self.camera_note = monitor::CAMERA_CLOUD_TUTK.into();
+            }
         } else if self.has_bearer && self.chamber_handle.is_none() && self.camera_note.is_empty() {
             self.camera_note = monitor::CAMERA_CLOUD_NEED_LAN.into();
         }
@@ -3038,17 +3321,58 @@ impl App {
         }
     }
 
+    fn cloud_camera_ready(&self) -> bool {
+        self.has_bearer && !self.serial.is_empty()
+    }
+
+    fn camera_job_ready(&self) -> bool {
+        monitor::lan_ready(&self.host, &self.access_code) || self.cloud_camera_ready()
+    }
+
+    fn camera_job(&self) -> monitor::CameraJob {
+        let session = load_cloud_session(bambu_protocol::default_config_dir()).unwrap_or_default();
+        monitor::CameraJob {
+            host: self.host.clone(),
+            code: self.access_code.clone(),
+            serial: self.serial.clone(),
+            region: if self.cloud_region.is_empty() {
+                session.region
+            } else {
+                self.cloud_region.clone()
+            },
+            token: session.access_token.clone(),
+            refresh: session.refresh_token,
+            user_id: {
+                let id = if self.cloud_user.is_empty() {
+                    session.user_id
+                } else {
+                    self.cloud_user.clone()
+                };
+                let id = bambu_protocol::http_user_id(&id);
+                if id.is_empty() {
+                    bambu_protocol::jwt_user_id(&session.access_token).unwrap_or_default()
+                } else {
+                    id
+                }
+            },
+        }
+    }
+
     fn start_jpeg_camera(&mut self) {
         self.camera_live = true;
         if self.chamber_handle.is_none() {
-            self.camera_note = "connecting JPEG :6000…".into();
+            self.camera_note = if monitor::lan_ready(&self.host, &self.access_code) {
+                "connecting JPEG :6000…".into()
+            } else {
+                monitor::CAMERA_CLOUD_TUTK.into()
+            };
         }
         self.status = "camera play".into();
     }
 
     fn play_camera(&mut self) -> Task<Message> {
         self.ensure_lan_access_code();
-        if monitor::lan_ready(&self.host, &self.access_code) {
+        if monitor::lan_ready(&self.host, &self.access_code) || self.cloud_camera_ready() {
             self.start_jpeg_camera();
             return Task::none();
         }
@@ -3069,7 +3393,7 @@ impl App {
         match result {
             Ok(list) => {
                 self.apply_lan_from_discovered(&list);
-                if monitor::lan_ready(&self.host, &self.access_code) {
+                if self.camera_job_ready() {
                     self.start_jpeg_camera();
                 } else {
                     self.camera_live = false;
@@ -3188,6 +3512,19 @@ enum PrintCmd {
     AmsUnload {
         ams_id: u8,
     },
+    AmsDry {
+        ams_id: u8,
+        filament: String,
+        temp: u16,
+        hours: u16,
+        rotate: bool,
+    },
+    AmsDryStop {
+        ams_id: u8,
+    },
+    RackMove(u8),
+    RackRead(u32),
+    RackConfirm(u32),
     HmsResume {
         err: String,
         job: String,
@@ -3281,10 +3618,38 @@ fn push_cloud_filaments(spools: &[FilamentSpool]) -> Result<String, String> {
 
 async fn pick_mesh_path() -> Option<PathBuf> {
     rfd::AsyncFileDialog::new()
+        .add_filter("Projects", &["3mf", "3MF"])
         .add_filter("Meshes", &["3mf", "3MF", "stl", "STL"])
         .add_filter("3MF", &["3mf", "3MF"])
         .add_filter("STL", &["stl", "STL"])
         .pick_file()
+        .await
+        .map(|file| file.path().to_path_buf())
+}
+
+async fn pick_import_path() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .add_filter(
+            "Models",
+            &[
+                "3mf", "3MF", "stl", "STL", "obj", "OBJ", "step", "stp", "STEP", "svg", "SVG",
+            ],
+        )
+        .add_filter("3MF", &["3mf", "3MF"])
+        .add_filter("STL", &["stl", "STL"])
+        .add_filter("OBJ", &["obj", "OBJ"])
+        .add_filter("STEP", &["step", "stp", "STEP"])
+        .add_filter("SVG", &["svg", "SVG"])
+        .pick_file()
+        .await
+        .map(|file| file.path().to_path_buf())
+}
+
+async fn pick_save_project_path(name: String) -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("3MF project", &["3mf", "3MF"])
+        .set_file_name(&name)
+        .save_file()
         .await
         .map(|file| file.path().to_path_buf())
 }
@@ -3355,19 +3720,71 @@ fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel
         .and_then(|n| n.to_str())
         .unwrap_or("mesh")
         .to_string();
-    let model = match load_model(&path) {
-        Ok(model) => model,
-        Err(_) => {
-            let mesh = load_mesh(&path).map_err(|err| err.to_string())?;
-            Model::from_mesh(&label, mesh)
+    let model = load_model(&path).or_else(|err| {
+        if is_unsupported_import(&path) {
+            Err(err.to_string())
+        } else {
+            let mesh = load_mesh(&path).map_err(|e| e.to_string())?;
+            Ok(Model::from_mesh(&label, mesh))
         }
-    };
+    })?;
     Ok(Box::new(LoadedModel {
         label,
         path,
         model,
         apply_settings,
     }))
+}
+
+fn is_project_3mf(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("3mf"))
+        .unwrap_or(false)
+        && !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".gcode.3mf"))
+}
+
+fn is_unsupported_import(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "obj" | "svg" | "step" | "stp"
+    )
+}
+
+fn on_window_event(
+    event: iced::Event,
+    status: iced::event::Status,
+    _id: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            if status == iced::event::Status::Captured {
+                return None;
+            }
+            if !(modifiers.command() || modifiers.control()) {
+                return None;
+            }
+            match key.as_ref() {
+                iced::keyboard::Key::Character("n" | "N") => Some(Message::NewProject),
+                iced::keyboard::Key::Character("o" | "O") => Some(Message::OpenModel),
+                iced::keyboard::Key::Character("s" | "S") if modifiers.shift() => {
+                    Some(Message::SaveProjectAs)
+                }
+                iced::keyboard::Key::Character("s" | "S") => Some(Message::SaveProject),
+                iced::keyboard::Key::Character("i" | "I") => Some(Message::ImportModel),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn run_slice_job(job: SliceJob) -> Result<Box<SliceOutcome>, String> {
@@ -3439,10 +3856,10 @@ fn calibration_block_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-fn seed_tray(id: u8, filament_type: &str, color: &str, remain: Option<u8>) -> AmsTray {
+fn seed_tray(ams_id: u8, id: u8, filament_type: &str, color: &str, remain: Option<u8>) -> AmsTray {
     AmsTray {
         id,
-        ams_id: 0,
+        ams_id,
         filament_type: filament_type.into(),
         color: color.into(),
         remain,
@@ -3506,6 +3923,41 @@ mod device_sync {
         assert!(app.camera_live);
         assert_eq!(app.workspace, Workspace::Device);
         assert!(app.camera_note.contains("JPEG"));
+    }
+
+    #[test]
+    fn seeded_device_ams_shows_two_unit_readings() {
+        let mut app = App::new_for_gui_test();
+        app.seed_device_monitor();
+        assert_eq!(app.ams.units.len(), 2);
+        let a = monitor::ams_unit_summary(&app.ams.units[0]);
+        let b = monitor::ams_unit_summary(&app.ams.units[1]);
+        assert!(a.contains("RH2"));
+        assert!(b.contains("RH4"));
+        assert_ne!(a, b);
+        let snap = app.snapshot();
+        assert!(snap.labels.iter().any(|s| s == "File"));
+    }
+
+    #[test]
+    fn hotend_rack_hidden_until_holder_reported() {
+        let mut app = App::new_for_gui_test();
+        app.seed_device_monitor();
+        assert!(!app.machine.nozzle_rack.supported);
+        assert!(app.rack_pane().is_none());
+        app.machine.nozzle_rack.supported = true;
+        assert!(app.rack_pane().is_some());
+    }
+
+    #[test]
+    fn new_project_clears_plate() {
+        let mut app = App::new_for_gui_test();
+        assert!(!app.model.as_ref().unwrap().objects.is_empty());
+        let _ = app.update(Message::NewProject);
+        assert!(app.model.as_ref().unwrap().objects.is_empty());
+        assert!(app.project_file.is_none());
+        assert_eq!(app.workspace, Workspace::Prepare);
+        assert_eq!(app.status, "new project");
     }
 
     #[test]
@@ -3603,8 +4055,18 @@ mod device_sync {
             ..Default::default()
         }])));
         assert!(app.host.is_empty());
-        assert!(!app.camera_live);
-        assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_NEED_LAN);
+        assert!(app.camera_live);
+        assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_TUTK);
+    }
+
+    #[test]
+    fn camera_play_cloud_serial_starts_tutk_without_lan() {
+        let mut app = App::new_for_gui_test();
+        app.has_bearer = true;
+        app.serial = "01P00A000000001".into();
+        let _ = app.update(Message::CameraPlay);
+        assert!(app.camera_live);
+        assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_TUTK);
     }
 
     #[test]

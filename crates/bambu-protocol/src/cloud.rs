@@ -12,9 +12,10 @@ use crate::cloud_api::{md5_hex, CloudApi};
 use crate::credentials::{default_config_dir, CredentialError};
 use crate::lan_mqtt::{self, BrokerAuth};
 use crate::mqtt::{
-    ams_change_filament, chamber_light, hms_ignore, hms_resume, hms_stop, next_sequence_id, pause,
-    print_speed, project_file_cloud_opts, resume, set_bed_temp, set_fan, set_nozzle_temp,
-    skip_objects, stop, ProjectFileOpts, LAN_MQTT_PORT,
+    ams_change_filament, ams_filament_drying, chamber_light, hms_ignore, hms_resume, hms_stop,
+    next_sequence_id, pause, print_speed, project_file_cloud_opts, resume, set_bed_temp, set_fan,
+    set_nozzle_temp, skip_objects, stop, ProjectFileOpts, AMS_DRY_MODE_OFF, AMS_DRY_MODE_ON_TIME,
+    LAN_MQTT_PORT,
 };
 use crate::pack::{pack_gcode_3mf, sanitize_remote_name};
 
@@ -398,6 +399,57 @@ impl PrinterBackend for CloudBackend {
             0,
         ))
         .await
+    }
+
+    async fn ams_drying(
+        &self,
+        ams_id: u8,
+        filament: &str,
+        temp_c: u16,
+        duration_h: u16,
+        rotate_tray: bool,
+        cooling_temp: u16,
+    ) -> Result<(), DeviceError> {
+        self.publish_cmd(&ams_filament_drying(
+            next_sequence_id(),
+            ams_id,
+            AMS_DRY_MODE_ON_TIME,
+            filament,
+            temp_c,
+            duration_h,
+            rotate_tray,
+            cooling_temp,
+        ))
+        .await
+    }
+
+    async fn ams_drying_stop(&self, ams_id: u8) -> Result<(), DeviceError> {
+        self.publish_cmd(&ams_filament_drying(
+            next_sequence_id(),
+            ams_id,
+            AMS_DRY_MODE_OFF,
+            "",
+            0,
+            0,
+            false,
+            0,
+        ))
+        .await
+    }
+
+    async fn nozzle_holder_ctrl(&self, action: u8) -> Result<(), DeviceError> {
+        self.publish_cmd(&crate::mqtt::nozzle_holder_ctrl(next_sequence_id(), action))
+            .await
+    }
+
+    async fn holder_nozzle_refresh(&self, id: u32) -> Result<(), DeviceError> {
+        self.publish_cmd(&crate::mqtt::holder_nozzle_refresh(next_sequence_id(), id))
+            .await
+    }
+
+    async fn nozzle_info_confirm(&self, id: u32) -> Result<(), DeviceError> {
+        self.publish_cmd(&crate::mqtt::nozzle_info_confirm(next_sequence_id(), id))
+            .await
     }
 
     async fn hms_resume(&self, err: &str, job_id: &str) -> Result<(), DeviceError> {

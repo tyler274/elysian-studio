@@ -24,13 +24,85 @@ impl crate::App {
         .spacing(4)
         .align_y(Alignment::Center);
 
-        let actions = row![self.slice_header_group(), self.print_header_group()].spacing(6);
+        let actions = row![
+            self.file_header_group(),
+            self.slice_header_group(),
+            self.print_header_group()
+        ]
+        .spacing(6);
 
         row![tabs, Space::new().width(Fill), actions]
             .spacing(8)
             .padding(theme::HEADER_PAD)
             .align_y(Alignment::Center)
             .into()
+    }
+
+    fn file_header_group(&self) -> Element<'_, Message> {
+        let main = container(
+            button(text("File").size(theme::BODY_SIZE).color(theme::PREPARE))
+                .padding([4, 10])
+                .style(|_, status| theme::slice_plate(status))
+                .on_press(Message::ToggleFileMenu),
+        )
+        .style(|_| container::Style {
+            border: iced::Border {
+                color: theme::PREPARE,
+                width: 1.0,
+                radius: theme::RADIUS.into(),
+            },
+            ..container::Style::default()
+        });
+        let chevron = button(text("▾").size(theme::BODY_SIZE))
+            .padding([4, 6])
+            .style(|_, status| theme::slice_plate(status))
+            .on_press(Message::ToggleFileMenu);
+        let row = row![chevron, main].spacing(1).align_y(Alignment::Center);
+        if !self.file_menu_open {
+            return row.into();
+        }
+        let mut menu = column![].spacing(2);
+        for (label, message) in [
+            ("New Project", Message::NewProject),
+            ("Open Project", Message::OpenModel),
+            ("Save Project", Message::SaveProject),
+            ("Save Project as", Message::SaveProjectAs),
+            ("Import", Message::ImportModel),
+        ] {
+            menu = menu.push(
+                button(text(label).size(12))
+                    .padding([4, 10])
+                    .width(Fill)
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(message),
+            );
+        }
+        if !self.recent_models.is_empty() {
+            menu = menu.push(text("Recent").size(11).color(theme::TEXT_MUTED));
+            for path in &self.recent_models {
+                let label = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("model")
+                    .to_string();
+                menu = menu.push(
+                    button(text(label).size(12))
+                        .padding([4, 10])
+                        .width(Fill)
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::OpenRecent(path.clone())),
+                );
+            }
+        }
+        column![
+            row,
+            container(menu)
+                .padding(4)
+                .style(|_| theme::chip())
+                .width(240)
+        ]
+        .spacing(2)
+        .into()
     }
 
     fn slice_header_group(&self) -> Element<'_, Message> {

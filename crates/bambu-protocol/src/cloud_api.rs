@@ -52,6 +52,43 @@ pub struct UploadTicket {
     pub extra_headers: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CameraProto {
+    Tutk,
+    Agora,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraCreds {
+    pub proto: CameraProto,
+    pub uid: String,
+    pub authkey: String,
+    pub passwd: String,
+    pub region: String,
+    pub channel: String,
+    pub app_id: String,
+    pub token: String,
+}
+
+impl CameraCreds {
+    pub fn bambu_url(&self) -> String {
+        match self.proto {
+            CameraProto::Agora if !self.channel.is_empty() => crate::camera::agora_url(
+                &self.channel,
+                &self.region,
+                &self.token,
+                &self.authkey,
+                &self.app_id,
+            ),
+            _ => crate::camera::tutk_url(&self.uid, &self.authkey, &self.passwd, &self.region),
+        }
+    }
+
+    pub fn bambu_url_for_device(&self, serial: &str) -> String {
+        crate::tutk::append_device_query(self.bambu_url(), serial)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginResult {
     Tokens {
@@ -77,6 +114,10 @@ pub fn bind_path() -> &'static str {
 
 pub fn upload_path() -> &'static str {
     "/v1/iot-service/api/file/upload"
+}
+
+pub fn ttcode_path() -> &'static str {
+    "/v1/iot-service/api/user/ttcode"
 }
 
 pub fn login_path() -> &'static str {
@@ -122,6 +163,12 @@ pub fn login_body(account: &str, password: &str, code: Option<&str>) -> Value {
 
 pub fn refresh_body(refresh_token: &str) -> Value {
     json!({ "refreshToken": refresh_token })
+}
+
+/// HTTP `user-id` is the numeric uid (MQTT uses `u_{uid}`).
+pub fn http_user_id(user_id: &str) -> String {
+    let id = user_id.trim();
+    id.strip_prefix("u_").unwrap_or(id).to_string()
 }
 
 pub fn upload_ticket_body(filename: &str, size: usize, md5_hex: &str) -> Value {
@@ -178,6 +225,36 @@ fn parse_device(v: &Value) -> Option<CloudDevice> {
         name,
         online,
         dev_name,
+    })
+}
+
+pub fn parse_camera_creds(v: &Value) -> Option<CameraCreds> {
+    let data = v.get("data").unwrap_or(v);
+    let uid = string_field(data, &["ttcode", "uid", "tutk_id"]).unwrap_or_default();
+    let authkey = string_field(data, &["authkey", "auth_key"]).unwrap_or_default();
+    let passwd = string_field(data, &["passwd", "password"]).unwrap_or_default();
+    let region = string_field(data, &["region"]).unwrap_or_default();
+    let channel = string_field(data, &["channel_name", "channel"]).unwrap_or_default();
+    let app_id = string_field(data, &["app_id", "appId"]).unwrap_or_default();
+    let token = string_field(data, &["token", "stream_key"]).unwrap_or_default();
+    let kind = string_field(data, &["type", "proto"]).unwrap_or_default();
+    let proto = if kind.eq_ignore_ascii_case("agora") || !channel.is_empty() {
+        CameraProto::Agora
+    } else {
+        CameraProto::Tutk
+    };
+    if uid.is_empty() && channel.is_empty() {
+        return None;
+    }
+    Some(CameraCreds {
+        proto,
+        uid,
+        authkey,
+        passwd,
+        region,
+        channel,
+        app_id,
+        token,
     })
 }
 
@@ -265,15 +342,30 @@ pub fn parse_profile(v: &Value) -> CloudProfile {
     }
 }
 
-fn jwt_user_id(token: &str) -> Option<String> {
+pub fn jwt_user_id(token: &str) -> Option<String> {
+    let v = jwt_payload(token)?;
+    let id = string_field(&v, &["uid", "userId", "user_id"])
+        .or_else(|| string_field(&v, &["username", "sub"]))?;
+    if id.contains('@') {
+        return string_field(&v, &["uid", "userId", "user_id"]);
+    }
+    Some(http_user_id(&id))
+}
+
+/// `user-id` for iot-service (`ttcode`): JWT `username`, as bambulab-cloud sends.
+pub fn jwt_iot_user_id(token: &str) -> Option<String> {
+    let v = jwt_payload(token)?;
+    string_field(&v, &["username"]).or_else(|| string_field(&v, &["uid", "userId", "user_id"]))
+}
+
+fn jwt_payload(token: &str) -> Option<Value> {
     let payload = token.split('.').nth(1)?;
     let mut b64 = payload.replace('-', "+").replace('_', "/");
     while b64.len() % 4 != 0 {
         b64.push('=');
     }
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
-    string_field(&v, &["uid", "userId", "user_id", "username", "sub"])
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn enrich_user_id(result: LoginResult, profile: Option<CloudProfile>) -> LoginResult {
@@ -466,6 +558,7 @@ pub struct CloudApi {
     pub region: String,
     pub access_token: String,
     pub refresh_token: String,
+    pub user_id: String,
 }
 
 impl CloudApi {
@@ -478,20 +571,38 @@ impl CloudApi {
             region: region.into(),
             access_token: access_token.into(),
             refresh_token: refresh_token.into(),
+            user_id: String::new(),
         }
+    }
+
+    pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
+        self.user_id = http_user_id(&user_id.into());
+        self
+    }
+
+    /// Numeric uid from the session, or JWT `username` for iot-service `user-id`.
+    pub fn auth_user_id(&self) -> String {
+        if let Some(id) = jwt_iot_user_id(&self.access_token) {
+            return id;
+        }
+        http_user_id(&self.user_id)
     }
 
     fn host(&self) -> &'static str {
         api_host(&self.region)
     }
 
-    fn json_headers(&self) -> Vec<(&str, String)> {
-        let mut h = vec![
-            ("Accept", "application/json".into()),
-            ("Content-Type", "application/json".into()),
-        ];
+    fn json_headers(&self, json_body: bool) -> Vec<(&str, String)> {
+        let mut h = vec![("Accept", "application/json".into())];
+        if json_body {
+            h.push(("Content-Type", "application/json".into()));
+        }
         if !self.access_token.is_empty() {
             h.push(("Authorization", format!("Bearer {}", self.access_token)));
+        }
+        let uid = self.auth_user_id();
+        if !uid.is_empty() {
+            h.push(("user-id", uid));
         }
         h
     }
@@ -502,33 +613,25 @@ impl CloudApi {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, CloudApiError> {
+        self.send_json_typed(method, path, body, body.is_some())
+    }
+
+    fn send_json_typed(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        json_content_type: bool,
+    ) -> Result<Value, CloudApiError> {
         let payload = body.map(serde_json::to_vec).transpose()?;
-        let owned = self.json_headers();
+        let owned = self.json_headers(json_content_type);
         let headers: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let resp = https::request(method, self.host(), path, &headers, payload.as_deref())?;
-        if resp.status == 401 || resp.status == 403 {
-            return Err(CloudApiError::Message(format!(
-                "cloud HTTP {} (token expired or rejected)",
-                resp.status
-            )));
-        }
         if resp.status < 200 || resp.status >= 300 {
-            let text = resp.body_text();
-            let hint = serde_json::from_str::<Value>(&text)
-                .ok()
-                .and_then(|v| {
-                    v.get("message")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .or_else(|| v.get("error").and_then(Value::as_str).map(str::to_string))
-                })
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            return Err(CloudApiError::Message(if hint.is_empty() {
-                format!("cloud HTTP {}", resp.status)
-            } else {
-                format!("cloud HTTP {}: {hint}", resp.status)
-            }));
+            return Err(CloudApiError::Message(cloud_http_error(
+                resp.status,
+                &resp.body_text(),
+            )));
         }
         let text = resp.body_text();
         if text.trim().is_empty() {
@@ -540,6 +643,28 @@ impl CloudApi {
     pub fn list_devices(&self) -> Result<Vec<CloudDevice>, CloudApiError> {
         let v = self.send_json("GET", bind_path(), None)?;
         Ok(parse_bind_devices(&v))
+    }
+
+    pub fn ttcode(&self, dev_id: &str) -> Result<CameraCreds, CloudApiError> {
+        self.ttcode_with(dev_id, None, &["tutk", "agora"])
+    }
+
+    pub fn ttcode_with(
+        &self,
+        dev_id: &str,
+        firmware: Option<&str>,
+        protocols: &[&str],
+    ) -> Result<CameraCreds, CloudApiError> {
+        let body = ttcode_post_body(dev_id, firmware, protocols);
+        let v = match self.send_json("POST", ttcode_path(), Some(&body)) {
+            Ok(v) => v,
+            Err(err) if ttcode_should_retry_get(&err) => {
+                self.send_json_typed("GET", &ttcode_get_path(dev_id), None, false)?
+            }
+            Err(err) => return Err(err),
+        };
+        parse_camera_creds(&v)
+            .ok_or_else(|| CloudApiError::Message("ttcode response missing uid/authkey".into()))
     }
 
     pub fn request_upload(
@@ -662,17 +787,31 @@ impl CloudApi {
 
     pub fn refresh(&mut self) -> Result<(), CloudApiError> {
         if self.refresh_token.is_empty() {
-            return Err(CloudApiError::Message("no cloud_refresh token".into()));
+            return Err(CloudApiError::Message(
+                "no cloud_refresh token (sign in again)".into(),
+            ));
         }
-        let v = self.send_json(
-            "POST",
-            refresh_path(),
-            Some(&refresh_body(&self.refresh_token)),
-        )?;
+        let body = refresh_body(&self.refresh_token);
+        let v = match self.send_json("POST", refresh_path(), Some(&body)) {
+            Ok(v) => v,
+            Err(err) if auth_rejected(&err) => {
+                let access = self.access_token.clone();
+                self.access_token.clear();
+                let retry = self.send_json("POST", refresh_path(), Some(&body));
+                self.access_token = access;
+                retry?
+            }
+            Err(err) => return Err(err),
+        };
         let (access, refresh) = parse_refresh(&v)?;
         self.access_token = access;
         if !refresh.is_empty() {
             self.refresh_token = refresh;
+        }
+        if self.user_id.is_empty() {
+            if let Some(id) = jwt_user_id(&self.access_token) {
+                self.user_id = id;
+            }
         }
         Ok(())
     }
@@ -681,16 +820,101 @@ impl CloudApi {
         &mut self,
         mut op: impl FnMut(&CloudApi) -> Result<T, CloudApiError>,
     ) -> Result<T, CloudApiError> {
+        if self.user_id.is_empty() {
+            if let Some(id) = jwt_user_id(&self.access_token) {
+                self.user_id = id;
+            }
+        }
         match op(self) {
-            Err(CloudApiError::Message(msg))
-                if msg.contains("HTTP 401") || msg.contains("HTTP 403") =>
-            {
-                self.refresh()?;
+            Err(err) if auth_rejected(&err) => {
+                self.refresh().map_err(|refresh_err| {
+                    CloudApiError::Message(format!(
+                        "{err}; refresh failed ({refresh_err}) — sign in again"
+                    ))
+                })?;
                 op(self)
             }
             other => other,
         }
     }
+}
+
+fn auth_rejected(err: &CloudApiError) -> bool {
+    err.to_string().contains("HTTP 401")
+}
+
+fn json_error_hint(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    v.get("message")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+        })
+        .unwrap_or_default()
+}
+
+pub fn ttcode_post_body(dev_id: &str, firmware: Option<&str>, protocols: &[&str]) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("dev_id".into(), json!(dev_id));
+    if let Some(ver) = firmware.filter(|v| !v.is_empty()) {
+        body.insert("dev_ver".into(), json!(ver));
+    }
+    if !protocols.is_empty() {
+        body.insert("protocols".into(), json!(protocols));
+    }
+    Value::Object(body)
+}
+
+pub fn ttcode_get_path(dev_id: &str) -> String {
+    format!(
+        "{}?dev_id={}",
+        ttcode_path(),
+        crate::oauth::percent_encode_query(dev_id)
+    )
+}
+
+pub fn ttcode_should_retry_get(err: &CloudApiError) -> bool {
+    let text = err.to_string();
+    text.contains("HTTP 403") || text.contains("HTTP 404") || text.contains("HTTP 405")
+}
+
+pub fn cloud_http_error(status: u16, body: &str) -> String {
+    let hint = json_error_hint(body);
+    if !hint.is_empty() {
+        return format!("cloud HTTP {status}: {hint}");
+    }
+    if status == 401 {
+        return format!("cloud HTTP {status} (token expired or rejected)");
+    }
+    let snippet = body.trim();
+    if snippet.is_empty() {
+        format!("cloud HTTP {status}")
+    } else {
+        let clipped: String = snippet.chars().take(180).collect();
+        format!("cloud HTTP {status}: {clipped}")
+    }
+}
+
+/// Resolve ttcode JSON after POST, falling back to GET on 403/404/405.
+pub fn ttcode_after_post(
+    post: Result<Value, CloudApiError>,
+    get: impl FnOnce() -> Result<Value, CloudApiError>,
+) -> Result<CameraCreds, CloudApiError> {
+    let v = match post {
+        Ok(v) => v,
+        Err(err) if ttcode_should_retry_get(&err) => get()?,
+        Err(err) => return Err(err),
+    };
+    parse_camera_creds(&v)
+        .ok_or_else(|| CloudApiError::Message("ttcode response missing uid/authkey".into()))
 }
 
 #[cfg(test)]
@@ -866,8 +1090,138 @@ mod tests {
     }
 
     #[test]
+    fn jwt_user_id_field_and_mqtt_prefix() {
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            br#"{"user_id":"012345678"}"#,
+        );
+        let token = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
+        assert_eq!(jwt_user_id(&token).as_deref(), Some("012345678"));
+        assert_eq!(http_user_id("u_4242"), "4242");
+        let api = CloudApi::new("us", token, String::new());
+        assert_eq!(api.auth_user_id(), "012345678");
+        let api = CloudApi::new("us", "tok", String::new()).with_user_id("u_99");
+        assert_eq!(api.auth_user_id(), "99");
+    }
+
+    #[test]
+    fn ttcode_user_id_prefers_jwt_username() {
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            br#"{"username":"u_4242","user_id":"4242"}"#,
+        );
+        let token = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
+        assert_eq!(jwt_iot_user_id(&token).as_deref(), Some("u_4242"));
+        let api = CloudApi::new("us", token, String::new()).with_user_id("999");
+        assert_eq!(api.auth_user_id(), "u_4242");
+    }
+
+    #[test]
+    fn json_error_hint_skips_empty_message() {
+        let hint = json_error_hint(
+            r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
+        );
+        assert!(hint.contains("forbidden"));
+    }
+
+    #[test]
     fn region_hosts() {
         assert_eq!(api_host("us"), API_HOST_US);
         assert_eq!(api_host("CN"), API_HOST_CN);
+    }
+
+    #[test]
+    fn ttcode_fixture_tutk_url() {
+        let v = serde_json::json!({
+            "message": "success",
+            "ttcode": "01234567890ABCDEF012",
+            "authkey": "01234567",
+            "passwd": "012345",
+            "region": "us",
+            "type": "tutk"
+        });
+        let creds = parse_camera_creds(&v).unwrap();
+        assert_eq!(creds.proto, CameraProto::Tutk);
+        assert!(creds
+            .bambu_url()
+            .starts_with("bambu:///tutk?uid=01234567890ABCDEF012"));
+    }
+
+    #[test]
+    fn ttcode_fixture_agora_url() {
+        let v = serde_json::json!({
+            "data": {
+                "type": "agora",
+                "channel_name": "devchan",
+                "region": "us",
+                "token": "tok",
+                "authkey": "ak",
+                "app_id": "app"
+            }
+        });
+        let creds = parse_camera_creds(&v).unwrap();
+        assert_eq!(creds.proto, CameraProto::Agora);
+        let url = creds.bambu_url();
+        assert!(url.starts_with("bambu:///agora?channel=devchan"));
+        assert!(url.contains("token=tok"));
+        assert!(creds
+            .bambu_url_for_device("01P00A000000001")
+            .contains("&device=01P00A000000001"));
+    }
+
+    #[test]
+    fn ttcode_post_body_is_studio_shaped() {
+        let v = ttcode_post_body("01P00A000000001", Some("01.07.00.00"), &["tutk", "agora"]);
+        assert_eq!(v["dev_id"], "01P00A000000001");
+        assert_eq!(v["dev_ver"], "01.07.00.00");
+        assert_eq!(
+            v["protocols"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>()),
+            Some(vec!["tutk", "agora"])
+        );
+    }
+
+    #[test]
+    fn ttcode_get_omits_content_type() {
+        let path = ttcode_get_path("01P 1");
+        assert!(path.starts_with("/v1/iot-service/api/user/ttcode?dev_id="));
+        assert!(path.contains("01P"));
+        let api = CloudApi::new("us", "tok", String::new());
+        let get = api.json_headers(false);
+        assert!(!get.iter().any(|(k, _)| *k == "Content-Type"));
+        assert!(get.iter().any(|(k, _)| *k == "Authorization"));
+        let post = api.json_headers(true);
+        assert!(post.iter().any(|(k, _)| *k == "Content-Type"));
+    }
+
+    #[test]
+    fn ttcode_post_405_then_get_200_parses_tutk_url() {
+        let err = CloudApiError::Message(cloud_http_error(405, "Method Not Allowed"));
+        assert!(ttcode_should_retry_get(&err));
+        let get = serde_json::json!({
+            "message": "success",
+            "ttcode": "01234567890ABCDEF012",
+            "authkey": "01234567",
+            "passwd": "012345",
+            "region": "us",
+            "type": "tutk"
+        });
+        let creds = ttcode_after_post(Err(err), || Ok(get)).unwrap();
+        assert_eq!(creds.proto, CameraProto::Tutk);
+        assert!(creds
+            .bambu_url()
+            .starts_with("bambu:///tutk?uid=01234567890ABCDEF012"));
+        let forbidden = CloudApiError::Message(cloud_http_error(403, ""));
+        assert!(ttcode_should_retry_get(&forbidden));
+        let missing = CloudApiError::Message(cloud_http_error(404, "not found"));
+        assert!(ttcode_should_retry_get(&missing));
+    }
+
+    #[test]
+    fn cloud_http_error_includes_405_body() {
+        let msg = cloud_http_error(405, "Method Not Allowed");
+        assert!(msg.contains("405"));
+        assert!(msg.contains("Method Not Allowed"));
     }
 }

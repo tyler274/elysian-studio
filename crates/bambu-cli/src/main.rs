@@ -17,7 +17,8 @@ use bambu_io::load_model;
 use bambu_protocol::{
     default_config_dir, describe_hms, import_studio, install_app_cert, load_cached_catalog,
     load_cloud_session, load_from_dir, refresh_catalog, save_cloud_session, send_gcode_line,
-    snapshot_jpeg, CloudApi, CloudBackend, CloudSession, LanBackend, LoginResult, ProjectFileOpts,
+    snapshot_jpeg, stream_ttcode_jpegs, CloudApi, CloudBackend, CloudSession, LanBackend,
+    LoginResult, ProjectFileOpts,
 };
 use bambu_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
@@ -477,12 +478,17 @@ enum DeviceCommand {
         #[arg(long, default_value = "")]
         serial: String,
     },
-    /// Grab one P1/A1 chamber JPEG (TLS :6000). X1/H2 use RTSPS :322 instead.
+    /// Grab a chamber JPEG: LAN TLS :6000, or `--cloud` TUTK via ttcode.
     Camera {
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         host: String,
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         code: String,
+        #[arg(long, default_value = "")]
+        serial: String,
+        /// `POST .../ttcode` + TUTK (Bearer in the config dir).
+        #[arg(long)]
+        cloud: bool,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1050,9 +1056,46 @@ fn run() -> Result<(), CliError> {
                     None => println!("app_cert_install published (no report within 8s)"),
                 }
             }
-            DeviceCommand::Camera { host, code, output } => {
-                let jpeg = snapshot_jpeg(&host, &code)
+            DeviceCommand::Camera {
+                host,
+                code,
+                serial,
+                cloud,
+                output,
+            } => {
+                let jpeg = if cloud || (host.is_empty() && !serial.is_empty()) {
+                    let dir = default_config_dir();
+                    let session = load_cloud_session(&dir)
+                        .map_err(|err| CliError::Message(err.to_string()))?;
+                    if session.access_token.is_empty() {
+                        return Err(CliError::Message("cloud_token missing".into()));
+                    }
+                    let serial = if serial.is_empty() {
+                        session.serial.clone()
+                    } else {
+                        serial
+                    };
+                    if serial.is_empty() {
+                        return Err(CliError::Message(
+                            "device camera --cloud needs --serial or cloud_serial".into(),
+                        ));
+                    }
+                    let mut api = CloudApi::new(
+                        &session.region,
+                        &session.access_token,
+                        &session.refresh_token,
+                    )
+                    .with_user_id(&session.user_id);
+                    let mut frame = None;
+                    stream_ttcode_jpegs(&mut api, &serial, &code, |jpeg| {
+                        frame = Some(jpeg.to_vec());
+                        false
+                    })
                     .map_err(|err| CliError::Message(err.to_string()))?;
+                    frame.ok_or_else(|| CliError::Message("TUTK produced no JPEG frame".into()))?
+                } else {
+                    snapshot_jpeg(&host, &code).map_err(|err| CliError::Message(err.to_string()))?
+                };
                 std::fs::write(&output, &jpeg)?;
                 println!("wrote {} ({} bytes)", output.display(), jpeg.len());
             }

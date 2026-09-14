@@ -81,6 +81,10 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<Model, IoError> {
     match ext.as_str() {
         "3mf" => load_3mf(path),
         "stl" | "" => load_model_stl(path),
+        "obj" | "svg" | "step" | "stp" => Err(IoError::Message(format!(
+            "unsupported mesh format '.{other}' — import STEP/SVG/OBJ is not available yet (stl|3mf)",
+            other = ext
+        ))),
         other => Err(IoError::Message(format!(
             "unsupported mesh format '.{other}' (stl|3mf)"
         ))),

@@ -42,6 +42,12 @@ const SUPPORT_INTERFACE: [f32; 3] = [0.42, 0.94, 0.52];
 const IRONING: [f32; 3] = [0.92, 0.88, 0.98];
 
 const SAMPLE_COUNT: u32 = 4;
+/// `Vertex` is three `vec3`s (36 bytes). One wgpu buffer cannot exceed
+/// `max_buffer_size` (256 MiB on many adapters); huge meshes are split into
+/// several buffers / draw calls instead of dropping triangles.
+const VERTEX_STRIDE: u64 = 36;
+const DEFAULT_MAX_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
+const CHUNK_VERTS: usize = ((DEFAULT_MAX_BUFFER_BYTES / VERTEX_STRIDE / 3) * 3) as usize;
 
 fn msaa_state() -> wgpu::MultisampleState {
     wgpu::MultisampleState {
@@ -179,7 +185,7 @@ struct MeshletDraw {
 #[derive(Clone, Debug)]
 struct CachedGpuMesh {
     key: u64,
-    solid: Arc<[Vertex]>,
+    solid: Arc<[Arc<[Vertex]>]>,
     lines: Arc<[Vertex]>,
     gizmos: Arc<[Vertex]>,
     labels: Arc<[crate::label::LabelVertex]>,
@@ -343,40 +349,40 @@ impl ViewportScene {
             self.hide_infill,
             self.hide_support,
         ));
-        let mut solid = bed_solids(&self.bed);
+        let mut solid = VertexPack::new(CHUNK_VERTS);
+        solid.extend(&bed_solids(&self.bed));
         let bed_verts = solid.len() as u32;
         let mut meshlets = Vec::new();
         let show_solids = self.toolpaths.is_empty() || self.keep_solid;
         if show_solids {
             for s in &self.solids {
                 if s.meshlets.is_empty() {
-                    let start = solid.len() as u32;
-                    let verts = mesh_vertices(&s.mesh, PLASTIC);
-                    let count = verts.len() as u32;
-                    solid.extend(verts);
-                    meshlets.push(MeshletDraw {
-                        start,
-                        count,
-                        aabb: s.mesh.aabb().unwrap_or(Aabb3::empty()),
-                    });
+                    let aabb = s.mesh.aabb().unwrap_or(Aabb3::empty());
+                    let n = s.mesh.indices.len() as u32;
+                    let mut tri = 0u32;
+                    while tri < n {
+                        let batch = ((CHUNK_VERTS / 3) as u32).min(n - tri);
+                        let verts = mesh_vertices_range(&s.mesh, tri, batch, PLASTIC, usize::MAX);
+                        solid.push_span(verts, aabb, &mut meshlets);
+                        tri += batch;
+                    }
                 } else {
                     for m in &s.meshlets {
-                        let start = solid.len() as u32;
-                        let verts = mesh_vertices_range(&s.mesh, m.first_tri, m.tri_count, PLASTIC);
-                        let count = verts.len() as u32;
-                        solid.extend(verts);
-                        meshlets.push(MeshletDraw {
-                            start,
-                            count,
-                            aabb: m.aabb,
-                        });
+                        let verts = mesh_vertices_range(
+                            &s.mesh,
+                            m.first_tri,
+                            m.tri_count,
+                            PLASTIC,
+                            usize::MAX,
+                        );
+                        solid.push_span(verts, m.aabb, &mut meshlets);
                     }
                 }
             }
         }
         let overlay_start = solid.len() as u32;
         if show_solids {
-            solid.extend(overlay_vertices(&self.mesh, &self.paint_overlay));
+            solid.extend(&overlay_vertices(&self.mesh, &self.paint_overlay));
         }
         let overlay_count = solid.len() as u32 - overlay_start;
         let gizmos = self
@@ -386,7 +392,7 @@ impl ViewportScene {
         let (rt_positions, rt_indices, rt_instances) = self.rt_geometry();
         CachedGpuMesh {
             key,
-            solid: Arc::from(solid),
+            solid: solid.freeze(),
             lines: Arc::from(lines),
             gizmos: Arc::from(gizmos),
             labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
@@ -728,7 +734,7 @@ where
 pub struct ScenePrimitive {
     camera: OrbitCamera,
     geom_key: u64,
-    solid: Arc<[Vertex]>,
+    solid: Arc<[Arc<[Vertex]>]>,
     lines: Arc<[Vertex]>,
     gizmos: Arc<[Vertex]>,
     labels: Arc<[crate::label::LabelVertex]>,
@@ -758,6 +764,79 @@ struct Vertex {
     color: [f32; 3],
 }
 
+const _: () = assert!(std::mem::size_of::<Vertex>() == VERTEX_STRIDE as usize);
+
+struct GpuVertBuf {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    count: u32,
+}
+
+/// CPU-side packing so each chunk fits in one `max_buffer_size` allocation.
+struct VertexPack {
+    chunks: Vec<Vec<Vertex>>,
+    chunk_limit: usize,
+}
+
+impl VertexPack {
+    fn new(chunk_limit: usize) -> Self {
+        Self {
+            chunks: Vec::new(),
+            chunk_limit: (chunk_limit / 3 * 3).max(3),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.chunks.iter().map(Vec::len).sum()
+    }
+
+    fn extend(&mut self, verts: &[Vertex]) {
+        let mut offset = 0;
+        while offset < verts.len() {
+            if self
+                .chunks
+                .last()
+                .is_none_or(|c| self.chunk_limit.saturating_sub(c.len()) < 3)
+            {
+                self.chunks.push(Vec::with_capacity(
+                    (verts.len() - offset).min(self.chunk_limit),
+                ));
+            }
+            let room = (self.chunk_limit - self.chunks.last().map_or(0, Vec::len)) / 3 * 3;
+            let take = (verts.len() - offset).min(room) / 3 * 3;
+            if take == 0 {
+                break;
+            }
+            self.chunks
+                .last_mut()
+                .expect("chunk just created")
+                .extend_from_slice(&verts[offset..offset + take]);
+            offset += take;
+        }
+    }
+
+    fn push_span(&mut self, verts: Vec<Vertex>, aabb: Aabb3, meshlets: &mut Vec<MeshletDraw>) {
+        if verts.is_empty() {
+            return;
+        }
+        let start = self.len() as u32;
+        self.extend(&verts);
+        let count = self.len() as u32 - start;
+        if count == 0 {
+            return;
+        }
+        meshlets.push(MeshletDraw { start, count, aabb });
+    }
+
+    fn freeze(self) -> Arc<[Arc<[Vertex]>]> {
+        self.chunks
+            .into_iter()
+            .filter(|c| !c.is_empty())
+            .map(Arc::<[Vertex]>::from)
+            .collect()
+    }
+}
+
 pub struct ScenePipeline {
     pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
@@ -766,16 +845,12 @@ pub struct ScenePipeline {
     bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
     uniform_buf: wgpu::Buffer,
-    vertex_buf: wgpu::Buffer,
-    vertex_capacity: u64,
-    line_buf: wgpu::Buffer,
-    line_capacity: u64,
+    solid_bufs: Vec<GpuVertBuf>,
+    line_bufs: Vec<GpuVertBuf>,
     gizmo_buf: wgpu::Buffer,
     gizmo_capacity: u64,
     label_buf: wgpu::Buffer,
     label_capacity: u64,
-    solid_count: u32,
-    line_count: u32,
     gizmo_count: u32,
     label_count: u32,
     color_format: wgpu::TextureFormat,
@@ -970,8 +1045,16 @@ impl ScenePipeline {
             cache: None,
         });
 
-        let vertex_buf = empty_vertex_buffer(device, 4096, "bambu-gpu-solid-verts");
-        let line_buf = empty_vertex_buffer(device, 4096, "bambu-gpu-line-verts");
+        let solid_bufs = vec![GpuVertBuf {
+            buffer: empty_vertex_buffer(device, 4096, "bambu-gpu-solid-verts"),
+            capacity: 4096,
+            count: 0,
+        }];
+        let line_bufs = vec![GpuVertBuf {
+            buffer: empty_vertex_buffer(device, 4096, "bambu-gpu-line-verts"),
+            capacity: 4096,
+            count: 0,
+        }];
         let gizmo_buf = empty_vertex_buffer(device, 1024, "bambu-gpu-gizmo-verts");
         let (label_pipeline, label_bind_group, label_buf, atlas_texture) =
             label_gpu(device, queue, format, &uniform_buf);
@@ -984,16 +1067,12 @@ impl ScenePipeline {
             bind_group,
             label_bind_group,
             uniform_buf,
-            vertex_buf,
-            vertex_capacity: 4096,
-            line_buf,
-            line_capacity: 4096,
+            solid_bufs,
+            line_bufs,
             gizmo_buf,
             gizmo_capacity: 1024,
             label_buf,
             label_capacity: 256,
-            solid_count: 0,
-            line_count: 0,
             gizmo_count: 0,
             label_count: 0,
             color_format: format,
@@ -1082,23 +1161,23 @@ impl shader::Primitive for ScenePrimitive {
         );
 
         if pipeline.uploaded_key != self.geom_key {
-            upload_vertices(
+            upload_vert_chunks(
                 device,
                 queue,
-                &mut pipeline.vertex_buf,
-                &mut pipeline.vertex_capacity,
-                &self.solid,
+                &mut pipeline.solid_bufs,
+                self.solid.iter().map(|c| c.as_ref()),
+                3,
                 "bambu-gpu-solid-verts",
             );
-            upload_vertices(
+            upload_vert_chunks(
                 device,
                 queue,
-                &mut pipeline.line_buf,
-                &mut pipeline.line_capacity,
-                &self.lines,
+                &mut pipeline.line_bufs,
+                std::iter::once(self.lines.as_ref()),
+                2,
                 "bambu-gpu-line-verts",
             );
-            upload_vertices(
+            pipeline.gizmo_count = upload_vertices(
                 device,
                 queue,
                 &mut pipeline.gizmo_buf,
@@ -1106,7 +1185,7 @@ impl shader::Primitive for ScenePrimitive {
                 &self.gizmos,
                 "bambu-gpu-gizmo-verts",
             );
-            upload_labels(
+            pipeline.label_count = upload_labels(
                 device,
                 queue,
                 &mut pipeline.label_buf,
@@ -1115,10 +1194,6 @@ impl shader::Primitive for ScenePrimitive {
             );
             pipeline.uploaded_key = self.geom_key;
         }
-        pipeline.solid_count = self.solid.len() as u32;
-        pipeline.line_count = self.lines.len() as u32;
-        pipeline.gizmo_count = self.gizmos.len() as u32;
-        pipeline.label_count = self.labels.len() as u32;
 
         if self.realistic {
             let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
@@ -1219,19 +1294,17 @@ impl shader::Primitive for ScenePrimitive {
             if self.overlay_count > 0 {
                 pass.set_pipeline(&pipeline.pipeline);
                 pass.set_bind_group(0, &pipeline.bind_group, &[]);
-                pass.set_vertex_buffer(0, pipeline.vertex_buf.slice(..));
-                pass.draw(
-                    self.overlay_start..self.overlay_start + self.overlay_count,
-                    0..1,
+                draw_vert_span(
+                    &mut pass,
+                    &pipeline.solid_bufs,
+                    self.overlay_start,
+                    self.overlay_count,
                 );
             }
-        } else if pipeline.solid_count > 0 {
+        } else if pipeline.solid_bufs.iter().any(|b| b.count > 0) {
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
-            pass.set_vertex_buffer(0, pipeline.vertex_buf.slice(..));
-            if self.bed_verts > 0 {
-                pass.draw(0..self.bed_verts, 0..1);
-            }
+            draw_vert_span(&mut pass, &pipeline.solid_bufs, 0, self.bed_verts);
             let aspect = (vp_w / vp_h.max(1.0)).max(0.1);
             let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
             let planes = crate::meshlet::frustum_planes(proj * self.camera.view_matrix());
@@ -1239,20 +1312,30 @@ impl shader::Primitive for ScenePrimitive {
                 if meshlet.count == 0 || !crate::meshlet::aabb_in_frustum(meshlet.aabb, &planes) {
                     continue;
                 }
-                pass.draw(meshlet.start..meshlet.start + meshlet.count, 0..1);
-            }
-            if self.overlay_count > 0 {
-                pass.draw(
-                    self.overlay_start..self.overlay_start + self.overlay_count,
-                    0..1,
+                draw_vert_span(
+                    &mut pass,
+                    &pipeline.solid_bufs,
+                    meshlet.start,
+                    meshlet.count,
                 );
             }
+            draw_vert_span(
+                &mut pass,
+                &pipeline.solid_bufs,
+                self.overlay_start,
+                self.overlay_count,
+            );
         }
-        if pipeline.line_count > 0 {
+        if pipeline.line_bufs.iter().any(|b| b.count > 0) {
             pass.set_pipeline(&pipeline.line_pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
-            pass.set_vertex_buffer(0, pipeline.line_buf.slice(..));
-            pass.draw(0..pipeline.line_count, 0..1);
+            for buf in &pipeline.line_bufs {
+                if buf.count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, buf.buffer.slice(..));
+                pass.draw(0..buf.count, 0..1);
+            }
         }
         if pipeline.gizmo_count > 0 {
             pass.set_pipeline(&pipeline.gizmo_pipeline);
@@ -1269,19 +1352,137 @@ impl shader::Primitive for ScenePrimitive {
     }
 }
 
+fn aligned_chunk_verts(max_buffer_size: u64, stride: u64, align: u64) -> usize {
+    let max_count = max_buffer_size / stride.max(1);
+    let n = (max_count / align.max(1)) * align.max(1);
+    n.max(align.max(1)) as usize
+}
+
+/// Map a concatenated vertex span onto per-buffer ranges (may cross chunks).
+fn for_chunk_span(
+    start: u32,
+    count: u32,
+    chunk_counts: &[u32],
+    mut emit: impl FnMut(usize, u32, u32),
+) {
+    if count == 0 {
+        return;
+    }
+    let end = start.saturating_add(count);
+    let mut acc = 0u32;
+    for (i, &n) in chunk_counts.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let chunk_end = acc.saturating_add(n);
+        if end <= acc {
+            break;
+        }
+        if start < chunk_end {
+            let local_start = start.saturating_sub(acc).min(n);
+            let local_end = end.saturating_sub(acc).min(n);
+            if local_end > local_start {
+                emit(i, local_start, local_end - local_start);
+            }
+        }
+        acc = chunk_end;
+    }
+}
+
+fn draw_vert_span(pass: &mut wgpu::RenderPass<'_>, bufs: &[GpuVertBuf], start: u32, count: u32) {
+    let counts: Vec<u32> = bufs.iter().map(|b| b.count).collect();
+    for_chunk_span(start, count, &counts, |i, local_start, n| {
+        if let Some(buf) = bufs.get(i) {
+            pass.set_vertex_buffer(0, buf.buffer.slice(..));
+            pass.draw(local_start..local_start + n, 0..1);
+        }
+    });
+}
+
+fn upload_vert_chunks<'a>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    bufs: &mut Vec<GpuVertBuf>,
+    chunks: impl IntoIterator<Item = &'a [Vertex]>,
+    align: usize,
+    label: &str,
+) {
+    let max = aligned_chunk_verts(device.limits().max_buffer_size, VERTEX_STRIDE, align as u64)
+        .max(align);
+    let pieces: Vec<&[Vertex]> = chunks
+        .into_iter()
+        .flat_map(|c| c.chunks(max))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if pieces.is_empty() {
+        for buf in bufs.iter_mut() {
+            buf.count = 0;
+        }
+        return;
+    }
+    if bufs.len() > pieces.len() {
+        bufs.truncate(pieces.len());
+    }
+    while bufs.len() < pieces.len() {
+        bufs.push(GpuVertBuf {
+            buffer: empty_vertex_buffer(device, 64, label),
+            capacity: 64,
+            count: 0,
+        });
+    }
+    for (gpu, piece) in bufs.iter_mut().zip(pieces) {
+        gpu.count = upload_vertices(
+            device,
+            queue,
+            &mut gpu.buffer,
+            &mut gpu.capacity,
+            piece,
+            label,
+        );
+    }
+}
+
+#[cfg(test)]
+fn vertex_draw_range(start: u32, count: u32, limit: u32) -> Option<std::ops::Range<u32>> {
+    if count == 0 || start >= limit {
+        return None;
+    }
+    let end = start.saturating_add(count).min(limit);
+    (end > start).then_some(start..end)
+}
+
+/// Grow to a power of two, but never past `max_buffer_size / stride`.
+fn grow_element_count(needed: u64, stride: u64, max_buffer_size: u64) -> u64 {
+    let max_count = (max_buffer_size / stride.max(1)).max(1);
+    let upload = needed.min(max_count);
+    if upload == 0 {
+        return 64.min(max_count).max(1);
+    }
+    upload
+        .next_power_of_two()
+        .max(64)
+        .min(max_count)
+        .max(upload)
+}
+
 fn empty_vertex_buffer(device: &wgpu::Device, count: u64, label: &str) -> wgpu::Buffer {
+    let max_count = (device.limits().max_buffer_size / VERTEX_STRIDE).max(1);
+    let count = count.min(max_count).max(1);
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: count * std::mem::size_of::<Vertex>() as u64,
+        size: count * VERTEX_STRIDE,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
 
 fn empty_label_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
+    let stride = std::mem::size_of::<crate::label::LabelVertex>() as u64;
+    let max_count = (device.limits().max_buffer_size / stride).max(1);
+    let count = count.min(max_count).max(1);
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("bambu-gpu-label-verts"),
-        size: count * std::mem::size_of::<crate::label::LabelVertex>() as u64,
+        size: count * stride,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
@@ -1294,16 +1495,28 @@ fn upload_vertices(
     capacity: &mut u64,
     verts: &[Vertex],
     label: &str,
-) {
+) -> u32 {
     let needed = verts.len() as u64;
     if needed == 0 {
-        return;
+        return 0;
     }
-    if needed > *capacity {
-        *capacity = needed.next_power_of_two().max(64);
+    let max_size = device.limits().max_buffer_size;
+    let max_count = (max_size / VERTEX_STRIDE).max(1);
+    let upload = needed.min(max_count);
+    if upload > *capacity {
+        *capacity = grow_element_count(upload, VERTEX_STRIDE, max_size);
         *buffer = empty_vertex_buffer(device, *capacity, label);
     }
-    queue.write_buffer(buffer, 0, bytemuck::cast_slice(verts));
+    if upload < needed {
+        tracing::warn!(
+            label,
+            needed,
+            upload,
+            "mesh exceeds a single GPU buffer; this piece should have been split"
+        );
+    }
+    queue.write_buffer(buffer, 0, bytemuck::cast_slice(&verts[..upload as usize]));
+    upload as u32
 }
 
 fn upload_labels(
@@ -1312,16 +1525,21 @@ fn upload_labels(
     buffer: &mut wgpu::Buffer,
     capacity: &mut u64,
     verts: &[crate::label::LabelVertex],
-) {
+) -> u32 {
     let needed = verts.len() as u64;
     if needed == 0 {
-        return;
+        return 0;
     }
-    if needed > *capacity {
-        *capacity = needed.next_power_of_two().max(64);
+    let stride = std::mem::size_of::<crate::label::LabelVertex>() as u64;
+    let max_size = device.limits().max_buffer_size;
+    let max_count = (max_size / stride).max(1);
+    let upload = needed.min(max_count);
+    if upload > *capacity {
+        *capacity = grow_element_count(upload, stride, max_size);
         *buffer = empty_label_buffer(device, *capacity);
     }
-    queue.write_buffer(buffer, 0, bytemuck::cast_slice(verts));
+    queue.write_buffer(buffer, 0, bytemuck::cast_slice(&verts[..upload as usize]));
+    upload as u32
 }
 
 fn label_gpu(
@@ -1548,8 +1766,9 @@ pub fn outward_triangle(a: Vec3, b: Vec3, c: Vec3, center: Vec3) -> ([Vec3; 3], 
     }
 }
 
-fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3]) -> Vec<Vertex> {
-    mesh_vertices_range(mesh, 0, mesh.indices.len() as u32, color)
+#[cfg(test)]
+fn mesh_vertices(mesh: &TriangleMesh, color: [f32; 3], max_verts: usize) -> Vec<Vertex> {
+    mesh_vertices_range(mesh, 0, mesh.indices.len() as u32, color, max_verts)
 }
 
 fn mesh_vertices_range(
@@ -1557,10 +1776,14 @@ fn mesh_vertices_range(
     first_tri: u32,
     tri_count: u32,
     color: [f32; 3],
+    max_verts: usize,
 ) -> Vec<Vertex> {
     let center = mesh_center(mesh);
     let start = first_tri as usize;
-    let end = (start + tri_count as usize).min(mesh.indices.len());
+    let max_tris = max_verts / 3;
+    let end = (start + tri_count as usize)
+        .min(mesh.indices.len())
+        .min(start.saturating_add(max_tris));
     let mut out = Vec::with_capacity(end.saturating_sub(start) * 3);
     for idx in &mesh.indices[start..end] {
         let [a, b, c] = mesh.triangle(*idx);
@@ -1799,6 +2022,102 @@ fn push_line(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], normal: [f32; 3], 
 mod tests {
     use super::*;
     use bambu_geom::TriangleMesh;
+
+    #[test]
+    fn grow_element_count_stays_under_256mib_max_buffer() {
+        let max = 268_435_456;
+        let stride = VERTEX_STRIDE;
+        let max_verts = max / stride;
+        // This is the panic: 8M+ verts rounded to 2^24 * 36 = 576 MiB.
+        let grown = grow_element_count(16_777_216, stride, max);
+        assert!(
+            grown <= max_verts,
+            "grown {grown} verts exceeds {max_verts}"
+        );
+        assert!(grown * stride <= max);
+        assert_eq!(grow_element_count(100, stride, max), 128);
+        assert_eq!(grow_element_count(4096, stride, max), 4096);
+        assert!(CHUNK_VERTS as u64 * stride <= max);
+        assert_eq!(CHUNK_VERTS % 3, 0);
+    }
+
+    #[test]
+    fn vertex_pack_preserves_every_vertex_across_chunks() {
+        let verts: Vec<Vertex> = (0..100)
+            .map(|i| Vertex {
+                position: [i as f32, 0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                color: PLASTIC,
+            })
+            .collect();
+        let mut pack = VertexPack::new(30);
+        pack.extend(&verts);
+        assert_eq!(
+            pack.len(),
+            99,
+            "keep complete triangles only (100 % 3 = 1 dropped)"
+        );
+        assert!(pack
+            .chunks
+            .iter()
+            .all(|c| c.len() <= 30 && c.len() % 3 == 0));
+        let mut packed = Vec::new();
+        for c in &pack.chunks {
+            packed.extend_from_slice(c);
+        }
+        assert_eq!(
+            packed.iter().map(|v| v.position).collect::<Vec<_>>(),
+            verts[..99].iter().map(|v| v.position).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn chunk_span_covers_ranges_that_cross_buffers() {
+        let mut got = Vec::new();
+        for_chunk_span(8, 10, &[10, 10, 5], |i, start, n| {
+            got.push((i, start, n));
+        });
+        assert_eq!(got, vec![(0, 8, 2), (1, 0, 8)]);
+        got.clear();
+        for_chunk_span(0, 25, &[10, 10, 5], |i, start, n| {
+            got.push((i, start, n));
+        });
+        assert_eq!(got, vec![(0, 0, 10), (1, 0, 10), (2, 0, 5)]);
+        got.clear();
+        for_chunk_span(20, 0, &[10, 10], |i, start, n| got.push((i, start, n)));
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn tessellate_covers_all_solid_triangles() {
+        let meshes: Vec<_> = (0..8).map(|_| TriangleMesh::cube(10.0)).collect();
+        let expected: u32 = meshes.iter().map(|m| m.indices.len() as u32 * 3).sum();
+        let mut scene = ViewportScene::with_cube("chunks".into());
+        scene.set_solids(meshes);
+        let mesh = scene.cached_gpu_mesh();
+        let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
+        assert_eq!(covered, expected);
+        let solid_verts: usize = mesh.solid.iter().map(|c| c.len()).sum();
+        assert!(solid_verts >= expected as usize + mesh.bed_verts as usize);
+    }
+
+    #[test]
+    fn vertex_draw_range_clamps_to_uploaded_count() {
+        assert_eq!(vertex_draw_range(0, 10, 10), Some(0..10));
+        assert_eq!(vertex_draw_range(8, 8, 10), Some(8..10));
+        assert_eq!(vertex_draw_range(10, 4, 10), None);
+        assert_eq!(vertex_draw_range(0, 0, 10), None);
+    }
+
+    #[test]
+    fn mesh_vertices_range_respects_max_verts() {
+        let mesh = TriangleMesh::cube(20.0);
+        let verts = mesh_vertices_range(&mesh, 0, mesh.indices.len() as u32, PLASTIC, 9);
+        assert_eq!(verts.len(), 9);
+        assert_eq!(verts.len() % 3, 0);
+        let full = mesh_vertices(&mesh, PLASTIC, usize::MAX);
+        assert_eq!(full.len(), mesh.indices.len() * 3);
+    }
 
     #[test]
     fn cube_display_normals_point_outward() {

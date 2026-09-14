@@ -8,6 +8,7 @@ use rustls::{ClientConnection, StreamOwned};
 use thiserror::Error;
 
 use crate::mqtt::LAN_MQTT_USER;
+use crate::oauth::percent_encode_query;
 use crate::tls::{lan_client_config, server_name, TlsError};
 use bambu_device::Frame;
 
@@ -158,6 +159,39 @@ pub fn rtsps_url(host: &str, access_code: &str) -> String {
     format!("rtsps://{LAN_MQTT_USER}:{access_code}@{host}:{LAN_RTSPS_PORT}/streaming/live/1")
 }
 
+/// Studio `bambu:///tutk?uid=&authkey=&passwd=&region=` after `POST .../ttcode`.
+pub fn tutk_url(uid: &str, authkey: &str, passwd: &str, region: &str) -> String {
+    format!(
+        "bambu:///tutk?uid={}&authkey={}&passwd={}&region={}",
+        percent_encode_query(uid),
+        percent_encode_query(authkey),
+        percent_encode_query(passwd),
+        percent_encode_query(region),
+    )
+}
+
+/// Studio `bambu:///agora?channel=&region=` (+ token/authkey/license when present).
+pub fn agora_url(channel: &str, region: &str, token: &str, authkey: &str, app_id: &str) -> String {
+    let mut url = format!(
+        "bambu:///agora?channel={}&region={}",
+        percent_encode_query(channel),
+        percent_encode_query(region)
+    );
+    if !token.is_empty() {
+        url.push_str("&token=");
+        url.push_str(&percent_encode_query(token));
+    }
+    if !authkey.is_empty() {
+        url.push_str("&authkey=");
+        url.push_str(&percent_encode_query(authkey));
+    }
+    if !app_id.is_empty() {
+        url.push_str("&license=");
+        url.push_str(&percent_encode_query(app_id));
+    }
+    url
+}
+
 /// TLS OPTIONS + DESCRIBE on :322. Does not decode H.264 and never ships Bambu PEMs.
 pub fn probe_rtsps(host: &str, access_code: &str) -> Result<String, CameraError> {
     describe_rtsps(host, access_code).map(|live| live.sdp)
@@ -266,6 +300,33 @@ mod tests {
         let url = rtsps_url("192.168.1.10", "12345678");
         assert!(url.starts_with("rtsps://bblp:12345678@192.168.1.10:322/"));
         assert!(url.contains("/streaming/live/1"));
+    }
+
+    #[test]
+    fn tutk_url_matches_studio_grammar() {
+        let url = tutk_url("01234567890ABCDEF012", "auth", "pass", "us");
+        assert!(url.starts_with("bambu:///tutk?uid=01234567890ABCDEF012"));
+        assert!(url.contains("authkey=auth"));
+        assert!(url.contains("passwd=pass"));
+        assert!(url.contains("region=us"));
+    }
+
+    #[test]
+    fn agora_url_matches_studio_grammar() {
+        let url = agora_url("ch1", "us", "tok", "ak", "app");
+        assert!(url.starts_with("bambu:///agora?channel=ch1"));
+        assert!(url.contains("region=us"));
+        assert!(url.contains("token=tok"));
+        assert!(url.contains("license=app"));
+    }
+
+    #[test]
+    fn camera_urls_percent_encode_query() {
+        let url = tutk_url("uid", "a+b", "p/w", "us");
+        assert!(url.contains("authkey=a%2Bb"));
+        assert!(url.contains("passwd=p%2Fw"));
+        let agora = agora_url("ch", "us", "tok=1", "ak", "app");
+        assert!(agora.contains("token=tok%3D1"));
     }
 
     #[test]

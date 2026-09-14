@@ -1,0 +1,37 @@
+{
+  "print": {
+    "command": "push_status",
+    "ams": {
+      "tray_now": "0",
+      "ams": [
+        {
+          "id": "0",
+          "humidity": "2",
+          "humidity_raw": "28",
+          "temp": "32.5",
+          "dry_time": 90,
+          "info": "20",
+          "tray": [
+            { "id": "0", "tray_type": "PLA", "tray_color": "00AE42FF", "remain": 80 },
+            { "id": "1", "tray_type": "PLA", "tray_color": "FF0000FF", "remain": 55 },
+            { "id": "2", "tray_type": "PETG", "tray_color": "2979FFFF", "remain": 30 },
+            { "id": "3", "tray_type": "", "tray_color": "", "remain": 0 }
+          ]
+        },
+        {
+          "id": "1",
+          "humidity": "4",
+          "humidity_raw": "55",
+          "temp": "27.0",
+          "info": "00",
+          "tray": [
+            { "id": "0", "tray_type": "PLA", "tray_color": "FFFFFFFF", "remain": 90 },
+            { "id": "1", "tray_type": "ABS", "tray_color": "000000FF", "remain": 40 },
+            { "id": "2", "tray_type": "TPU", "tray_color": "FF9800FF", "remain": 20 },
+            { "id": "3", "tray_type": "PLA", "tray_color": "9C27B0FF", "remain": 10 }
+          ]
+        }
+      ]
+    }
+  }
+}
