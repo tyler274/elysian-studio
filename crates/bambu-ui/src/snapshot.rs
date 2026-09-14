@@ -56,10 +56,7 @@ impl App {
             .collect();
         GuiSnapshot {
             workspace: self.workspace.as_str().into(),
-            printer: self
-                .machine_name
-                .clone()
-                .unwrap_or_else(|| "unset".into()),
+            printer: self.machine_name.clone().unwrap_or_else(|| "unset".into()),
             process: self.process_name.clone().unwrap_or_else(|| "—".into()),
             process_search: self.process_search.clone(),
             process_objects: self.process_objects,

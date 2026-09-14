@@ -151,7 +151,9 @@ impl crate::App {
                     button(text("Bed texture").size(12))
                         .padding([3, 8])
                         .style(|_, status| theme::quiet(status))
-                        .on_press(Message::Toast("Bed texture uses the printer profile".into())),
+                        .on_press(Message::Toast(
+                            "Bed texture uses the printer profile".into()
+                        )),
                     button(text("Sync").size(12))
                         .padding([3, 8])
                         .style(|_, status| theme::quiet(status))
@@ -169,9 +171,7 @@ impl crate::App {
     }
 
     fn ams_cards(&self) -> Element<'_, Message> {
-        row![self.ams_card(1), self.ams_card(2)]
-            .spacing(8)
-            .into()
+        row![self.ams_card(1), self.ams_card(2)].spacing(8).into()
     }
 
     fn ams_card(&self, n: u8) -> Element<'_, Message> {
@@ -198,10 +198,10 @@ impl crate::App {
 
     fn project_filaments(&self) -> Element<'_, Message> {
         container(self.filament_library())
-        .padding(10)
-        .width(Fill)
-        .style(|_| theme::card())
-        .into()
+            .padding(10)
+            .width(Fill)
+            .style(|_| theme::card())
+            .into()
     }
 
     fn preview_filament_chips(&self) -> Element<'_, Message> {
@@ -486,9 +486,7 @@ impl crate::App {
                     .collect::<Vec<_>>(),
                 Some(self.settings.seam.as_str().to_string()),
                 |label| {
-                    Message::Seam(
-                        SeamPosition::from_name(&label).unwrap_or(SeamPosition::Aligned),
-                    )
+                    Message::Seam(SeamPosition::from_name(&label).unwrap_or(SeamPosition::Aligned))
                 }
             )
             .padding([3, 8])

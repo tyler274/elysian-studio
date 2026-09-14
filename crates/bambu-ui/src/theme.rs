@@ -1,9 +1,9 @@
 //! Studio/Orca chrome tokens. Widget `style` closures use these instead of
 //! iced's stock `Theme::Dark` greens/purples.
 
+use iced::theme::Palette;
 use iced::widget::{button, container};
 use iced::{Background, Border, Color, Theme};
-use iced::theme::Palette;
 
 /// Header bar ~`rgb(0.07, 0.08, 0.10)`.
 pub const HEADER: Color = Color::from_rgb(0.07, 0.08, 0.10);
@@ -100,10 +100,7 @@ pub fn active_tab_hex(workspace: crate::Workspace) -> &'static str {
 
 fn fill_button(fill: Color, text: Color, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Disabled => Color {
-            a: 0.45,
-            ..fill
-        },
+        button::Status::Disabled => Color { a: 0.45, ..fill },
         button::Status::Pressed => Color {
             r: (fill.r * 0.85).clamp(0.0, 1.0),
             g: (fill.g * 0.85).clamp(0.0, 1.0),

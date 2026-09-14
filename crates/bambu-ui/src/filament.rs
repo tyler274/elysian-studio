@@ -22,7 +22,7 @@ impl crate::App {
     pub(crate) fn filament_library(&self) -> Element<'_, Message> {
         let picks = self.filament_pick_labels();
         let mut slots = column![row![
-        text("Project Filaments").size(16),
+            text("Project Filaments").size(16),
             button("+").on_press(Message::AddFilamentSlot),
             button("-").on_press(Message::RemoveFilamentSlot),
         ]

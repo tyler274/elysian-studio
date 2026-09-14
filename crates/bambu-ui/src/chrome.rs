@@ -23,10 +23,14 @@ impl crate::App {
 
         let actions = row![
             container(
-                button(text("Slice plate").size(theme::BODY_SIZE).color(theme::PREPARE))
-                    .padding([4, 10])
-                    .style(|_, status| theme::slice_plate(status))
-                    .on_press(Message::Slice)
+                button(
+                    text("Slice plate")
+                        .size(theme::BODY_SIZE)
+                        .color(theme::PREPARE)
+                )
+                .padding([4, 10])
+                .style(|_, status| theme::slice_plate(status))
+                .on_press(Message::Slice)
             )
             .style(|_| container::Style {
                 border: iced::Border {
@@ -37,10 +41,14 @@ impl crate::App {
                 ..container::Style::default()
             }),
             container(
-                button(text("Print plate").size(theme::BODY_SIZE).color(iced::Color::WHITE))
-                    .padding([4, 10])
-                    .style(|_, status| theme::print_plate(status))
-                    .on_press(Message::Send)
+                button(
+                    text("Print plate")
+                        .size(theme::BODY_SIZE)
+                        .color(iced::Color::WHITE)
+                )
+                .padding([4, 10])
+                .style(|_, status| theme::print_plate(status))
+                .on_press(Message::Send)
             )
             .style(|_| container::Style {
                 background: Some(iced::Background::Color(theme::PREPARE)),
@@ -55,10 +63,10 @@ impl crate::App {
         .spacing(6);
 
         row![tabs, Space::new().width(Fill), actions]
-        .spacing(8)
-        .padding(theme::HEADER_PAD)
-        .align_y(Alignment::Center)
-        .into()
+            .spacing(8)
+            .padding(theme::HEADER_PAD)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     fn quiet_tab(&self, label: &'static str, message: Message) -> Element<'_, Message> {
@@ -105,7 +113,11 @@ impl crate::App {
         .into()
     }
 
-    pub(crate) fn stub_page(&self, title: &'static str, body: &'static str) -> Element<'_, Message> {
+    pub(crate) fn stub_page(
+        &self,
+        title: &'static str,
+        body: &'static str,
+    ) -> Element<'_, Message> {
         container(
             column![
                 text(title).size(18).color(theme::TEXT),
@@ -123,10 +135,8 @@ impl crate::App {
     pub(crate) fn viewport_stage(&self) -> Element<'_, Message> {
         let viewport = shader(&self.scene).width(Fill).height(Fill);
         let overlays = self.viewport_overlays();
-        let stacked: Element<'_, Message> = stack![viewport, overlays]
-            .width(Fill)
-            .height(Fill)
-            .into();
+        let stacked: Element<'_, Message> =
+            stack![viewport, overlays].width(Fill).height(Fill).into();
         if self.workspace == Workspace::Prepare {
             column![
                 container(self.plater_toolbar())
@@ -159,11 +169,7 @@ impl crate::App {
         for toast in self.toasts.iter().rev().take(3) {
             bottom = bottom.push(text(toast).size(12).color(theme::TEXT));
         }
-        bottom = bottom.push(
-            text(self.plate_hint())
-                .size(11)
-                .color(theme::TEXT_MUTED),
-        );
+        bottom = bottom.push(text(self.plate_hint()).size(11).color(theme::TEXT_MUTED));
 
         let mut top = row![].spacing(8).align_y(Alignment::Center);
         if self.workspace == Workspace::Preview {

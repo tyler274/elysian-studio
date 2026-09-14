@@ -32,13 +32,9 @@ fn drive(app: &mut App, messages: impl IntoIterator<Item = Message>) {
 
 fn capture(app: &App, name: &str) -> (GuiSnapshot, Option<(u32, u32, Vec<u8>)>) {
     let snap = app.snapshot();
-    let png = app.screenshot_rgba().map(|rgba| {
-        (
-            WINDOW_SIZE.width as u32,
-            WINDOW_SIZE.height as u32,
-            rgba,
-        )
-    });
+    let png = app
+        .screenshot_rgba()
+        .map(|rgba| (WINDOW_SIZE.width as u32, WINDOW_SIZE.height as u32, rgba));
     if let Some((w, h, ref rgba)) = png {
         let dir = std::env::temp_dir().join("bambu-ui-gui");
         let _ = fs::create_dir_all(&dir);
@@ -96,7 +92,14 @@ fn assert_png(name: &str, rgba: &[u8], width: u32, height: u32) {
 }
 
 fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
-    for needle in ["Prepare", "Preview", "Slice plate", "AMS", "Quality", "Seam"] {
+    for needle in [
+        "Prepare",
+        "Preview",
+        "Slice plate",
+        "AMS",
+        "Quality",
+        "Seam",
+    ] {
         assert!(
             snap.labels.iter().any(|s| s == needle),
             "missing label {needle}"
@@ -123,7 +126,10 @@ fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
             "header tab fill {:?} missing",
             fill
         );
-        assert!(sidebar_is_width(px, 1200, 800), "sidebar width probe failed");
+        assert!(
+            sidebar_is_width(px, 1200, 800),
+            "sidebar width probe failed"
+        );
     }
 }
 
@@ -186,7 +192,14 @@ fn gui_chrome_prepare_preview_goldens() {
 fn gui_snapshot_labels_cover_reference_chrome() {
     let app = App::new_for_gui_test();
     let snap = app.snapshot();
-    for needle in ["Prepare", "Preview", "Slice plate", "AMS", "Quality", "Seam"] {
+    for needle in [
+        "Prepare",
+        "Preview",
+        "Slice plate",
+        "AMS",
+        "Quality",
+        "Seam",
+    ] {
         assert!(snap.labels.iter().any(|s| s == needle), "{needle}");
     }
     assert_eq!(snap.sidebar_width, 300);
