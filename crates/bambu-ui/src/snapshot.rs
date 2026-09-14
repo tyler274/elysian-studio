@@ -353,4 +353,13 @@ mod tests {
         assert_eq!((w, h), (2, 1));
         assert_eq!(rgba, vec![1, 2, 3, 255, 4, 5, 6, 255]);
     }
+
+    #[test]
+    fn program_icon_is_square_rgba() {
+        let (w, h, rgba) = decode_png(include_bytes!("../assets/icon.png")).expect("icon png");
+        assert_eq!(w, h, "icon must be square");
+        assert!(w >= 32);
+        assert_eq!(rgba.len(), (w as usize) * (h as usize) * 4);
+        iced::window::icon::from_rgba(rgba, w, h).expect("window icon");
+    }
 }

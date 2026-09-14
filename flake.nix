@@ -168,6 +168,12 @@
                   "bambu-vmp-dump"
                 ];
                 doCheck = false;
+                postInstall = ''
+                  install -Dm644 ${./resources/bambu-studio-rs.desktop} \
+                    "$out/share/applications/bambu-studio-rs.desktop"
+                  mkdir -p "$out/share/icons"
+                  cp -R ${./resources/icons}/hicolor "$out/share/icons/hicolor"
+                '';
               }
             )
           );

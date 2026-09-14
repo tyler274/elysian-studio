@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Bambu Studio
+GenericName=3D Printing Slicer
+Comment=Bambu Studio (Rust rewrite)
+Exec=bambu-ui
+Icon=bambu-studio-rs
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;
+StartupWMClass=bambu-studio-rs
+Keywords=slicer;3D;printing;bambu;

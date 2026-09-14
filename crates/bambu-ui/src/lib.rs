@@ -81,6 +81,16 @@ pub fn run() -> iced::Result {
     tracing::info!("GPU adapter: {} backend={}", report.name, report.backend);
 
     let adapter = format!("{} / {}", report.backend, report.name);
+    let mut window = window::Settings {
+        size: WINDOW_SIZE,
+        min_size: Some(WINDOW_MIN),
+        icon: window_icon(),
+        ..window::Settings::default()
+    };
+    #[cfg(target_os = "linux")]
+    {
+        window.platform_specific.application_id = String::from("bambu-studio-rs");
+    }
     iced::application(move || App::new(adapter.clone()), App::update, App::view)
         .subscription(App::subscription)
         .title("Bambu Studio")
@@ -91,13 +101,14 @@ pub fn run() -> iced::Result {
             default_text_size: iced::Pixels(13.0),
             ..Settings::default()
         })
-        .window(window::Settings {
-            size: WINDOW_SIZE,
-            min_size: Some(WINDOW_MIN),
-            ..window::Settings::default()
-        })
+        .window(window)
         .centered()
         .run()
+}
+
+fn window_icon() -> Option<window::Icon> {
+    let (width, height, rgba) = decode_png(include_bytes!("../assets/icon.png")).ok()?;
+    window::icon::from_rgba(rgba, width, height).ok()
 }
 
 fn reexec_with_vulkan_if_needed() {
