@@ -93,9 +93,11 @@ fn assert_png(name: &str, rgba: &[u8], width: u32, height: u32) {
 
 fn assert_structure(snap: &GuiSnapshot, rgba: Option<&[u8]>, prepare: bool) {
     for needle in [
+        "Home",
         "Prepare",
         "Preview",
         "Slice plate",
+        "Print plate",
         "AMS",
         "Quality",
         "Seam",
@@ -193,9 +195,11 @@ fn gui_snapshot_labels_cover_reference_chrome() {
     let app = App::new_for_gui_test();
     let snap = app.snapshot();
     for needle in [
+        "Home",
         "Prepare",
         "Preview",
         "Slice plate",
+        "Print plate",
         "AMS",
         "Quality",
         "Seam",

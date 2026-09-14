@@ -1,4 +1,4 @@
-//! Prepare / Preview left panes. `App` / `Message` stay in the crate root.
+//! Prepare / Preview right panes. `App` / `Message` stay in the crate root.
 
 use bambu_config::{SeamPosition, TopOneWallType};
 use iced::widget::{

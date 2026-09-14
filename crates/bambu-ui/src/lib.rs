@@ -204,6 +204,11 @@ pub struct App {
     process_objects: bool,
     fps: f32,
     toasts: Vec<String>,
+    slice_menu_open: bool,
+    print_menu_open: bool,
+    slice_all: bool,
+    print_export: bool,
+    recent_models: Vec<PathBuf>,
 }
 
 #[allow(private_interfaces)]
@@ -212,9 +217,14 @@ pub enum Message {
     Viewport(ViewportEvent),
     Workspace(Workspace),
     OpenModel,
+    OpenRecent(PathBuf),
     MeshPicked(Option<PathBuf>),
     ModelLoaded(Result<Box<LoadedModel>, String>),
     Slice,
+    ToggleSliceMenu,
+    SliceAll(bool),
+    TogglePrintMenu,
+    PrintExport(bool),
     Sliced(Result<Box<SliceOutcome>, String>),
     ResetCamera,
     ExtractKeys,
@@ -422,6 +432,7 @@ impl std::fmt::Display for SendVia {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Workspace {
+    Home,
     #[default]
     Prepare,
     Preview,
@@ -503,6 +514,7 @@ struct ExtractUi {
 #[derive(Debug, Clone)]
 struct LoadedModel {
     label: String,
+    path: PathBuf,
     model: Model,
     apply_settings: bool,
 }
@@ -636,6 +648,11 @@ impl App {
             process_objects: false,
             fps: 60.0,
             toasts: vec!["Tip: right-drag to orbit, scroll to zoom.".into()],
+            slice_menu_open: false,
+            print_menu_open: false,
+            slice_all: false,
+            print_export: false,
+            recent_models: Vec::new(),
         };
         app.reload_user_filaments();
         app.catalog = load_default_catalog();
@@ -764,6 +781,8 @@ impl App {
             Message::Viewport(event) => self.handle_viewport(event),
             Message::Workspace(workspace) => {
                 self.workspace = workspace;
+                self.slice_menu_open = false;
+                self.print_menu_open = false;
                 self.sync_keep_solid();
             }
             Message::OpenModel => {
@@ -772,6 +791,12 @@ impl App {
                     return Task::none();
                 }
                 return Task::perform(pick_mesh_path(), Message::MeshPicked);
+            }
+            Message::OpenRecent(path) => {
+                if !self.begin_work("loading model…") {
+                    return Task::none();
+                }
+                return offload(move || load_model_job(path, true), Message::ModelLoaded);
             }
             Message::MeshPicked(None) => {}
             Message::MeshPicked(Some(path)) => {
@@ -787,7 +812,29 @@ impl App {
                     Err(err) => self.status = format!("open failed: {err}"),
                 }
             }
-            Message::Slice => return self.slice_current(),
+            Message::ToggleSliceMenu => {
+                self.slice_menu_open = !self.slice_menu_open;
+                self.print_menu_open = false;
+            }
+            Message::SliceAll(all) => {
+                self.slice_all = all;
+                self.slice_menu_open = false;
+            }
+            Message::TogglePrintMenu => {
+                self.print_menu_open = !self.print_menu_open;
+                self.slice_menu_open = false;
+            }
+            Message::PrintExport(export) => {
+                self.print_export = export;
+                self.print_menu_open = false;
+            }
+            Message::Slice => {
+                if self.slice_all {
+                    self.set_plate(0);
+                    self.push_toast("slice all: plate 0".into());
+                }
+                return self.slice_current();
+            }
             Message::Sliced(result) => {
                 self.busy = false;
                 match result {
@@ -1566,6 +1613,7 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let body: Element<'_, Message> = match self.workspace {
+            Workspace::Home => self.home_page(),
             Workspace::Device => self.device_page(),
             Workspace::Filament => self.inventory_page(),
             Workspace::Project => self.stub_page(
@@ -1577,14 +1625,14 @@ impl App {
                 "Calibration wizard lives in C++ Studio — stub pane here.",
             ),
             Workspace::Prepare | Workspace::Preview => {
-                let left = container(match self.workspace {
+                let sidebar = container(match self.workspace {
                     Workspace::Preview => self.preview_sidebar(),
                     _ => self.prepare_sidebar(),
                 })
                 .style(|_| theme::sidebar_pane())
                 .width(SIDEBAR_WIDTH)
                 .height(Fill);
-                row![left, self.viewport_stage()].into()
+                row![self.viewport_stage(), sidebar].into()
             }
         };
         column![
@@ -1986,7 +2034,18 @@ impl App {
             || !self.scene.paint_overlay.is_empty();
     }
 
+    fn remember_recent(&mut self, path: PathBuf) {
+        self.recent_models.retain(|p| p != &path);
+        self.recent_models.insert(0, path);
+        self.recent_models.truncate(8);
+    }
+
     fn apply_loaded_model(&mut self, mut loaded: LoadedModel) {
+        self.remember_recent(loaded.path.clone());
+        if self.workspace == Workspace::Home {
+            self.workspace = Workspace::Prepare;
+            self.sync_keep_solid();
+        }
         if loaded.apply_settings {
             if let Some(s) = loaded.model.settings.clone() {
                 self.settings = s;
@@ -2863,6 +2922,7 @@ fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel
     };
     Ok(Box::new(LoadedModel {
         label,
+        path,
         model,
         apply_settings,
     }))

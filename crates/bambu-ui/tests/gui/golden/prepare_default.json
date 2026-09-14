@@ -24,9 +24,11 @@
   "first_layer_height_mm": 0.2,
   "dual_nozzle_overlay": true,
   "labels": [
+    "Home",
     "Prepare",
     "Preview",
     "Slice plate",
+    "Print plate",
     "AMS",
     "Quality",
     "Seam"

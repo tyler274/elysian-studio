@@ -7,9 +7,10 @@ use bambu_model::{
     auto_orient_instance, drop_instance_to_bed, lay_instance_on_normal, Instance, Model,
 };
 use glam::Vec3;
-use iced::widget::{button, checkbox, column, pick_list, row, text, text_input};
+use iced::widget::{button, checkbox, column, container, pick_list, row, text, text_input};
 use iced::{Element, Fill};
 
+use crate::theme;
 use crate::Message;
 
 /// Studio gizmo coordinate dropdown (`World` / `Object` / `Part`).
@@ -48,47 +49,53 @@ pub(crate) enum XformField {
 impl crate::App {
     pub(crate) fn plater_toolbar(&self) -> Element<'_, Message> {
         let tool = self.scene.tool;
-        let btn = |label: &'static str, t: PlaterTool| {
-            let caption = if tool == t {
-                format!("[{label}]")
+        let chip = |label: &'static str, t: PlaterTool| {
+            let active = tool == t;
+            let color = if active {
+                iced::Color::WHITE
             } else {
-                label.to_string()
+                theme::TEXT_MUTED
             };
-            button(text(caption).size(12))
+            container(
+                button(text(label).size(12).color(color))
+                    .padding([3, 8])
+                    .style(move |_, status| theme::process_tab(active, status))
+                    .on_press(Message::PlaterTool(t)),
+            )
+            .style(move |_| {
+                if active {
+                    container::Style {
+                        background: Some(iced::Background::Color(theme::PREPARE)),
+                        border: iced::Border {
+                            radius: theme::RADIUS.into(),
+                            width: 0.0,
+                            color: iced::Color::TRANSPARENT,
+                        },
+                        ..container::Style::default()
+                    }
+                } else {
+                    container::Style::default()
+                }
+            })
+        };
+        let quiet = |label: &'static str, message: Message| {
+            button(text(label).size(12))
                 .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::PlaterTool(t))
+                .style(|_, status| theme::quiet(status))
+                .on_press(message)
         };
         row![
-            btn("Select", PlaterTool::Orbit),
-            btn("Move", PlaterTool::Move),
-            btn("Rotate", PlaterTool::Rotate),
-            btn("Scale", PlaterTool::Scale),
-            btn("Lay on face", PlaterTool::LayOnFace),
-            button(text("Arrange").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::Arrange),
-            button(text("Orient").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::AutoOrient),
-            button(text("Mirror X").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::Mirror(0)),
-            button(text("Mirror Y").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::Mirror(1)),
-            button(text("Mirror Z").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::Mirror(2)),
-            button(text("Rot 90°").size(12))
-                .padding([3, 8])
-                .style(|_, status| crate::theme::quiet(status))
-                .on_press(Message::Rotate90),
+            chip("Select", PlaterTool::Orbit),
+            chip("Move", PlaterTool::Move),
+            chip("Rotate", PlaterTool::Rotate),
+            chip("Scale", PlaterTool::Scale),
+            chip("Lay on face", PlaterTool::LayOnFace),
+            quiet("Arrange", Message::Arrange),
+            quiet("Orient", Message::AutoOrient),
+            quiet("Mirror X", Message::Mirror(0)),
+            quiet("Mirror Y", Message::Mirror(1)),
+            quiet("Mirror Z", Message::Mirror(2)),
+            quiet("Rot 90°", Message::Rotate90),
         ]
         .spacing(4)
         .padding([4, 8])

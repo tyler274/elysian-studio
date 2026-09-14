@@ -75,9 +75,11 @@ impl App {
             first_layer_height_mm: self.settings.first_layer_height_mm,
             dual_nozzle_overlay: self.show_left_nozzle_only(),
             labels: vec![
+                "Home".into(),
                 "Prepare".into(),
                 "Preview".into(),
                 "Slice plate".into(),
+                "Print plate".into(),
                 "AMS".into(),
                 "Quality".into(),
                 "Seam".into(),
@@ -127,6 +129,7 @@ impl App {
 impl Workspace {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Home => "home",
             Self::Prepare => "prepare",
             Self::Preview => "preview",
             Self::Device => "device",
@@ -246,7 +249,14 @@ pub fn sidebar_is_width(rgba: &[u8], width: u32, height: u32) -> bool {
     let mut hits = 0u32;
     let mid = (height as usize / 2).min(height.saturating_sub(1) as usize);
     for y in mid.saturating_sub(40)..mid.saturating_add(40).min(height as usize) {
-        for x in [8usize, 16, 24] {
+        for x in [
+            w.saturating_sub(8),
+            w.saturating_sub(16),
+            w.saturating_sub(24),
+        ] {
+            if x >= w {
+                continue;
+            }
             let i = (y * w + x) * 4;
             if let Some(px) = rgba.get(i..i + 4) {
                 if color_near(px, theme::SIDEBAR, 80)
