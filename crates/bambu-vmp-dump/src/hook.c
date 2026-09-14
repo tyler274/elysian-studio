@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/ptrace.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -29,6 +30,8 @@ static void *(*real_bio_new_mem_buf)(const void *, int);
 
 static char g_key_out[512];
 static char g_rand_out[512];
+static char g_wrap_out[512];
+static char g_secret_out[512];
 static char g_self_so[512];
 static __thread int g_reent;
 static pthread_mutex_t g_track_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -36,6 +39,40 @@ static struct {
     void *p;
     size_t n;
 } g_track[2048];
+static struct {
+    void *p;
+    size_t n;
+} g_secret_track[256];
+static unsigned g_secret_i;
+
+static void track_secret_add(void *p, size_t n) {
+    if (!p || n < 27 || n > 96 || g_secret_out[0] == '\0') {
+        return;
+    }
+    pthread_mutex_lock(&g_track_mu);
+    unsigned i = g_secret_i++ % 256;
+    g_secret_track[i].p = p;
+    g_secret_track[i].n = n;
+    pthread_mutex_unlock(&g_track_mu);
+}
+
+static size_t track_secret_take(void *p) {
+    size_t n = 0;
+    if (!p) {
+        return 0;
+    }
+    pthread_mutex_lock(&g_track_mu);
+    for (int i = 0; i < 256; i++) {
+        if (g_secret_track[i].p == p) {
+            n = g_secret_track[i].n;
+            g_secret_track[i].p = NULL;
+            g_secret_track[i].n = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_track_mu);
+    return n;
+}
 
 static void track_add(void *p, size_t n) {
     if (!p || n < 200 || n > 8192) {
@@ -88,6 +125,47 @@ static void strip_env_ld_preload(void) {
     }
 }
 
+static void write_once(const char *path, const void *buf, size_t n) {
+    if (!path || path[0] == '\0' || !buf || n == 0) {
+        return;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
+        return;
+    }
+    ssize_t w = write(fd, buf, n);
+    (void)w;
+    close(fd);
+}
+
+static void capture_secret(const void *buf, size_t n) {
+    if (!buf || n < 27 || n > 256 || g_secret_out[0] == '\0' || g_reent) {
+        return;
+    }
+    const char *p = memmem(buf, n, "GLOF", 4);
+    if (!p) {
+        return;
+    }
+    size_t left = n - (size_t)(p - (const char *)buf);
+    size_t i = 0;
+    while (i < left && p[i] >= 0x21 && p[i] <= 0x7e && p[i] != '/') {
+        i++;
+    }
+    if (i < 40 || i > 64) {
+        return;
+    }
+    int dash = 0;
+    for (size_t j = 0; j < i; j++) {
+        if (p[j] == '-') {
+            dash = 1;
+            break;
+        }
+    }
+    if (dash) {
+        write_once(g_secret_out, p, i);
+    }
+}
+
 static void capture_pem(const void *buf, size_t n) {
     if (!buf || n < 40 || n > 16 * 1024 || g_reent) {
         return;
@@ -100,6 +178,35 @@ static void capture_pem(const void *buf, size_t n) {
         hdr = 31;
     }
     if (!p) {
+        p = memmem(buf, n, "-----BEGIN PUBLIC KEY-----", 26);
+        hdr = 26;
+        if (p && g_wrap_out[0]) {
+            const char *end = memmem(p, n - (size_t)(p - (const char *)buf), "-----END ", 9);
+            if (end) {
+                const char *nl = memchr(end, '\n', (const char *)buf + n - end);
+                size_t len = (size_t)((nl ? nl + 1 : end + 32) - p);
+                if (len > n - (size_t)(p - (const char *)buf)) {
+                    len = n - (size_t)(p - (const char *)buf);
+                }
+                write_once(g_wrap_out, p, len);
+            }
+            g_reent = 0;
+            return;
+        }
+        p = memmem(buf, n, "-----BEGIN RSA PUBLIC KEY-----", 30);
+        if (p && g_wrap_out[0]) {
+            const char *end = memmem(p, n - (size_t)(p - (const char *)buf), "-----END ", 9);
+            if (end) {
+                const char *nl = memchr(end, '\n', (const char *)buf + n - end);
+                size_t len = (size_t)((nl ? nl + 1 : end + 32) - p);
+                if (len > n - (size_t)(p - (const char *)buf)) {
+                    len = n - (size_t)(p - (const char *)buf);
+                }
+                write_once(g_wrap_out, p, len);
+            }
+            g_reent = 0;
+            return;
+        }
         g_reent = 0;
         return;
     }
@@ -130,14 +237,14 @@ static void capture_pem(const void *buf, size_t n) {
 }
 
 static void capture_rand(const void *buf, size_t n) {
-    if (!buf || (n != 16 && n != 32) || g_rand_out[0] == '\0' || g_reent) {
+    if (!buf || n < 12 || n > 64 || g_rand_out[0] == '\0' || g_reent) {
         return;
     }
     int fd = open(g_rand_out, O_WRONLY | O_CREAT | O_APPEND, 0600);
     if (fd < 0) {
         return;
     }
-    unsigned char rec[33];
+    unsigned char rec[65];
     rec[0] = (unsigned char)n;
     memcpy(rec + 1, buf, n);
     ssize_t w = write(fd, rec, n + 1);
@@ -234,6 +341,14 @@ __attribute__((constructor)) static void hook_init(void) {
     if (r) {
         snprintf(g_rand_out, sizeof(g_rand_out), "%s", r);
     }
+    const char *w = real_getenv ? real_getenv("BAMBU_VMP_WRAP_OUT") : NULL;
+    if (w) {
+        snprintf(g_wrap_out, sizeof(g_wrap_out), "%s", w);
+    }
+    const char *s = real_getenv ? real_getenv("BAMBU_VMP_SECRET_OUT") : NULL;
+    if (s) {
+        snprintf(g_secret_out, sizeof(g_secret_out), "%s", s);
+    }
     Dl_info info;
     if (dladdr((void *)hook_init, &info) && info.dli_fname) {
         const char *slash = strrchr(info.dli_fname, '/');
@@ -266,6 +381,7 @@ void *malloc(size_t n) {
     }
     void *p = real_malloc ? real_malloc(n) : NULL;
     track_add(p, n);
+    track_secret_add(p, n);
     return p;
 }
 
@@ -273,11 +389,23 @@ void *realloc(void *ptr, size_t n) {
     if (!real_realloc) {
         real_realloc = must_dlsym("realloc");
     }
-    track_take(ptr);
+    size_t old = track_take(ptr);
+    size_t olds = track_secret_take(ptr);
+    if (old) {
+        capture_pem(ptr, old);
+        capture_secret(ptr, old);
+    }
+    if (olds) {
+        capture_secret(ptr, olds);
+    }
     void *p = real_realloc ? real_realloc(ptr, n) : NULL;
+    track_add(p, n);
+    track_secret_add(p, n);
     if (p && n >= 200 && n <= 8192) {
         capture_pem(p, n);
-        track_add(p, n);
+    }
+    if (p && n >= 27 && n <= 96) {
+        capture_secret(p, n);
     }
     return p;
 }
@@ -287,14 +415,21 @@ void *calloc(size_t a, size_t b) {
         real_calloc = must_dlsym("calloc");
     }
     void *p = real_calloc ? real_calloc(a, b) : NULL;
-    track_add(p, a * b);
+    size_t n = a * b;
+    track_add(p, n);
+    track_secret_add(p, n);
     return p;
 }
 
 void free(void *ptr) {
     size_t n = track_take(ptr);
+    size_t sn = track_secret_take(ptr);
     if (n) {
         capture_pem(ptr, n);
+        capture_secret(ptr, n);
+    }
+    if (sn) {
+        capture_secret(ptr, sn);
     }
     if (!real_free) {
         real_free = must_dlsym("free");
@@ -412,9 +547,31 @@ ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
     return n;
 }
 
+long syscall(long n, ...) {
+    static long (*real)(long, ...);
+    if (!real) {
+        real = must_dlsym("syscall");
+    }
+    va_list ap;
+    va_start(ap, n);
+    long a1 = va_arg(ap, long);
+    long a2 = va_arg(ap, long);
+    long a3 = va_arg(ap, long);
+    long a4 = va_arg(ap, long);
+    long a5 = va_arg(ap, long);
+    long a6 = va_arg(ap, long);
+    va_end(ap);
+    long rc = real ? real(n, a1, a2, a3, a4, a5, a6) : -1;
+    if (n == SYS_getrandom && rc > 0) {
+        capture_rand((void *)a1, (size_t)rc);
+    }
+    return rc;
+}
+
 void *BIO_new_mem_buf(const void *buf, int len) {
     size_t n = len < 0 && buf ? strlen(buf) : (size_t)(len < 0 ? 0 : len);
     capture_pem(buf, n);
+    capture_secret(buf, n);
     if (!real_bio_new_mem_buf) {
         real_bio_new_mem_buf = must_dlsym("BIO_new_mem_buf");
     }
@@ -422,4 +579,119 @@ void *BIO_new_mem_buf(const void *buf, int len) {
         return NULL;
     }
     return real_bio_new_mem_buf(buf, len);
+}
+
+static void *crypto_sym(const char *name) {
+    void *s = dlsym(RTLD_NEXT, name);
+    if (s) {
+        return s;
+    }
+    static void *crypto;
+    if (!crypto) {
+        crypto = dlopen("libcrypto.so.3", RTLD_NOW | RTLD_NOLOAD);
+        if (!crypto) {
+            crypto = dlopen("libcrypto.so.3", RTLD_NOW);
+        }
+    }
+    return crypto ? dlsym(crypto, name) : NULL;
+}
+
+static void capture_wrap_der(const void *der, int n) {
+    if (der && n >= 270 && n <= 400 && g_wrap_out[0]) {
+        write_once(g_wrap_out, der, (size_t)n);
+    }
+}
+
+int RAND_bytes(unsigned char *buf, int num) {
+    static int (*real)(unsigned char *, int);
+    if (!real) {
+        real = crypto_sym("RAND_bytes");
+    }
+    int rc = real ? real(buf, num) : -1;
+    if (rc == 1 && num > 0) {
+        capture_rand(buf, (size_t)num);
+    }
+    return rc;
+}
+
+int RAND_priv_bytes(unsigned char *buf, int num) {
+    static int (*real)(unsigned char *, int);
+    if (!real) {
+        real = crypto_sym("RAND_priv_bytes");
+    }
+    int rc = real ? real(buf, num) : -1;
+    if (rc == 1 && num > 0) {
+        capture_rand(buf, (size_t)num);
+    }
+    return rc;
+}
+
+int getentropy(void *buf, size_t buflen) {
+    static int (*real)(void *, size_t);
+    if (!real) {
+        real = must_dlsym("getentropy");
+    }
+    int rc = real ? real(buf, buflen) : -1;
+    if (rc == 0) {
+        capture_rand(buf, buflen);
+    }
+    return rc;
+}
+
+int RSA_public_encrypt(int flen, const unsigned char *from, unsigned char *to, void *rsa, int padding) {
+    static int (*real)(int, const unsigned char *, unsigned char *, void *, int);
+    static int (*i2d)(void *, unsigned char **);
+    if (!real) {
+        real = crypto_sym("RSA_public_encrypt");
+    }
+    int rc = real ? real(flen, from, to, rsa, padding) : -1;
+    if (flen == 32 && rc == 256 && padding == 1) {
+        capture_rand(from, 32);
+        if (!i2d) {
+            i2d = crypto_sym("i2d_RSA_PUBKEY");
+        }
+        if (i2d && rsa) {
+            unsigned char *der = NULL;
+            int n = i2d(rsa, &der);
+            capture_wrap_der(der, n);
+        }
+    }
+    return rc;
+}
+
+int EVP_PKEY_encrypt(void *ctx, unsigned char *out, size_t *outlen, const unsigned char *in, size_t inlen) {
+    static int (*real)(void *, unsigned char *, size_t *, const unsigned char *, size_t);
+    static void *(*get0)(const void *);
+    static int (*i2d)(const void *, unsigned char **);
+    if (!real) {
+        real = crypto_sym("EVP_PKEY_encrypt");
+    }
+    int rc = real ? real(ctx, out, outlen, in, inlen) : 0;
+    if (rc == 1 && out && inlen == 32 && outlen && *outlen == 256) {
+        capture_rand(in, 32);
+        if (!get0) {
+            get0 = crypto_sym("EVP_PKEY_CTX_get0_pkey");
+        }
+        if (!i2d) {
+            i2d = crypto_sym("i2d_PUBKEY");
+        }
+        void *pkey = get0 && ctx ? get0(ctx) : NULL;
+        if (i2d && pkey) {
+            unsigned char *der = NULL;
+            int n = i2d(pkey, &der);
+            capture_wrap_der(der, n);
+        }
+    }
+    return rc;
+}
+
+int EVP_EncryptUpdate(void *ctx, unsigned char *out, int *outl, const unsigned char *in, int inl) {
+    static int (*real)(void *, unsigned char *, int *, const unsigned char *, int);
+    if (!real) {
+        real = crypto_sym("EVP_EncryptUpdate");
+    }
+    if (inl >= 40 && inl <= 64) {
+        capture_secret(in, (size_t)inl);
+    }
+    return real ? real(ctx, out, outl, in, inl) : 0;
 }

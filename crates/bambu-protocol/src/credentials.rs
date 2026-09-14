@@ -21,6 +21,8 @@ pub struct SlicerCredentials {
     pub cert_pem: Option<String>,
     pub key_pem: Option<String>,
     pub crl_pem: Option<String>,
+    pub client_auth_secret: Option<Vec<u8>>,
+    pub server_wrap_pem: Option<String>,
 }
 
 impl SlicerCredentials {
@@ -40,6 +42,16 @@ impl SlicerCredentials {
             .as_ref()
             .is_some_and(|s| s.contains("BEGIN CERTIFICATE"))
             && self.crl_pem.as_ref().is_some_and(|s| s.contains("BEGIN"))
+    }
+
+    pub fn has_bootstrap(&self) -> bool {
+        self.client_auth_secret
+            .as_ref()
+            .is_some_and(|s| s.len() >= 40)
+            && self
+                .server_wrap_pem
+                .as_ref()
+                .is_some_and(|s| s.contains("BEGIN"))
     }
 
     pub fn status_lines(&self) -> Vec<String> {
@@ -84,6 +96,30 @@ impl SlicerCredentials {
                     "needs cert + CRL"
                 }
             ),
+            format!(
+                "client_auth_secret.txt: {}",
+                if self
+                    .client_auth_secret
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    "present"
+                } else {
+                    "missing"
+                }
+            ),
+            format!(
+                "server_wrap_key.pem: {}",
+                if self
+                    .server_wrap_pem
+                    .as_ref()
+                    .is_some_and(|s| s.contains("BEGIN"))
+                {
+                    "present"
+                } else {
+                    "missing"
+                }
+            ),
         ]
     }
 }
@@ -111,6 +147,8 @@ pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<SlicerCredentials, Credent
         cert_pem: read_optional(dir.join("slicer_cert.pem"))?,
         key_pem: read_optional(dir.join("slicer_key.pem"))?,
         crl_pem: read_optional(dir.join("slicer_crl.pem"))?,
+        client_auth_secret: read_optional_bytes(dir.join("client_auth_secret.txt"))?,
+        server_wrap_pem: read_optional(dir.join("server_wrap_key.pem"))?,
     })
 }
 
@@ -129,18 +167,45 @@ pub fn write_to_dir(
     if let Some(pem) = &creds.crl_pem {
         write_secret_pem(dir.join("slicer_crl.pem"), pem)?;
     }
+    if let Some(secret) = &creds.client_auth_secret {
+        write_secret_bytes(dir.join("client_auth_secret.txt"), secret)?;
+    }
+    if let Some(pem) = &creds.server_wrap_pem {
+        write_secret_pem(dir.join("server_wrap_key.pem"), pem)?;
+    }
     Ok(dir.to_path_buf())
 }
 
 fn write_secret_pem(path: impl AsRef<Path>, pem: &str) -> Result<(), CredentialError> {
+    write_secret_bytes(path, pem.as_bytes())
+}
+
+fn write_secret_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<(), CredentialError> {
     let path = path.as_ref();
-    std::fs::write(path, pem)?;
+    std::fs::write(path, bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+fn read_optional_bytes(path: PathBuf) -> Result<Option<Vec<u8>>, CredentialError> {
+    match std::fs::read(&path) {
+        Ok(mut s) if !s.is_empty() => {
+            if s.ends_with(b"\n") {
+                s.pop();
+            }
+            if s.ends_with(b"\r") {
+                s.pop();
+            }
+            Ok(Some(s).filter(|b| !b.is_empty()))
+        }
+        Ok(_) => Ok(None),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 pub fn device_cert_path(dir: impl AsRef<Path>, serial: &str) -> PathBuf {
@@ -227,6 +292,12 @@ pub fn import_from_known_locations() -> Result<SlicerCredentials, CredentialErro
         }
         if merged.crl_pem.is_none() {
             merged.crl_pem = got.crl_pem;
+        }
+        if merged.client_auth_secret.is_none() {
+            merged.client_auth_secret = got.client_auth_secret;
+        }
+        if merged.server_wrap_pem.is_none() {
+            merged.server_wrap_pem = got.server_wrap_pem;
         }
     }
     Ok(merged)

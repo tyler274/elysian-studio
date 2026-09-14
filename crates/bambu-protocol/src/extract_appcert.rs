@@ -235,6 +235,7 @@ pub fn harvest_appcert(data: &[u8]) -> Option<SlicerCredentials> {
         cert_pem: cert,
         key_pem: Some(key),
         crl_pem: crl,
+        ..SlicerCredentials::default()
     })
 }
 
@@ -416,6 +417,7 @@ fn creds_from_appcert_json(body: &[u8]) -> Result<SlicerCredentials, CredentialE
         cert_pem: Some(cert),
         key_pem: Some(key),
         crl_pem: crl,
+        ..SlicerCredentials::default()
     })
 }
 
@@ -438,7 +440,7 @@ fn json_text_or_join(v: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
-fn b64decode_any(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn b64decode_any(s: &str) -> Option<Vec<u8>> {
     let t = s.trim().replace('-', "+").replace('_', "/");
     let pad = (4 - t.len() % 4) % 4;
     let t = t + &"=".repeat(pad);

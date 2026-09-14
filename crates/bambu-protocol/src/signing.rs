@@ -227,6 +227,7 @@ mod tests {
             cert_pem: Some(include_str!("../tests/fixtures/test_slicer_cert.pem").into()),
             key_pem: Some(include_str!("../tests/fixtures/test_slicer_key.pem").into()),
             crl_pem: None,
+            ..SlicerCredentials::default()
         }
     }
 

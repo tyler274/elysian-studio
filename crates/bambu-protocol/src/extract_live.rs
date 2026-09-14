@@ -99,11 +99,21 @@ fn extract_live_linux(
     prepare_sandbox(&sandbox, &plugin_file, &dest, report)?;
     let hook_key = sandbox.join(".vmp-hook-slicer-key.pem");
     let hook_rand = sandbox.join(".vmp-hook.rand");
+    let hook_wrap = sandbox.join(".vmp-hook-wrap.pem");
+    let hook_secret = sandbox.join(".vmp-hook-secret.txt");
     report.notes.push(format!(
         "sandbox HOME {} (official Studio, no dlopen in this process)",
         sandbox.display()
     ));
-    let mut child = spawn_studio(&studio_bin, &sandbox, &hook_key, &hook_rand, report)?;
+    let mut child = spawn_studio(
+        &studio_bin,
+        &sandbox,
+        &hook_key,
+        &hook_rand,
+        &hook_wrap,
+        &hook_secret,
+        report,
+    )?;
     let seed_deadline = Instant::now() + timeout;
     let interactive_deadline = seed_deadline + timeout;
     let mut asked_login = false;
@@ -145,6 +155,26 @@ fn extract_live_linux(
                     report
                         .notes
                         .push("live: captured private key from OpenSSL/malloc hook".into());
+                }
+            }
+        }
+        if creds.client_auth_secret.is_none() {
+            if let Ok(raw) = fs::read(&hook_secret) {
+                if raw.starts_with(b"GLOF") && raw.len() >= 40 {
+                    creds.client_auth_secret = Some(raw);
+                    report
+                        .notes
+                        .push("live: captured client_auth_secret from in-process hook".into());
+                }
+            }
+        }
+        if creds.server_wrap_pem.is_none() {
+            if let Ok(raw) = fs::read(&hook_wrap) {
+                if let Some(pem) = crate::extract_bootstrap::wrap_bytes_to_pem(&raw) {
+                    creds.server_wrap_pem = Some(pem);
+                    report
+                        .notes
+                        .push("live: captured server_wrap_key from in-process hook".into());
                 }
             }
         }
@@ -287,6 +317,8 @@ fn spawn_studio(
     sandbox: &Path,
     hook_key: &Path,
     hook_rand: &Path,
+    hook_wrap: &Path,
+    hook_secret: &Path,
     report: &mut ExtractReport,
 ) -> Result<Child, CredentialError> {
     let hook = crate::extract_unpack::find_vmp_hook();
@@ -342,7 +374,9 @@ fn spawn_studio(
         cmd
     };
     cmd.env("BAMBU_VMP_KEY_OUT", hook_key)
-        .env("BAMBU_VMP_RAND_OUT", hook_rand);
+        .env("BAMBU_VMP_RAND_OUT", hook_rand)
+        .env("BAMBU_VMP_WRAP_OUT", hook_wrap)
+        .env("BAMBU_VMP_SECRET_OUT", hook_secret);
     if let Some(ref hook) = hook {
         report
             .notes
@@ -566,6 +600,11 @@ fn harvest_range(
         buf.truncate(n);
         let mut combined = carry;
         combined.extend_from_slice(&buf);
+        if creds.client_auth_secret.is_none() || creds.server_wrap_pem.is_none() {
+            if let Some(found) = crate::extract_bootstrap::harvest_bootstrap(&combined, &[]) {
+                merge_creds(creds, found);
+            }
+        }
         if scan_der {
             if creds.key_pem.is_none() {
                 if let Some(found) = crate::extract_appcert::harvest_appcert(&combined) {
@@ -609,6 +648,8 @@ pub fn validate_creds(creds: &SlicerCredentials) -> SlicerCredentials {
             out.crl_pem = Some(crl.clone());
         }
     }
+    out.client_auth_secret = creds.client_auth_secret.clone();
+    out.server_wrap_pem = creds.server_wrap_pem.clone();
     out
 }
 

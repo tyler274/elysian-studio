@@ -51,11 +51,15 @@ pub fn extract_unpack(
     ));
     let key_out = tmp.with_extension("key.pem");
     let rand_out = tmp.with_extension("rand");
+    let wrap_out = tmp.with_extension("wrap.pem");
+    let secret_out = tmp.with_extension("secret.txt");
     let mut cmd = Command::new(&helper);
     cmd.arg(&plugin)
         .arg(&tmp)
         .env("BAMBU_VMP_KEY_OUT", &key_out)
         .env("BAMBU_VMP_RAND_OUT", &rand_out)
+        .env("BAMBU_VMP_WRAP_OUT", &wrap_out)
+        .env("BAMBU_VMP_SECRET_OUT", &secret_out)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -85,6 +89,8 @@ pub fn extract_unpack(
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(&key_out);
                 let _ = std::fs::remove_file(&rand_out);
+                let _ = std::fs::remove_file(&wrap_out);
+                let _ = std::fs::remove_file(&secret_out);
                 return Ok(());
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
@@ -93,6 +99,8 @@ pub fn extract_unpack(
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(&key_out);
                 let _ = std::fs::remove_file(&rand_out);
+                let _ = std::fs::remove_file(&wrap_out);
+                let _ = std::fs::remove_file(&secret_out);
                 return Ok(());
             }
         }
@@ -113,6 +121,8 @@ pub fn extract_unpack(
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&key_out);
         let _ = std::fs::remove_file(&rand_out);
+        let _ = std::fs::remove_file(&wrap_out);
+        let _ = std::fs::remove_file(&secret_out);
         return Ok(());
     }
     let bytes = match std::fs::read(&tmp) {
@@ -121,6 +131,11 @@ pub fn extract_unpack(
             report
                 .notes
                 .push(format!("unpack: could not read dump: {err}"));
+            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(&key_out);
+            let _ = std::fs::remove_file(&rand_out);
+            let _ = std::fs::remove_file(&wrap_out);
+            let _ = std::fs::remove_file(&secret_out);
             return Ok(());
         }
     };
@@ -134,11 +149,34 @@ pub fn extract_unpack(
             }
         }
         std::fs::copy(&tmp, dest)?;
+        let _ = std::fs::copy(&rand_out, dest.with_extension("rand"));
         report
             .notes
             .push(format!("unpack: copied dump to {}", dest.display()));
     }
-    crate::extract::apply_appcert_dump(report, &bytes, "unpack");
+    crate::extract::apply_appcert_dump(report, &bytes, &std::fs::read(&rand_out).unwrap_or_default(), "unpack");
+    report.notes.push(format!(
+        "unpack: hook sidecars rand={} wrap={} secret={}",
+        std::fs::metadata(&rand_out).map(|m| m.len()).unwrap_or(0),
+        std::fs::metadata(&wrap_out).map(|m| m.len()).unwrap_or(0),
+        std::fs::metadata(&secret_out).map(|m| m.len()).unwrap_or(0),
+    ));
+    if let Ok(raw) = std::fs::read(&secret_out) {
+        if raw.starts_with(b"GLOF") && raw.len() >= 40 {
+            report.credentials.client_auth_secret = Some(raw);
+            report
+                .notes
+                .push("unpack: captured client_auth_secret from in-process hook".into());
+        }
+    }
+    if let Ok(raw) = std::fs::read(&wrap_out) {
+        if let Some(pem) = crate::extract_bootstrap::wrap_bytes_to_pem(&raw) {
+            report.credentials.server_wrap_pem = Some(pem);
+            report
+                .notes
+                .push("unpack: captured server_wrap_key from in-process hook".into());
+        }
+    }
     if let Ok(pem) = std::fs::read_to_string(&key_out) {
         if crate::signing::load_private_key(&pem).is_ok() {
             report.credentials.key_pem = Some(pem);
@@ -185,6 +223,8 @@ pub fn extract_unpack(
     if report.credentials.cert_pem.is_some()
         || report.credentials.key_pem.is_some()
         || report.credentials.crl_pem.is_some()
+        || report.credentials.client_auth_secret.is_some()
+        || report.credentials.server_wrap_pem.is_some()
     {
         let dest = out_dir
             .map(Path::to_path_buf)
@@ -201,6 +241,8 @@ pub fn extract_unpack(
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(&key_out);
     let _ = std::fs::remove_file(&rand_out);
+    let _ = std::fs::remove_file(&wrap_out);
+    let _ = std::fs::remove_file(&secret_out);
     Ok(())
 }
 

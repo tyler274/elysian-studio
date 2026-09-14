@@ -51,6 +51,9 @@ pub fn extract_to_config_dir(
             Ok(bytes) => {
                 let found = extract_pems_from_bytes(&bytes);
                 merge_creds(&mut report.credentials, found);
+                if let Some(found) = crate::extract_bootstrap::harvest_bootstrap(&bytes, &[]) {
+                    merge_creds(&mut report.credentials, found);
+                }
                 if report.plugin.is_none() {
                     report.plugin = Some(path);
                 }
@@ -68,6 +71,8 @@ pub fn extract_to_config_dir(
     if report.credentials.cert_pem.is_some()
         || report.credentials.key_pem.is_some()
         || report.credentials.crl_pem.is_some()
+        || report.credentials.client_auth_secret.is_some()
+        || report.credentials.server_wrap_pem.is_some()
     {
         crate::credentials::write_to_dir(&dest, &report.credentials)?;
         report
@@ -113,7 +118,7 @@ pub fn extract_keys(
     opts: ExtractKeysOpts,
 ) -> Result<ExtractReport, crate::credentials::CredentialError> {
     let mut report = extract_to_config_dir(opts.plugin.as_deref(), opts.out_dir.as_deref())?;
-    if report.credentials.has_cert_and_key() {
+    if report.credentials.has_cert_and_key() && report.credentials.has_bootstrap() {
         return Ok(report);
     }
     if let Some(path) = &opts.from_dump {
@@ -122,9 +127,9 @@ pub fn extract_keys(
                 report
                     .notes
                     .push(format!("scanning dump {}", path.display()));
-                apply_appcert_dump(&mut report, &bytes, "dump");
+                apply_appcert_dump(&mut report, &bytes, &[], "dump");
                 write_extracted(&mut report, opts.out_dir.as_deref())?;
-                if report.credentials.has_cert_and_key() {
+                if report.credentials.has_cert_and_key() && report.credentials.has_bootstrap() {
                     return Ok(report);
                 }
             }
@@ -143,7 +148,7 @@ pub fn extract_keys(
             report.notes.extend(crate::extract_elf::map_notes(&path));
         }
     }
-    if opts.unpack {
+    if opts.unpack && !report.credentials.has_bootstrap() {
         crate::extract_unpack::extract_unpack(
             &mut report,
             opts.plugin.as_deref(),
@@ -151,17 +156,17 @@ pub fn extract_keys(
             opts.dump_elf.as_deref(),
             opts.timeout,
         )?;
-        if report.credentials.has_cert_and_key() {
+        if report.credentials.has_cert_and_key() && report.credentials.has_bootstrap() {
             return Ok(report);
         }
     }
     if !report.credentials.can_sign() {
         try_cloud_appcert(&mut report, opts.out_dir.as_deref())?;
-        if report.credentials.has_cert_and_key() {
+        if report.credentials.has_cert_and_key() && report.credentials.has_bootstrap() {
             return Ok(report);
         }
     }
-    if !opts.live {
+    if !opts.live || report.credentials.can_sign() {
         return Ok(report);
     }
     report.notes.push(
@@ -177,12 +182,32 @@ pub fn extract_keys(
     Ok(report)
 }
 
-pub(crate) fn apply_appcert_dump(report: &mut ExtractReport, bytes: &[u8], prefix: &str) {
+pub(crate) fn apply_appcert_dump(
+    report: &mut ExtractReport,
+    bytes: &[u8],
+    rand: &[u8],
+    prefix: &str,
+) {
     if let Some(found) = crate::extract_appcert::harvest_appcert(bytes) {
         merge_creds(&mut report.credentials, found);
         report.notes.push(format!(
             "{prefix}: unwrapped get_app_cert JSON (custom AES-CTR, ClusterM fetch_slicer_credentials.py)"
         ));
+    }
+    if let Some(found) = crate::extract_bootstrap::harvest_bootstrap(bytes, rand) {
+        let had_secret = found.client_auth_secret.is_some();
+        let had_wrap = found.server_wrap_pem.is_some();
+        merge_creds(&mut report.credentials, found);
+        if had_secret {
+            report
+                .notes
+                .push(format!("{prefix}: recovered client_auth_secret"));
+        }
+        if had_wrap {
+            report
+                .notes
+                .push(format!("{prefix}: recovered server_wrap_key"));
+        }
     }
     merge_creds(
         &mut report.credentials,
@@ -197,6 +222,8 @@ fn write_extracted(
     if report.credentials.cert_pem.is_none()
         && report.credentials.key_pem.is_none()
         && report.credentials.crl_pem.is_none()
+        && report.credentials.client_auth_secret.is_none()
+        && report.credentials.server_wrap_pem.is_none()
     {
         return Ok(());
     }
@@ -222,7 +249,14 @@ fn try_cloud_appcert(
         dirs.push(PathBuf::from(&home).join(".config/BambuStudio"));
         dirs.push(PathBuf::from(&home).join(".config/open-bamboo-networking"));
     }
-    let Some((secret, wrap)) = crate::extract_appcert::try_bootstrap_secret_files(&dirs) else {
+    let secret_wrap = report
+        .credentials
+        .client_auth_secret
+        .as_ref()
+        .zip(report.credentials.server_wrap_pem.as_ref())
+        .map(|(s, w)| (s.clone(), w.as_bytes().to_vec()))
+        .or_else(|| crate::extract_appcert::try_bootstrap_secret_files(&dirs));
+    let Some((secret, wrap)) = secret_wrap else {
         return Ok(());
     };
     let region = std::fs::read_to_string(dest.join("cloud_region")).unwrap_or_default();
@@ -252,6 +286,12 @@ pub(crate) fn merge_creds(into: &mut SlicerCredentials, from: SlicerCredentials)
     }
     if into.crl_pem.is_none() {
         into.crl_pem = from.crl_pem;
+    }
+    if into.client_auth_secret.is_none() {
+        into.client_auth_secret = from.client_auth_secret;
+    }
+    if into.server_wrap_pem.is_none() {
+        into.server_wrap_pem = from.server_wrap_pem;
     }
 }
 
