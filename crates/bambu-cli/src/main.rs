@@ -422,16 +422,25 @@ enum DeviceCommand {
     CloudStatus,
     /// `GET /v1/iot-service/api/user/bind` device list (Bearer in the config dir).
     Devices,
-    /// Public user-service login (email + password; email code if the API asks).
+    /// Cloud login. Default is email/password; `--oauth` is Studio's browser ticket flow.
     Login {
-        #[arg(long)]
-        account: String,
-        #[arg(long)]
-        password: String,
+        #[arg(long, required_unless_present_any = ["oauth", "ticket"])]
+        account: Option<String>,
+        #[arg(long, required_unless_present_any = ["oauth", "ticket"])]
+        password: Option<String>,
         #[arg(long)]
         code: Option<String>,
         #[arg(long, default_value = "us")]
         region: String,
+        /// Open bambulab.com sign-in and wait for `localhost:13618` ticket callback.
+        #[arg(long)]
+        oauth: bool,
+        /// Exchange a ticket copied from the callback URL (skips the listener).
+        #[arg(long)]
+        ticket: Option<String>,
+        /// Print the sign-in URL but do not launch a browser.
+        #[arg(long)]
+        no_open: bool,
     },
     /// MQTT `gcode_line` (Developer Mode or signed Option B).
     Gcode {
@@ -937,46 +946,55 @@ fn run() -> Result<(), CliError> {
                 password,
                 code,
                 region,
+                oauth,
+                ticket,
+                no_open,
             } => {
                 let dir = default_config_dir();
-                let result = CloudApi::login(&region, &account, &password, code.as_deref())
-                    .map_err(|err| CliError::Message(err.to_string()))?;
-                let result = match result {
-                    LoginResult::NeedsCode { .. } if code.is_none() => {
-                        eprint!("email code: ");
-                        let mut line = String::new();
-                        std::io::stdin().read_line(&mut line)?;
-                        CloudApi::login(&region, &account, &password, Some(line.trim()))
-                            .map_err(|err| CliError::Message(err.to_string()))?
+                let result = if let Some(ticket) = ticket.filter(|t| !t.trim().is_empty()) {
+                    bambu_protocol::login_with_ticket(&region, ticket.trim())
+                        .map_err(|err| CliError::Message(err.to_string()))?
+                } else if oauth {
+                    let url = bambu_protocol::sign_in_url(
+                        &region,
+                        &bambu_protocol::oauth_callback_url(),
+                    );
+                    println!("Open this URL and sign in with Google / Apple / email:");
+                    println!("{url}");
+                    println!(
+                        "Waiting on {} (Studio ticket callback)…",
+                        bambu_protocol::oauth_callback_url()
+                    );
+                    bambu_protocol::oauth_login(
+                        &region,
+                        !no_open,
+                        std::time::Duration::from_secs(1200),
+                    )
+                    .map_err(|err| CliError::Message(err.to_string()))?
+                } else {
+                    let account = account.ok_or_else(|| {
+                        CliError::Message("login needs --account or --oauth".into())
+                    })?;
+                    let password = password.ok_or_else(|| {
+                        CliError::Message("login needs --password or --oauth".into())
+                    })?;
+                    let result = CloudApi::login(&region, &account, &password, code.as_deref())
+                        .map_err(|err| CliError::Message(err.to_string()))?;
+                    match result {
+                        LoginResult::NeedsCode { .. } if code.is_none() => {
+                            eprint!("email code: ");
+                            let mut line = String::new();
+                            std::io::stdin().read_line(&mut line)?;
+                            CloudApi::login(&region, &account, &password, Some(line.trim()))
+                                .map_err(|err| CliError::Message(err.to_string()))?
+                        }
+                        other => other,
                     }
-                    other => other,
                 };
-                match result {
-                    LoginResult::NeedsCode { login_type } => {
-                        return Err(CliError::Message(format!(
-                            "login still needs an email code ({login_type})"
-                        )));
-                    }
-                    LoginResult::Tokens {
-                        access_token,
-                        refresh_token,
-                        user_id,
-                    } => {
-                        let mut session = load_cloud_session(&dir).unwrap_or_default();
-                        session.region = region;
-                        session.access_token = access_token;
-                        if !refresh_token.is_empty() {
-                            session.refresh_token = refresh_token;
-                        }
-                        if !user_id.is_empty() {
-                            session.user_id = user_id;
-                        }
-                        save_cloud_session(&dir, &session)
-                            .map_err(|err| CliError::Message(err.to_string()))?;
-                        for line in session.status_lines() {
-                            println!("{line}");
-                        }
-                    }
+                let session = bambu_protocol::persist_login(&dir, &region, result)
+                    .map_err(|err| CliError::Message(err.to_string()))?;
+                for line in session.status_lines() {
+                    println!("{line}");
                 }
             }
             DeviceCommand::Gcode {

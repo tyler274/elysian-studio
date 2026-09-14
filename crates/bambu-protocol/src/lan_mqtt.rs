@@ -29,7 +29,7 @@ pub enum MqttSessionError {
 pub struct BrokerAuth<'a> {
     pub host: &'a str,
     pub port: u16,
-    pub user: &'a str,
+    pub user: String,
     pub password: &'a str,
     pub serial: &'a str,
 }
@@ -43,7 +43,7 @@ fn mqtt_options(
     }
     let client_id = format!("bambu-rs-{}", std::process::id());
     let mut opts = MqttOptions::new(client_id, auth.host, auth.port);
-    opts.set_credentials(auth.user, auth.password);
+    opts.set_credentials(auth.user.as_str(), auth.password);
     opts.set_keep_alive(Duration::from_secs(60));
     opts.set_clean_session(true);
     opts.set_max_packet_size(512 * 1024, 512 * 1024);
@@ -78,7 +78,7 @@ pub async fn fetch_status(
         BrokerAuth {
             host,
             port: LAN_MQTT_PORT,
-            user: LAN_MQTT_USER,
+            user: LAN_MQTT_USER.to_string(),
             password: access_code,
             serial: &serial,
         },
@@ -176,7 +176,7 @@ pub async fn publish_signed(req: PublishRequest<'_>) -> Result<Option<String>, M
         BrokerAuth {
             host: req.host,
             port: LAN_MQTT_PORT,
-            user: LAN_MQTT_USER,
+            user: LAN_MQTT_USER.to_string(),
             password: req.access_code,
             serial: &serial,
         },

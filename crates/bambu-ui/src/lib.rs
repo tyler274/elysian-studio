@@ -263,6 +263,7 @@ pub enum Message {
     LoginPassword(String),
     LoginCode(String),
     CloudLogin,
+    CloudOAuth,
     CloudLogged(Result<String, String>),
     PrintSpeed(u8),
     ChamberLight(bool),
@@ -971,6 +972,33 @@ impl App {
                         })
                         .join()
                         .unwrap_or_else(|_| Err("login thread panicked".into()))
+                    },
+                    Message::CloudLogged,
+                );
+            }
+            Message::CloudOAuth => {
+                let region = if self.cloud_region.is_empty() {
+                    "us".into()
+                } else {
+                    self.cloud_region.clone()
+                };
+                self.status = "browser OAuth… sign in, then return here".into();
+                return Task::perform(
+                    async move {
+                        std::thread::spawn(move || {
+                            let result = bambu_protocol::oauth_login(
+                                &region,
+                                true,
+                                std::time::Duration::from_secs(300),
+                            )
+                            .map_err(|err| err.to_string())?;
+                            let dir = bambu_protocol::default_config_dir();
+                            bambu_protocol::persist_login(&dir, &region, result)
+                                .map_err(|err| err.to_string())?;
+                            Ok("logged in via OAuth (token stored, not shown)".into())
+                        })
+                        .join()
+                        .unwrap_or_else(|_| Err("oauth thread panicked".into()))
                     },
                     Message::CloudLogged,
                 );

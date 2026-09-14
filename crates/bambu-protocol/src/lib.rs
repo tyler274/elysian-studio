@@ -11,6 +11,7 @@ mod https;
 mod inventory;
 mod lan_mqtt;
 mod mqtt;
+mod oauth;
 mod pack;
 mod signing;
 mod spools;
@@ -28,13 +29,13 @@ pub use camera::{
     snapshot_jpeg, ChamberCapture, RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
 };
 pub use cloud::{
-    cloud_mqtt_host, load_cloud_session, load_cloud_session_default, save_cloud_session,
-    CloudBackend, CloudSession,
+    cloud_mqtt_host, cloud_mqtt_user, load_cloud_session, load_cloud_session_default,
+    save_cloud_session, store_login_tokens, CloudBackend, CloudSession,
 };
 pub use cloud_api::{
-    api_host, bind_path, login_body, md5_hex, parse_bind_devices, parse_login, parse_upload_ticket,
-    refresh_body, upload_ticket_body, CloudApi, CloudApiError, CloudDevice, LoginResult,
-    UploadTicket,
+    api_host, bind_path, login_body, md5_hex, parse_bind_devices, parse_login, parse_profile,
+    parse_upload_ticket, profile_path, refresh_body, ticket_body, ticket_path, upload_ticket_body,
+    CloudApi, CloudApiError, CloudDevice, CloudProfile, LoginResult, UploadTicket,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
@@ -61,6 +62,10 @@ pub use mqtt::{
     project_file_with_ams, project_file_with_ams_opts, pushall, report_topic, request_topic,
     resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts,
     LAN_MQTT_PORT, LAN_MQTT_USER,
+};
+pub use oauth::{
+    login_with_ticket, oauth_callback_url, oauth_login, open_default_browser, persist_login,
+    sign_in_url, wait_for_oauth_callback, web_host, OAuthCallback, OAUTH_CALLBACK_PORT,
 };
 pub use pack::{pack_gcode_3mf, sanitize_remote_name};
 pub use signing::{encrypt_field, maybe_sign, maybe_sign_ex, slicer_cert_id, SigningError};

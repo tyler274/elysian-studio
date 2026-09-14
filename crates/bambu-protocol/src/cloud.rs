@@ -18,6 +18,20 @@ use crate::mqtt::{
 };
 use crate::pack::{pack_gcode_3mf, sanitize_remote_name};
 
+/// Cloud MQTT username is `u_{uid}` (OpenBambuAPI / Home Assistant).
+/// Numeric Studio/API uids are stored without the prefix.
+pub fn cloud_mqtt_user(user_id: &str) -> String {
+    let id = user_id.trim();
+    if id.is_empty() {
+        return String::new();
+    }
+    if id.starts_with("u_") {
+        id.to_string()
+    } else {
+        format!("u_{id}")
+    }
+}
+
 /// Public Bambu cloud MQTT brokers (OpenBambuAPI / Home Assistant Bambu Lab).
 pub fn cloud_mqtt_host(region: &str) -> &'static str {
     match region.trim().to_ascii_lowercase().as_str() {
@@ -107,8 +121,37 @@ fn write_if_nonempty(path: impl AsRef<Path>, value: &str) -> Result<(), Credenti
     if value.is_empty() {
         return Ok(());
     }
-    std::fs::write(path.as_ref(), format!("{value}\n"))?;
+    let path = path.as_ref();
+    std::fs::write(path, format!("{value}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
+}
+
+pub fn store_login_tokens(
+    dir: impl AsRef<Path>,
+    region: &str,
+    access_token: String,
+    refresh_token: String,
+    user_id: String,
+) -> Result<CloudSession, CredentialError> {
+    let dir = dir.as_ref();
+    let mut session = load_cloud_session(dir).unwrap_or_default();
+    if !region.is_empty() {
+        session.region = region.to_string();
+    }
+    session.access_token = access_token;
+    if !refresh_token.is_empty() {
+        session.refresh_token = refresh_token;
+    }
+    if !user_id.is_empty() {
+        session.user_id = user_id;
+    }
+    save_cloud_session(dir, &session)?;
+    Ok(session)
 }
 
 pub fn load_cloud_session(dir: impl AsRef<Path>) -> Result<CloudSession, CredentialError> {
@@ -190,7 +233,7 @@ impl CloudBackend {
         BrokerAuth {
             host: cloud_mqtt_host(&self.session.region),
             port: LAN_MQTT_PORT,
-            user: self.session.user_id.as_str(),
+            user: cloud_mqtt_user(&self.session.user_id),
             password: self.session.access_token.as_str(),
             serial: self.session.serial.as_str(),
         }
@@ -265,7 +308,7 @@ impl PrinterBackend for CloudBackend {
             BrokerAuth {
                 host: cloud_mqtt_host(&session.region),
                 port: LAN_MQTT_PORT,
-                user: session.user_id.as_str(),
+                user: cloud_mqtt_user(&session.user_id),
                 password: session.access_token.as_str(),
                 serial: session.serial.as_str(),
             },
@@ -387,6 +430,14 @@ mod tests {
         assert_eq!(cloud_mqtt_host("us"), "us.mqtt.bambulab.com");
         assert_eq!(cloud_mqtt_host("EU"), "eu.mqtt.bambulab.com");
         assert_eq!(cloud_mqtt_host("cn"), "cn.mqtt.bambulab.com");
+    }
+
+    #[test]
+    fn mqtt_user_prefixes_numeric_uid() {
+        assert_eq!(cloud_mqtt_user("12345"), "u_12345");
+        assert_eq!(cloud_mqtt_user("u_12345"), "u_12345");
+        assert_eq!(cloud_mqtt_user(" 99 "), "u_99");
+        assert_eq!(cloud_mqtt_user(""), "");
     }
 
     #[test]

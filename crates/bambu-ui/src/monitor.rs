@@ -357,7 +357,9 @@ impl crate::App {
             return text("cloud token on disk").size(11).into();
         }
         column![
-            text("Email login (no Bearer)").size(13),
+            text("Bambu cloud (OAuth)").size(13),
+            button("Sign in with Bambu").on_press(Message::CloudOAuth),
+            text("or email / password").size(12),
             text_input("account email", &self.login_account).on_input(Message::LoginAccount),
             text_input("password", &self.login_password)
                 .secure(true)

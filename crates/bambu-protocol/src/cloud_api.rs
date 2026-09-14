@@ -18,6 +18,8 @@ pub enum CloudApiError {
     Https(#[from] HttpsError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,6 +85,28 @@ pub fn login_path() -> &'static str {
 
 pub fn refresh_path() -> &'static str {
     "/v1/user-service/user/refreshtoken"
+}
+
+pub fn profile_path() -> &'static str {
+    "/v1/user-service/my/profile"
+}
+
+pub fn ticket_path(ticket: &str) -> String {
+    format!(
+        "/v1/user-service/user/ticket/{}",
+        crate::oauth::percent_encode_query(ticket)
+    )
+}
+
+pub fn ticket_body(ticket: &str) -> Value {
+    json!({ "ticket": ticket })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloudProfile {
+    pub user_id: String,
+    pub name: String,
+    pub account: String,
 }
 
 pub fn login_body(account: &str, password: &str, code: Option<&str>) -> Value {
@@ -227,6 +251,55 @@ pub fn parse_login(v: &Value) -> Result<LoginResult, CloudApiError> {
         refresh_token: refresh,
         user_id,
     })
+}
+
+pub fn parse_profile(v: &Value) -> CloudProfile {
+    let data = v.get("data").unwrap_or(v);
+    let user_id = string_field(data, &["uidStr", "uid", "userId", "user_id"]).unwrap_or_default();
+    let name = string_field(data, &["name", "nickname", "nickName"]).unwrap_or_default();
+    let account = string_field(data, &["account", "email"]).unwrap_or_default();
+    CloudProfile {
+        user_id,
+        name,
+        account,
+    }
+}
+
+fn jwt_user_id(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let mut b64 = payload.replace('-', "+").replace('_', "/");
+    while b64.len() % 4 != 0 {
+        b64.push('=');
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    string_field(&v, &["uid", "userId", "user_id", "username", "sub"])
+}
+
+fn enrich_user_id(result: LoginResult, profile: Option<CloudProfile>) -> LoginResult {
+    let LoginResult::Tokens {
+        access_token,
+        refresh_token,
+        mut user_id,
+    } = result
+    else {
+        return result;
+    };
+    if user_id.is_empty() {
+        if let Some(p) = profile {
+            user_id = p.user_id;
+        }
+    }
+    if user_id.is_empty() {
+        if let Some(id) = jwt_user_id(&access_token) {
+            user_id = id;
+        }
+    }
+    LoginResult::Tokens {
+        access_token,
+        refresh_token,
+        user_id,
+    }
 }
 
 pub fn parse_refresh(v: &Value) -> Result<(String, String), CloudApiError> {
@@ -440,10 +513,22 @@ impl CloudApi {
             )));
         }
         if resp.status < 200 || resp.status >= 300 {
-            return Err(CloudApiError::Message(format!(
-                "cloud HTTP {}",
-                resp.status
-            )));
+            let text = resp.body_text();
+            let hint = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| {
+                    v.get("message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| v.get("error").and_then(Value::as_str).map(str::to_string))
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default();
+            return Err(CloudApiError::Message(if hint.is_empty() {
+                format!("cloud HTTP {}", resp.status)
+            } else {
+                format!("cloud HTTP {}: {hint}", resp.status)
+            }));
         }
         let text = resp.body_text();
         if text.trim().is_empty() {
@@ -546,6 +631,33 @@ impl CloudApi {
             Some(&login_body(account, password, code)),
         )?;
         parse_login(&v)
+    }
+
+    pub fn login_with_ticket(region: &str, ticket: &str) -> Result<LoginResult, CloudApiError> {
+        let ticket = ticket.trim();
+        if ticket.is_empty() {
+            return Err(CloudApiError::Message("empty oauth ticket".into()));
+        }
+        let api = CloudApi::new(region, String::new(), String::new());
+        let v = api.send_json("POST", &ticket_path(ticket), Some(&ticket_body(ticket)))?;
+        let parsed = parse_login(&v)?;
+        let api = match &parsed {
+            LoginResult::Tokens { access_token, .. } => {
+                CloudApi::new(region, access_token.clone(), String::new())
+            }
+            LoginResult::NeedsCode { login_type } => {
+                return Err(CloudApiError::Message(format!(
+                    "oauth ticket returned loginType {login_type}"
+                )));
+            }
+        };
+        let profile = api.profile().ok();
+        Ok(enrich_user_id(parsed, profile))
+    }
+
+    pub fn profile(&self) -> Result<CloudProfile, CloudApiError> {
+        let v = self.send_json("GET", profile_path(), None)?;
+        Ok(parse_profile(&v))
     }
 
     pub fn refresh(&mut self) -> Result<(), CloudApiError> {
@@ -714,6 +826,43 @@ mod tests {
             }
             LoginResult::NeedsCode { .. } => panic!("expected tokens"),
         }
+    }
+
+    #[test]
+    fn ticket_login_fixture() {
+        let v = serde_json::json!({
+            "accessToken": "tok_ticket",
+            "refreshToken": "ref_ticket",
+            "accessMethod": "ticket",
+            "loginType": ""
+        });
+        match parse_login(&v).unwrap() {
+            LoginResult::Tokens { access_token, .. } => assert_eq!(access_token, "tok_ticket"),
+            LoginResult::NeedsCode { .. } => panic!("expected tokens"),
+        }
+    }
+
+    #[test]
+    fn profile_uid_str() {
+        let v = serde_json::json!({
+            "uidStr": "4242",
+            "name": "Ada",
+            "account": "ada@example.com"
+        });
+        let p = parse_profile(&v);
+        assert_eq!(p.user_id, "4242");
+        assert_eq!(p.account, "ada@example.com");
+    }
+
+    #[test]
+    fn jwt_uid_from_payload() {
+        // {"uid":"99"}
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            br#"{"uid":"99"}"#,
+        );
+        let token = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
+        assert_eq!(jwt_user_id(&token).as_deref(), Some("99"));
     }
 
     #[test]
