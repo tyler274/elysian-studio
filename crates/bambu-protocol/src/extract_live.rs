@@ -521,7 +521,11 @@ pub fn harvest_pid_with_cert(pid: u32, known_cert: Option<&str>) -> SlicerCreden
     creds
 }
 
-fn harvest_key_from_rw(mem: &mut File, maps: &[crate::extract_elf::ProcMap], cert: &str) -> Option<String> {
+fn harvest_key_from_rw(
+    mem: &mut File,
+    maps: &[crate::extract_elf::ProcMap],
+    cert: &str,
+) -> Option<String> {
     let want = public_key_from_cert_pem(cert).ok()?;
     let n_le = want.n().to_bytes_le();
     let mut blob = Vec::new();
@@ -549,8 +553,8 @@ fn harvest_key_from_rw(mem: &mut File, maps: &[crate::extract_elf::ProcMap], cer
             return Some(key);
         }
     }
-    if let Some(key) = try_unwrap_appcert_key(&blob, None)
-        .or_else(|| try_unwrap_appcert_key(&blob, Some(cert)))
+    if let Some(key) =
+        try_unwrap_appcert_key(&blob, None).or_else(|| try_unwrap_appcert_key(&blob, Some(cert)))
     {
         return Some(key);
     }

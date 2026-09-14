@@ -353,7 +353,11 @@ fn try_prime_windows(
     let mut i = 0;
     while i + p_len <= data.len() {
         let raw = &data[i..i + p_len];
-        let odd = if little { raw[0] & 1 == 1 } else { raw[p_len - 1] & 1 == 1 };
+        let odd = if little {
+            raw[0] & 1 == 1
+        } else {
+            raw[p_len - 1] & 1 == 1
+        };
         if !odd {
             i += 8;
             continue;
@@ -363,13 +367,19 @@ fn try_prime_windows(
         } else {
             BigUint::from_bytes_be(raw)
         };
-        if p.bits() >= min_bits && &p > &BigUint::from(2u32) && p != *n && n % &p == BigUint::from(0u32)
+        if p.bits() >= min_bits
+            && &p > &BigUint::from(2u32)
+            && p != *n
+            && n % &p == BigUint::from(0u32)
         {
             let q = n / &p;
             if &p * &q == *n {
                 if let Ok(key) = RsaPrivateKey::from_p_q(p, q, e.clone()) {
                     if key.n() == n {
-                        return key.to_pkcs8_pem(LineEnding::LF).ok().map(|pem| pem.to_string());
+                        return key
+                            .to_pkcs8_pem(LineEnding::LF)
+                            .ok()
+                            .map(|pem| pem.to_string());
                     }
                 }
             }

@@ -154,7 +154,12 @@ pub fn extract_unpack(
             .notes
             .push(format!("unpack: copied dump to {}", dest.display()));
     }
-    crate::extract::apply_appcert_dump(report, &bytes, &std::fs::read(&rand_out).unwrap_or_default(), "unpack");
+    crate::extract::apply_appcert_dump(
+        report,
+        &bytes,
+        &std::fs::read(&rand_out).unwrap_or_default(),
+        "unpack",
+    );
     report.notes.push(format!(
         "unpack: hook sidecars rand={} wrap={} secret={}",
         std::fs::metadata(&rand_out).map(|m| m.len()).unwrap_or(0),
@@ -186,9 +191,10 @@ pub fn extract_unpack(
         }
     }
     if report.credentials.key_pem.is_none() {
-        if let Some(pem) =
-            crate::extract_appcert::try_unwrap_appcert_key(&bytes, report.credentials.cert_pem.as_deref())
-        {
+        if let Some(pem) = crate::extract_appcert::try_unwrap_appcert_key(
+            &bytes,
+            report.credentials.cert_pem.as_deref(),
+        ) {
             report.credentials.key_pem = Some(pem);
             report
                 .notes
@@ -199,9 +205,9 @@ pub fn extract_unpack(
         if let Ok(rands) = std::fs::read(&rand_out) {
             if let Some(pem) = crate::extract_elf::try_decrypt_app_key(&bytes, &rands) {
                 report.credentials.key_pem = Some(pem);
-                report
-                    .notes
-                    .push("unpack: decrypted get_app_cert key blob with captured session key".into());
+                report.notes.push(
+                    "unpack: decrypted get_app_cert key blob with captured session key".into(),
+                );
             }
         }
     }

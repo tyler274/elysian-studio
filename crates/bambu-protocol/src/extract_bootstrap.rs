@@ -18,7 +18,8 @@ use crate::signing::public_key_from_cert_pem;
 
 /// Scan dump (+ optional getrandom records) for bootstrap files.
 pub fn harvest_bootstrap(data: &[u8], rand_records: &[u8]) -> Option<SlicerCredentials> {
-    let secret = find_plaintext_secret(data).or_else(|| recover_secret_from_cert_url(data, rand_records));
+    let secret =
+        find_plaintext_secret(data).or_else(|| recover_secret_from_cert_url(data, rand_records));
     let wrap = find_wrap_pem(data);
     if secret.is_none() && wrap.is_none() {
         return None;
@@ -496,10 +497,9 @@ mod tests {
 
     #[test]
     fn wrap_der_roundtrip_to_pem() {
-        let key = crate::signing::load_private_key(include_str!(
-            "../tests/fixtures/test_slicer_key.pem"
-        ))
-        .unwrap();
+        let key =
+            crate::signing::load_private_key(include_str!("../tests/fixtures/test_slicer_key.pem"))
+                .unwrap();
         let pubk = RsaPublicKey::from(&key);
         let der = rsa::pkcs8::EncodePublicKey::to_public_key_der(&pubk)
             .unwrap()
@@ -510,10 +510,9 @@ mod tests {
 
     #[test]
     fn harvest_wrap_pem() {
-        let key = crate::signing::load_private_key(include_str!(
-            "../tests/fixtures/test_slicer_key.pem"
-        ))
-        .unwrap();
+        let key =
+            crate::signing::load_private_key(include_str!("../tests/fixtures/test_slicer_key.pem"))
+                .unwrap();
         let pem = RsaPublicKey::from(&key)
             .to_public_key_pem(LineEnding::LF)
             .unwrap();

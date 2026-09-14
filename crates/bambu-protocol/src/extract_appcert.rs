@@ -405,8 +405,8 @@ fn creds_from_appcert_json(body: &[u8]) -> Result<SlicerCredentials, CredentialE
         .ok_or_else(|| CredentialError::Message("app cert key blob was not base64".into()))?;
     let key = unwrap_skey_blob(&blob)
         .ok_or_else(|| CredentialError::Message("app cert key blob unwrap failed".into()))?;
-    let want = public_key_from_cert_pem(&cert)
-        .map_err(|err| CredentialError::Message(err.to_string()))?;
+    let want =
+        public_key_from_cert_pem(&cert).map_err(|err| CredentialError::Message(err.to_string()))?;
     let got = load_private_key(&key).map_err(|err| CredentialError::Message(err.to_string()))?;
     if got.n() != want.n() {
         return Err(CredentialError::Message(
@@ -539,7 +539,11 @@ mod tests {
 
     #[test]
     fn unwrap_existing_helper_dump_if_present() {
-        for path in ["/tmp/vmp-d.bin", "/tmp/bambu-vmp.dump", "/tmp/bambu-vmp2.dump"] {
+        for path in [
+            "/tmp/vmp-d.bin",
+            "/tmp/bambu-vmp.dump",
+            "/tmp/bambu-vmp2.dump",
+        ] {
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };
@@ -609,7 +613,10 @@ mod tests {
             .split('/')
             .next()
             .unwrap();
-        assert!(!enc.contains('/'), "standard base64 would 404 on the gateway");
+        assert!(
+            !enc.contains('/'),
+            "standard base64 would 404 on the gateway"
+        );
         assert!(!enc.contains('+'));
     }
 
