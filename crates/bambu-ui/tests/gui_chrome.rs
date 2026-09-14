@@ -160,6 +160,7 @@ fn gui_chrome_prepare_preview_goldens() {
     assert_structure(&snap, rgba, true);
     assert_eq!(snap.quality_tab, "quality");
 
+    app.seed_preview_gcode_placeholder();
     drive(&mut app, [Message::Workspace(Workspace::Preview)]);
     let (snap, png) = capture(&app, "preview_empty");
     assert_json("preview_empty", &snap);

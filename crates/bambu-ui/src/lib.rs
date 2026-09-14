@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 mod chrome;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod filament;
 mod inventory;
 mod monitor;
@@ -52,6 +54,11 @@ pub const SIDEBAR_WIDTH: f32 = 300.0;
 use plater::{CoordSpace, XformField};
 
 pub fn run() -> iced::Result {
+    // KWin reads app_id from the session XDG dirs, not from winit's pixel icon.
+    // Publish before the Vulkan re-exec so kded can index the files while the
+    // child probes the GPU.
+    #[cfg(target_os = "linux")]
+    desktop::publish();
     // ICD + loader lookup must be set before the WGPU_BACKEND re-exec so the
     // child inherits NVIDIA's JSON instead of Mesa nouveau/lvp.
     force_vulkan_env();
@@ -89,7 +96,7 @@ pub fn run() -> iced::Result {
     };
     #[cfg(target_os = "linux")]
     {
-        window.platform_specific.application_id = String::from("bambu-studio-rs");
+        window.platform_specific.application_id = String::from(desktop::APP_ID);
     }
     iced::application(move || App::new(adapter.clone()), App::update, App::view)
         .subscription(App::subscription)
@@ -99,6 +106,7 @@ pub fn run() -> iced::Result {
         .settings(Settings {
             antialiasing: true,
             default_text_size: iced::Pixels(13.0),
+            id: Some(String::from("bambu-studio-rs")),
             ..Settings::default()
         })
         .window(window)
@@ -187,6 +195,9 @@ pub struct App {
     ams: AmsState,
     hms_lines: Vec<String>,
     live_monitor: bool,
+    camera_live: bool,
+    stop_confirm: bool,
+    slice_all_next: Option<usize>,
     send_via: SendVia,
     cloud_user: String,
     cloud_region: String,
@@ -256,7 +267,10 @@ pub enum Message {
     Serial(String),
     Send,
     Sent(Result<(), String>),
+    ExportPicked(Option<PathBuf>),
     Chamber,
+    CameraPlay,
+    CameraStop,
     ChamberShot(Result<ChamberResult, String>),
     WallLoops(u32),
     Infill(f64),
@@ -281,6 +295,8 @@ pub enum Message {
     Pause,
     Resume,
     Stop,
+    StopConfirm,
+    StopCancel,
     PrintControl(Result<String, String>),
     LiveMonitor(bool),
     SendVia(SendVia),
@@ -660,6 +676,9 @@ impl App {
             ams: AmsState::default(),
             hms_lines: Vec::new(),
             live_monitor: false,
+            camera_live: false,
+            stop_confirm: false,
+            slice_all_next: None,
             send_via: SendVia::LanFtps,
             cloud_user: String::new(),
             cloud_region: String::new(),
@@ -735,6 +754,9 @@ impl App {
         app.status = "20mm cube on bed".into();
         app.has_bearer = false;
         app.live_monitor = false;
+        app.camera_live = false;
+        app.stop_confirm = false;
+        app.slice_all_next = None;
         app.sync_filament_map();
         app
     }
@@ -745,6 +767,8 @@ impl App {
         self.host.clear();
         self.access_code.clear();
         self.live_monitor = false;
+        self.camera_live = false;
+        self.stop_confirm = false;
         self.machine = MachineState {
             online: true,
             gcode_state: "RUNNING".into(),
@@ -784,6 +808,13 @@ impl App {
         self.chamber_handle = None;
         self.chamber_width = 0;
         self.chamber_height = 0;
+    }
+
+    /// Keep Preview chrome goldens from auto-reslicing (`drive` drops the slice Task).
+    pub fn seed_preview_gcode_placeholder(&mut self) {
+        if self.last_gcode.is_none() {
+            self.last_gcode = Some("; unsliced".into());
+        }
     }
 
     fn load_account_from_disk(&mut self) {
@@ -871,13 +902,13 @@ impl App {
                 iced::time::every(std::time::Duration::from_secs(5))
                     .map(|_| Message::RefreshStatus),
             );
-            if monitor::lan_ready(&self.host, &self.access_code) {
-                let host = self.host.clone();
-                let code = self.access_code.clone();
-                subs.push(Subscription::run_with((host, code), |(host, code)| {
-                    monitor::camera_frames(host.clone(), code.clone())
-                }));
-            }
+        }
+        if self.camera_live && monitor::lan_ready(&self.host, &self.access_code) {
+            let host = self.host.clone();
+            let code = self.access_code.clone();
+            subs.push(Subscription::run_with((host, code), |(host, code)| {
+                monitor::camera_frames(host.clone(), code.clone())
+            }));
         }
         Subscription::batch(subs)
     }
@@ -888,10 +919,19 @@ impl App {
             Message::Workspace(workspace) => {
                 let entered_device =
                     workspace == Workspace::Device && self.workspace != Workspace::Device;
+                let entered_preview =
+                    workspace == Workspace::Preview && self.workspace != Workspace::Preview;
                 self.workspace = workspace;
                 self.slice_menu_open = false;
                 self.print_menu_open = false;
                 self.sync_keep_solid();
+                if entered_preview
+                    && self.last_gcode.is_none()
+                    && self.model.is_some()
+                    && !self.busy
+                {
+                    return self.slice_current();
+                }
                 if entered_device {
                     return self.start_live_sync();
                 }
@@ -941,16 +981,25 @@ impl App {
             }
             Message::Slice => {
                 if self.slice_all {
+                    self.slice_all_next = Some(0);
                     self.set_plate(0);
-                    self.push_toast("slice all: plate 0".into());
+                } else {
+                    self.slice_all_next = None;
                 }
                 return self.slice_current();
             }
             Message::Sliced(result) => {
                 self.busy = false;
                 match result {
-                    Ok(outcome) => return self.apply_slice_outcome(*outcome),
-                    Err(err) => self.status = format!("slice failed: {err}"),
+                    Ok(outcome) => {
+                        let _ = self.apply_slice_outcome(*outcome);
+                        return self.continue_slice_all();
+                    }
+                    Err(err) => {
+                        self.slice_all_next = None;
+                        self.slice_all = false;
+                        self.status = format!("slice failed: {err}");
+                    }
                 }
             }
             Message::ResetCamera => {
@@ -1230,6 +1279,9 @@ impl App {
                     self.status = "slice before send".into();
                     return Task::none();
                 };
+                if self.print_export {
+                    return Task::perform(pick_export_path(), Message::ExportPicked);
+                }
                 let send_via = self.send_via;
                 if send_via == SendVia::LanFtps
                     && (self.host.is_empty() || self.access_code.is_empty())
@@ -1298,12 +1350,23 @@ impl App {
             Message::Sent(Err(err)) => {
                 self.status = format!("send failed: {err}");
             }
+            Message::ExportPicked(None) => {}
+            Message::ExportPicked(Some(path)) => {
+                let Some(gcode) = self.last_gcode.as_deref() else {
+                    self.status = "slice before send".into();
+                    return Task::none();
+                };
+                match write_exported_3mf(gcode, &path) {
+                    Ok(()) => self.status = format!("exported {}", path.display()),
+                    Err(err) => self.status = format!("export failed: {err}"),
+                }
+            }
             Message::Chamber => {
                 if self.host.is_empty() || self.access_code.is_empty() {
                     self.status = "printer IP and LAN access code required".into();
                     return Task::none();
                 }
-                if self.live_monitor {
+                if self.camera_live {
                     self.status = "live camera already running".into();
                     return Task::none();
                 }
@@ -1318,6 +1381,22 @@ impl App {
                     },
                     Message::ChamberShot,
                 );
+            }
+            Message::CameraPlay => {
+                if !monitor::lan_ready(&self.host, &self.access_code) {
+                    self.camera_note = "printer IP and LAN access code required".into();
+                    self.status = self.camera_note.clone();
+                    return Task::none();
+                }
+                self.camera_live = true;
+                if self.camera_note.is_empty() && self.chamber_handle.is_none() {
+                    self.camera_note = "connecting JPEG :6000…".into();
+                }
+                self.status = "camera play".into();
+            }
+            Message::CameraStop => {
+                self.camera_live = false;
+                self.status = "camera stopped".into();
             }
             Message::ChamberShot(Ok(ChamberResult::Jpeg {
                 bytes,
@@ -1415,8 +1494,23 @@ impl App {
             Message::Status(Err(err)) => self.status = format!("status failed: {err}"),
             Message::Pause => return self.run_print_cmd(PrintCmd::Pause),
             Message::Resume => return self.run_print_cmd(PrintCmd::Resume),
-            Message::Stop => return self.run_print_cmd(PrintCmd::Stop),
-            Message::PrintSpeed(level) => return self.run_print_cmd(PrintCmd::Speed(level)),
+            Message::Stop => {
+                self.stop_confirm = true;
+            }
+            Message::StopCancel => {
+                self.stop_confirm = false;
+            }
+            Message::StopConfirm => {
+                self.stop_confirm = false;
+                return self.run_print_cmd(PrintCmd::Stop);
+            }
+            Message::PrintSpeed(level) => {
+                if !monitor::print_speed_active(&self.machine.gcode_state) {
+                    self.push_toast("This only takes effect during printing".into());
+                    return Task::none();
+                }
+                return self.run_print_cmd(PrintCmd::Speed(level));
+            }
             Message::ChamberLight(on) => return self.run_print_cmd(PrintCmd::Light(on)),
             Message::BedSet(s) => self.control_bed = s,
             Message::NozzleSet(s) => self.control_nozzle = s,
@@ -1436,7 +1530,13 @@ impl App {
                 });
             }
             Message::AmsLoad { ams_id, slot_id } => {
-                return self.run_print_cmd(PrintCmd::AmsLoad { ams_id, slot_id });
+                let (old_temp, new_temp) = self.ams_filament_temps(ams_id, slot_id);
+                return self.run_print_cmd(PrintCmd::AmsLoad {
+                    ams_id,
+                    slot_id,
+                    old_temp,
+                    new_temp,
+                });
             }
             Message::AmsUnload { ams_id } => {
                 return self.run_print_cmd(PrintCmd::AmsUnload { ams_id });
@@ -2921,7 +3021,48 @@ impl App {
             return Task::none();
         }
         self.live_monitor = true;
+        if monitor::lan_ready(&self.host, &self.access_code) {
+            self.camera_live = true;
+            if self.chamber_handle.is_none() && self.camera_note.is_empty() {
+                self.camera_note = "connecting JPEG :6000…".into();
+            }
+        }
         self.refresh_monitor()
+    }
+
+    fn continue_slice_all(&mut self) -> Task<Message> {
+        let Some(i) = self.slice_all_next else {
+            return Task::none();
+        };
+        let next = i + 1;
+        if next < self.plate_count() {
+            self.slice_all_next = Some(next);
+            self.set_plate(next);
+            return self.slice_current();
+        }
+        self.slice_all_next = None;
+        self.slice_all = false;
+        Task::none()
+    }
+
+    pub(crate) fn ams_filament_temps(&self, ams_id: u8, slot_id: u8) -> (u16, u16) {
+        let tray = self
+            .ams
+            .trays
+            .iter()
+            .find(|t| t.ams_id == ams_id && t.id == slot_id)
+            .or_else(|| self.ams.vt_tray.as_ref().filter(|t| t.ams_id == ams_id));
+        let new = tray
+            .and_then(|t| t.temp)
+            .map(|t| t.round().clamp(0.0, 300.0) as u16)
+            .filter(|&t| t > 0)
+            .unwrap_or(self.settings.temperature_c);
+        let old = if self.machine.nozzle_temp_c > 0.0 {
+            self.machine.nozzle_temp_c.round().clamp(0.0, 300.0) as u16
+        } else {
+            self.settings.temperature_c
+        };
+        (old, new)
     }
 
     fn refresh_monitor(&self) -> Task<Message> {
@@ -2978,11 +3119,27 @@ enum PrintCmd {
     Light(bool),
     Bed(u16),
     Nozzle(u16),
-    Fan { index: u8, speed: u8 },
-    AmsLoad { ams_id: u8, slot_id: u8 },
-    AmsUnload { ams_id: u8 },
-    HmsResume { err: String, job: String },
-    HmsIgnore { err: String, job: String },
+    Fan {
+        index: u8,
+        speed: u8,
+    },
+    AmsLoad {
+        ams_id: u8,
+        slot_id: u8,
+        old_temp: u16,
+        new_temp: u16,
+    },
+    AmsUnload {
+        ams_id: u8,
+    },
+    HmsResume {
+        err: String,
+        job: String,
+    },
+    HmsIgnore {
+        err: String,
+        job: String,
+    },
 }
 
 fn parse_temp_c(raw: &str) -> u16 {
@@ -3066,6 +3223,20 @@ async fn pick_mesh_path() -> Option<PathBuf> {
         .pick_file()
         .await
         .map(|file| file.path().to_path_buf())
+}
+
+async fn pick_export_path() -> Option<PathBuf> {
+    rfd::AsyncFileDialog::new()
+        .add_filter("G-code 3MF", &["gcode.3mf"])
+        .set_file_name("plate.gcode.3mf")
+        .save_file()
+        .await
+        .map(|file| file.path().to_path_buf())
+}
+
+pub(crate) fn write_exported_3mf(gcode: &str, path: &std::path::Path) -> Result<(), String> {
+    let bytes = bambu_protocol::pack_gcode_3mf(gcode).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
 fn tree_chip<'a>(label: String, active: bool, message: Message) -> Element<'a, Message> {
@@ -3258,6 +3429,7 @@ mod device_sync {
         assert_eq!(app.serial, "01P00A000000001");
         assert_eq!(app.access_code, "12345678");
         assert!(app.live_monitor);
+        assert!(app.camera_live);
     }
 
     #[test]
@@ -3267,7 +3439,9 @@ mod device_sync {
         app.access_code = "12345678".into();
         let _ = app.update(Message::Workspace(Workspace::Device));
         assert!(app.live_monitor);
+        assert!(app.camera_live);
         assert_eq!(app.workspace, Workspace::Device);
+        assert!(app.camera_note.contains("JPEG"));
     }
 
     #[test]
@@ -3285,5 +3459,163 @@ mod device_sync {
         assert!(app.chamber_handle.is_some());
         assert_eq!((app.chamber_width, app.chamber_height), (2, 2));
         assert!(app.camera_note.is_empty());
+    }
+
+    #[test]
+    fn chamber_shot_two_frames_replace_handle_size() {
+        let mut app = App::new_for_gui_test();
+        let _ = app.update(Message::ChamberShot(Ok(ChamberResult::Jpeg {
+            bytes: 10,
+            width: 8,
+            height: 8,
+            rgba: vec![255; 8 * 8 * 4],
+        })));
+        assert_eq!((app.chamber_width, app.chamber_height), (8, 8));
+        let _ = app.update(Message::ChamberShot(Ok(ChamberResult::Jpeg {
+            bytes: 20,
+            width: 16,
+            height: 8,
+            rgba: vec![0; 16 * 8 * 4],
+        })));
+        assert!(app.chamber_handle.is_some());
+        assert_eq!((app.chamber_width, app.chamber_height), (16, 8));
+    }
+
+    #[test]
+    fn camera_play_stop_toggle_live_flag() {
+        let mut app = App::new_for_gui_test();
+        app.host = "192.168.1.20".into();
+        app.access_code = "12345678".into();
+        let _ = app.update(Message::CameraPlay);
+        assert!(app.camera_live);
+        let _ = app.update(Message::CameraStop);
+        assert!(!app.camera_live);
+    }
+
+    #[test]
+    fn rtsps_note_does_not_stop_jpeg_retry() {
+        let mut app = App::new_for_gui_test();
+        app.camera_live = true;
+        let _ = app.update(Message::ChamberShot(Ok(ChamberResult::Rtsps {
+            detail: "RTSPS :322 (no H.264 this pass) rtsps://x · v=0".into(),
+        })));
+        assert!(app.camera_live);
+        assert!(app.camera_note.contains("RTSPS :322"));
+    }
+
+    #[test]
+    fn export_writes_gcode_3mf_without_lan_send() {
+        let mut app = App::new_for_gui_test();
+        app.last_gcode = Some("; LAYER\nG1 X1\n".into());
+        app.print_export = true;
+        app.host.clear();
+        app.access_code.clear();
+        let _ = app.update(Message::Send);
+        assert!(!app.status.contains("printer IP"));
+        assert!(!app.status.contains("FTPS"));
+
+        let path = std::env::temp_dir().join("bambu-ui-export-test.gcode.3mf");
+        let _ = std::fs::remove_file(&path);
+        write_exported_3mf(app.last_gcode.as_deref().unwrap(), &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"PK"));
+        let _ = app.update(Message::ExportPicked(Some(path.clone())));
+        assert!(app.status.contains("exported"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn send_without_gcode_stays_slice_before_send() {
+        let mut app = App::new_for_gui_test();
+        app.print_export = false;
+        app.last_gcode = None;
+        let _ = app.update(Message::Send);
+        assert_eq!(app.status, "slice before send");
+    }
+
+    #[test]
+    fn slice_all_visits_each_plate() {
+        let mut app = App::new_for_gui_test();
+        if let Some(model) = app.model.as_mut() {
+            model.plates.push(bambu_model::PartPlate {
+                name: "Plate 2".into(),
+                object_indices: vec![0],
+                locked: false,
+            });
+        }
+        assert_eq!(app.plate_count(), 2);
+        let _ = app.update(Message::SliceAll(true));
+        let _ = app.update(Message::Slice);
+        assert_eq!(app.plate, 0);
+        assert_eq!(app.slice_all_next, Some(0));
+        assert!(app.busy);
+        app.busy = false;
+        let _ = app.continue_slice_all();
+        assert_eq!(app.plate, 1);
+        assert_eq!(app.slice_all_next, Some(1));
+        assert!(app.busy);
+        app.busy = false;
+        let _ = app.continue_slice_all();
+        assert!(app.slice_all_next.is_none());
+        assert!(!app.slice_all);
+    }
+
+    #[test]
+    fn preview_without_gcode_starts_slice() {
+        let mut app = App::new_for_gui_test();
+        assert!(app.last_gcode.is_none());
+        let _ = app.update(Message::Workspace(Workspace::Preview));
+        assert!(app.busy);
+        assert_eq!(app.status, "slicing…");
+    }
+
+    #[test]
+    fn preview_with_gcode_does_not_reslice() {
+        let mut app = App::new_for_gui_test();
+        app.last_gcode = Some("; already".into());
+        let _ = app.update(Message::Workspace(Workspace::Preview));
+        assert!(!app.busy);
+        assert_ne!(app.status, "slicing…");
+    }
+
+    #[test]
+    fn stop_without_confirm_does_not_send() {
+        let mut app = App::new_for_gui_test();
+        let _ = app.update(Message::Stop);
+        assert!(app.stop_confirm);
+        let _ = app.update(Message::StopCancel);
+        assert!(!app.stop_confirm);
+    }
+
+    #[test]
+    fn print_speed_ignored_when_idle() {
+        let mut app = App::new_for_gui_test();
+        app.machine.gcode_state = "IDLE".into();
+        app.toasts.clear();
+        let _ = app.update(Message::PrintSpeed(2));
+        assert!(app.toasts.iter().any(|t| t.contains("during printing")));
+        app.machine.gcode_state = "RUNNING".into();
+        app.toasts.clear();
+        let _ = app.update(Message::PrintSpeed(2));
+        assert!(!app.toasts.iter().any(|t| t.contains("during printing")));
+    }
+
+    #[test]
+    fn ams_load_uses_tray_and_nozzle_temps() {
+        let mut app = App::new_for_gui_test();
+        app.settings.temperature_c = 210;
+        app.machine.nozzle_temp_c = 219.0;
+        app.ams.trays = vec![AmsTray {
+            id: 1,
+            ams_id: 0,
+            filament_type: "PLA".into(),
+            temp: Some(255.0),
+            ..AmsTray::default()
+        }];
+        assert_eq!(app.ams_filament_temps(0, 1), (219, 255));
+        app.ams.trays[0].temp = None;
+        assert_eq!(app.ams_filament_temps(0, 1), (219, 210));
+        app.machine.nozzle_temp_c = 0.0;
+        assert_eq!(app.ams_filament_temps(0, 1), (210, 210));
     }
 }

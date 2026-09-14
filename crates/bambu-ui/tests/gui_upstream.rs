@@ -57,6 +57,9 @@ fn iced_frame(workspace: Workspace, seed_device: bool) -> Option<Vec<u8>> {
     if seed_device {
         app.seed_device_monitor();
     }
+    if workspace == Workspace::Preview {
+        app.seed_preview_gcode_placeholder();
+    }
     let _ = app.update(Message::Workspace(workspace));
     app.screenshot_rgba()
 }

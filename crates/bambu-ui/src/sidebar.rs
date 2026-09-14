@@ -234,12 +234,52 @@ impl crate::App {
     }
 
     fn ams_card(&self, n: u8) -> Element<'_, Message> {
+        let ams_id = n.saturating_sub(1);
+        let trays: Vec<_> = self
+            .ams
+            .trays
+            .iter()
+            .filter(|t| t.ams_id == ams_id)
+            .collect();
+        let body: Element<'_, Message> = if trays.is_empty() {
+            text("Not installed")
+                .size(theme::BODY_SIZE)
+                .color(theme::TEXT_MUTED)
+                .into()
+        } else {
+            let mut slots = row![].spacing(4);
+            for tray in trays {
+                let color = crate::monitor::parse_tray_color(&tray.color);
+                let kind = if tray.filament_type.is_empty() {
+                    "—"
+                } else {
+                    tray.filament_type.as_str()
+                };
+                slots = slots.push(
+                    column![
+                        container(text(" ").size(6))
+                            .width(18)
+                            .height(10)
+                            .style(move |_| container::Style {
+                                background: Some(iced::Background::Color(color)),
+                                border: iced::Border {
+                                    color: theme::CARD_BORDER,
+                                    width: 1.0,
+                                    radius: 2.0.into(),
+                                },
+                                ..container::Style::default()
+                            }),
+                        text(kind).size(10).color(theme::TEXT_MUTED),
+                    ]
+                    .spacing(2),
+                );
+            }
+            slots.into()
+        };
         container(
             column![
                 text(format!("AMS-{n}")).size(12).color(theme::TEXT),
-                text("Not installed")
-                    .size(theme::BODY_SIZE)
-                    .color(theme::TEXT_MUTED),
+                body,
                 text(format!(
                     "Ø {:.2} mm · flow {:.2}",
                     self.settings.filament_diameter_mm, self.settings.flow_ratio

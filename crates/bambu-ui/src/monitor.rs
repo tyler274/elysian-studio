@@ -157,7 +157,10 @@ impl crate::App {
                 .into()
         };
         let size = if self.chamber_width > 0 {
-            format!("{}×{}", self.chamber_width, self.chamber_height)
+            let tag = if self.camera_live { "live" } else { "paused" };
+            format!("{}×{} {tag}", self.chamber_width, self.chamber_height)
+        } else if self.camera_live {
+            "connecting…".into()
         } else {
             "no frame".into()
         };
@@ -180,7 +183,8 @@ impl crate::App {
                 row![
                     text(size).size(11).color(theme::TEXT_MUTED),
                     Space::new().width(Fill),
-                    quiet_btn(text("Grab frame").size(12)).on_press(Message::Chamber),
+                    quiet_btn(text("Play").size(12)).on_press(Message::CameraPlay),
+                    quiet_btn(text("Stop").size(12)).on_press(Message::CameraStop),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -248,15 +252,32 @@ impl crate::App {
     }
 
     fn controls_pane(&self) -> Element<'_, Message> {
+        let stop_row: Element<'_, Message> = if self.stop_confirm {
+            column![
+                text("Are you sure you want to stop this print?")
+                    .size(12)
+                    .color(theme::TEXT),
+                row![
+                    quiet_btn("No").on_press(Message::StopCancel),
+                    quiet_btn("Stop").on_press(Message::StopConfirm),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4)
+            .into()
+        } else {
+            row![
+                quiet_btn("Pause").on_press(Message::Pause),
+                quiet_btn("Resume").on_press(Message::Resume),
+                quiet_btn("Stop").on_press(Message::Stop),
+            ]
+            .spacing(6)
+            .into()
+        };
         card(
             "Controls",
             column![
-                row![
-                    quiet_btn("Pause").on_press(Message::Pause),
-                    quiet_btn("Resume").on_press(Message::Resume),
-                    quiet_btn("Stop").on_press(Message::Stop),
-                ]
-                .spacing(6),
+                stop_row,
                 text("Print speed").size(12).color(theme::TEXT_MUTED),
                 row![
                     quiet_btn("1").on_press(Message::PrintSpeed(1)),
@@ -634,24 +655,7 @@ pub(crate) async fn run_cmd(
     cmd: PrintCmd,
 ) -> Result<String, String> {
     async fn go<B: PrinterBackend>(backend: B, cmd: PrintCmd) -> Result<String, String> {
-        match cmd {
-            PrintCmd::Pause => backend.pause().await,
-            PrintCmd::Resume => backend.resume().await,
-            PrintCmd::Stop => backend.stop().await,
-            PrintCmd::Speed(level) => backend.set_print_speed(level).await,
-            PrintCmd::Light(on) => backend.set_chamber_light(on).await,
-            PrintCmd::Bed(temp) => backend.set_bed_temp(temp).await,
-            PrintCmd::Nozzle(temp) => backend.set_nozzle_temp(temp).await,
-            PrintCmd::Fan { index, speed } => backend.set_fan(index, speed).await,
-            PrintCmd::AmsLoad { ams_id, slot_id } => {
-                backend.ams_load(ams_id, slot_id, 220, 220).await
-            }
-            PrintCmd::AmsUnload { ams_id } => backend.ams_unload(ams_id).await,
-            PrintCmd::HmsResume { ref err, ref job } => backend.hms_resume(err, job).await,
-            PrintCmd::HmsIgnore { ref err, ref job } => backend.hms_ignore(err, job).await,
-        }
-        .map_err(|e| e.to_string())?;
-        Ok(match cmd {
+        let note = match &cmd {
             PrintCmd::Pause => "pause sent".into(),
             PrintCmd::Resume => "resume sent".into(),
             PrintCmd::Stop => "stop sent".into(),
@@ -661,13 +665,37 @@ pub(crate) async fn run_cmd(
             PrintCmd::Bed(temp) => format!("set_bed_temp {temp} sent"),
             PrintCmd::Nozzle(temp) => format!("set_nozzle_temp {temp} sent"),
             PrintCmd::Fan { index, speed } => format!("set_fan {index}/{speed} sent"),
-            PrintCmd::AmsLoad { ams_id, slot_id } => {
-                format!("ams load A{ams_id} T{slot_id} sent")
-            }
+            PrintCmd::AmsLoad {
+                ams_id,
+                slot_id,
+                old_temp,
+                new_temp,
+            } => format!("ams load A{ams_id} T{slot_id} {old_temp}/{new_temp} sent"),
             PrintCmd::AmsUnload { ams_id } => format!("ams unload A{ams_id} sent"),
             PrintCmd::HmsResume { .. } => "hms resume sent".into(),
             PrintCmd::HmsIgnore { .. } => "hms ignore sent".into(),
-        })
+        };
+        match cmd {
+            PrintCmd::Pause => backend.pause().await,
+            PrintCmd::Resume => backend.resume().await,
+            PrintCmd::Stop => backend.stop().await,
+            PrintCmd::Speed(level) => backend.set_print_speed(level).await,
+            PrintCmd::Light(on) => backend.set_chamber_light(on).await,
+            PrintCmd::Bed(temp) => backend.set_bed_temp(temp).await,
+            PrintCmd::Nozzle(temp) => backend.set_nozzle_temp(temp).await,
+            PrintCmd::Fan { index, speed } => backend.set_fan(index, speed).await,
+            PrintCmd::AmsLoad {
+                ams_id,
+                slot_id,
+                old_temp,
+                new_temp,
+            } => backend.ams_load(ams_id, slot_id, old_temp, new_temp).await,
+            PrintCmd::AmsUnload { ams_id } => backend.ams_unload(ams_id).await,
+            PrintCmd::HmsResume { ref err, ref job } => backend.hms_resume(err, job).await,
+            PrintCmd::HmsIgnore { ref err, ref job } => backend.hms_ignore(err, job).await,
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(note)
     }
     if lan_ready(&host, &code) {
         return go(lan_from(host, code, serial), cmd).await;
@@ -693,7 +721,11 @@ pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, 
     }
 }
 
-fn emit(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Message) -> bool {
+pub(crate) fn print_speed_active(state: &str) -> bool {
+    matches!(state, "RUNNING" | "PAUSE" | "PAUSED")
+}
+
+fn emit_latest(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Message) -> bool {
     match tx.try_send(msg) {
         Ok(()) => true,
         Err(err) if err.is_full() => true,
@@ -714,7 +746,7 @@ fn camera_worker(
                         let bytes = jpeg.len();
                         match jpeg_to_frame(&jpeg) {
                             Ok(frame) => {
-                                if !emit(
+                                if !emit_latest(
                                     &mut tx,
                                     Message::ChamberShot(Ok(ChamberResult::from_frame(
                                         bytes, frame,
@@ -724,7 +756,8 @@ fn camera_worker(
                                 }
                             }
                             Err(err) => {
-                                if !emit(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
+                                if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string())))
+                                {
                                     return;
                                 }
                                 break;
@@ -736,16 +769,20 @@ fn camera_worker(
                             match describe_rtsps(&host, &code) {
                                 Ok(live) => {
                                     let first = live.sdp.lines().next().unwrap_or("RTSPS");
-                                    let _ = emit(
+                                    if !emit_latest(
                                         &mut tx,
                                         Message::ChamberShot(Ok(ChamberResult::Rtsps {
-                                            detail: format!("chamber RTSPS {} · {first}", live.url),
+                                            detail: format!(
+                                                "RTSPS :322 (no H.264 this pass) {} · {first}",
+                                                live.url
+                                            ),
                                         })),
-                                    );
-                                    return;
+                                    ) {
+                                        return;
+                                    }
                                 }
                                 Err(rtsps_err) => {
-                                    if !emit(
+                                    if !emit_latest(
                                         &mut tx,
                                         Message::ChamberShot(Err(format!(
                                             "{err}; RTSPS: {rtsps_err}"
@@ -755,7 +792,8 @@ fn camera_worker(
                                     }
                                 }
                             }
-                        } else if !emit(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
+                        } else if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string())))
+                        {
                             return;
                         }
                         break;
@@ -765,16 +803,20 @@ fn camera_worker(
             Err(err) => match describe_rtsps(&host, &code) {
                 Ok(live) => {
                     let first = live.sdp.lines().next().unwrap_or("RTSPS");
-                    let _ = emit(
+                    if !emit_latest(
                         &mut tx,
                         Message::ChamberShot(Ok(ChamberResult::Rtsps {
-                            detail: format!("chamber RTSPS {} · {first}", live.url),
+                            detail: format!(
+                                "RTSPS :322 (no H.264 this pass) {} · {first}",
+                                live.url
+                            ),
                         })),
-                    );
-                    return;
+                    ) {
+                        return;
+                    }
                 }
                 Err(rtsps_err) => {
-                    if !emit(
+                    if !emit_latest(
                         &mut tx,
                         Message::ChamberShot(Err(format!("{err}; RTSPS: {rtsps_err}"))),
                     ) {
@@ -791,7 +833,7 @@ pub(crate) fn camera_frames(
     host: String,
     code: String,
 ) -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(1, async move |output| {
+    iced::stream::channel(4, async move |output| {
         let _ = std::thread::Builder::new()
             .name("bambu-camera".into())
             .spawn(move || camera_worker(host, code, output));
@@ -815,5 +857,15 @@ mod tests {
         assert!(lan_ready("192.168.1.9", "12345678"));
         assert!(!lan_ready("", "12345678"));
         assert!(!lan_ready("192.168.1.9", ""));
+    }
+
+    #[test]
+    fn print_speed_active_only_while_printing() {
+        assert!(print_speed_active("RUNNING"));
+        assert!(print_speed_active("PAUSE"));
+        assert!(print_speed_active("PAUSED"));
+        assert!(!print_speed_active("IDLE"));
+        assert!(!print_speed_active("FINISH"));
+        assert!(!print_speed_active(""));
     }
 }

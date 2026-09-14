@@ -293,4 +293,14 @@ mod tests {
         assert_eq!(read_jpeg_frame(&mut cursor).unwrap(), a);
         assert_eq!(read_jpeg_frame(&mut cursor).unwrap(), b);
     }
+
+    #[test]
+    fn jpeg_to_frame_two_payloads_two_rgba_sizes() {
+        let a = jpeg_to_frame(include_bytes!("testdata/jpeg_8x8.jpg")).unwrap();
+        let b = jpeg_to_frame(include_bytes!("testdata/jpeg_16x8.jpg")).unwrap();
+        assert_eq!((a.width, a.height), (8, 8));
+        assert_eq!(a.rgba.len(), 8 * 8 * 4);
+        assert_eq!((b.width, b.height), (16, 8));
+        assert_eq!(b.rgba.len(), 16 * 8 * 4);
+    }
 }
