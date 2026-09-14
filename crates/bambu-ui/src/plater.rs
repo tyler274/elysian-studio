@@ -56,6 +56,7 @@ impl crate::App {
             };
             button(text(caption).size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::PlaterTool(t))
         };
         row![
@@ -66,30 +67,35 @@ impl crate::App {
             btn("Lay on face", PlaterTool::LayOnFace),
             button(text("Arrange").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::Arrange),
             button(text("Orient").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::AutoOrient),
             button(text("Mirror X").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::Mirror(0)),
             button(text("Mirror Y").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::Mirror(1)),
             button(text("Mirror Z").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::Mirror(2)),
             button(text("Rot 90°").size(12))
                 .padding([3, 8])
+                .style(|_, status| crate::theme::quiet(status))
                 .on_press(Message::Rotate90),
-            text(self.plate_hint()).size(12),
         ]
         .spacing(4)
         .padding([4, 8])
         .into()
     }
 
-    fn plate_hint(&self) -> String {
+    pub(crate) fn plate_hint(&self) -> String {
         if let Some((left, _)) = self.scene.bed.extruder_only_rects() {
             if left.w >= 5.0 {
                 return format!(

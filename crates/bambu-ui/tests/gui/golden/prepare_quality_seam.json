@@ -1,0 +1,38 @@
+{
+  "workspace": "prepare",
+  "printer": "unset",
+  "process": "—",
+  "process_search": "Standard",
+  "process_objects": false,
+  "filaments": [
+    {
+      "name": "Generic PLA",
+      "colour": "#FFFFFFFF"
+    }
+  ],
+  "plate": 0,
+  "plate_name": "Plate 1",
+  "plate_badge": "01",
+  "quality_tab": "quality",
+  "fps_visible": false,
+  "fps": 60,
+  "sidebar_width": 300,
+  "active_tab_fill": "#00AE42",
+  "seam": "rear",
+  "sparse_infill_pct": 15,
+  "layer_height_mm": 0.2,
+  "first_layer_height_mm": 0.2,
+  "dual_nozzle_overlay": true,
+  "labels": [
+    "Prepare",
+    "Preview",
+    "Slice plate",
+    "AMS",
+    "Quality",
+    "Seam"
+  ],
+  "window": [
+    1200,
+    800
+  ]
+}

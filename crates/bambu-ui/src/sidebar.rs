@@ -1,133 +1,60 @@
-//! Prepare / Preview left panes. `App` / `Message` stay in `main`.
+//! Prepare / Preview left panes. `App` / `Message` stay in the crate root.
 
-use iced::widget::{button, checkbox, column, pick_list, row, scrollable, slider, text};
+use bambu_config::{SeamPosition, TopOneWallType};
+use iced::widget::{
+    button, checkbox, column, container, pick_list, row, scrollable, slider, text, text_input,
+};
 use iced::{Element, Fill};
 
-use crate::{format_eta, role_legend, Message, SIDEBAR_WIDTH};
+use crate::theme;
+use crate::{format_eta, role_legend, Message, ProcessTab, SIDEBAR_WIDTH};
+
+const SEAM_LABELS: [&str; 4] = ["aligned", "rear", "nearest", "random"];
 
 impl crate::App {
     pub(crate) fn prepare_sidebar(&self) -> Element<'_, Message> {
-        let plate_row = self.plate_buttons();
-        let process_names: Vec<String> = self
-            .process_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
-        let machine_names: Vec<String> = self
-            .machine_profiles
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
         scrollable(
             column![
-                text("Prepare").size(18),
-                text(format!("GPU: {}", self.adapter)).size(12),
-                text("Printer / process").size(16),
-                pick_list(
-                    process_names,
-                    self.process_name.clone(),
-                    Message::ProcessProfile
-                )
-                .placeholder("process JSON")
-                .padding([3, 8])
-                .text_size(13),
-                pick_list(
-                    machine_names,
-                    self.machine_name.clone(),
-                    Message::MachineProfile
-                )
-                .placeholder("machine JSON")
-                .padding([3, 8])
-                .text_size(13),
-                text(format!(
-                    "Bed {:.0}×{:.0} mm",
-                    self.scene.bed.width(),
-                    self.scene.bed.height()
-                ))
-                .size(12),
-                text(format!(
-                    "{} · {}",
-                    self.settings.printer_structure, self.settings.curr_bed_type
-                ))
-                .size(12),
-                row![
-                    button("-").padding([3, 8]).on_press(Message::WallLoops(
-                        self.settings.wall_loops.saturating_sub(1).max(1)
-                    )),
-                    text(format!("Walls {}", self.settings.wall_loops)).size(13),
-                    button("+")
-                        .padding([3, 8])
-                        .on_press(Message::WallLoops((self.settings.wall_loops + 1).min(10))),
-                ]
-                .spacing(6),
-                text(format!("Layer {:.2} mm", self.settings.layer_height_mm)).size(13),
-                slider(
-                    0.08..=0.32,
-                    self.settings.layer_height_mm,
-                    Message::LayerHeight
-                )
-                .step(0.01),
-                text(format!(
-                    "Infill {:.0}% {}",
-                    self.settings.infill_density * 100.0,
-                    self.settings.infill_pattern.as_str()
-                ))
-                .size(13),
-                slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
-                checkbox(self.settings.enable_support)
-                    .label("Supports")
-                    .on_toggle(Message::EnableSupport),
-                text(format!("Nozzle {}°C", self.settings.temperature_c)).size(13),
-                slider(
-                    180.0..=280.0,
-                    f64::from(self.settings.temperature_c),
-                    Message::NozzleTemp,
-                )
-                .step(1.0),
-                checkbox(self.by_object)
-                    .label("By-object sequence")
-                    .on_toggle(Message::ByObject),
-                self.filament_library(),
-                text("Plates").size(16),
-                plate_row,
-                text("Objects").size(16),
+                self.printer_card(),
+                self.ams_cards(),
+                self.process_pane(true),
+                self.project_filaments(),
+                text("Objects").size(theme::TITLE_SIZE).color(theme::TEXT),
                 self.object_panel(),
                 self.transform_panel(),
-                text("Paint (click triangle)").size(16),
+                text("Paint").size(theme::TITLE_SIZE).color(theme::TEXT),
                 checkbox(self.paint_blocker)
                     .label("Blocker (else Enforcer)")
                     .on_toggle(Message::PaintBlocker),
-                text(format!("Brush {:.1} mm", self.brush_mm)).size(12),
+                text(format!("Brush {:.1} mm", self.brush_mm))
+                    .size(12)
+                    .color(theme::TEXT_MUTED),
                 slider(0.5..=12.0, f64::from(self.brush_mm), |v| {
                     Message::BrushRadius(v as f32)
                 })
                 .step(0.5),
-                button("Paint support")
-                    .padding([3, 8])
-                    .on_press(Message::PaintSupport),
-                button("Paint seam")
-                    .padding([3, 8])
-                    .on_press(Message::PaintSeam),
-                button("Paint fuzzy")
-                    .padding([3, 8])
-                    .on_press(Message::PaintFuzzy),
-                button("Paint off")
-                    .padding([3, 8])
-                    .on_press(Message::PaintClear),
-                button("Calibration block")
-                    .padding([3, 8])
-                    .on_press(Message::Calibration),
-                button("Reset camera")
-                    .padding([3, 8])
-                    .on_press(Message::ResetCamera),
-                checkbox(self.scene.realistic)
-                    .label("Realistic preview")
-                    .on_toggle(Message::Realistic),
-                text("Right-drag: orbit · Middle-drag: pan · Scroll: zoom · Left: tool / paint")
-                    .size(12),
+                row![
+                    button(text("Support").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::PaintSupport),
+                    button(text("Seam").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::PaintSeam),
+                    button(text("Fuzzy").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::PaintFuzzy),
+                    button(text("Off").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::PaintClear),
+                ]
+                .spacing(4),
             ]
-            .spacing(6)
-            .padding([10, 12])
+            .spacing(8)
+            .padding(theme::SIDEBAR_PAD)
             .width(SIDEBAR_WIDTH),
         )
         .height(Fill)
@@ -138,6 +65,11 @@ impl crate::App {
         let max_layer = self.scene.toolpaths.layer_zs.len().saturating_sub(1) as f64;
         let max_move = self.scene.toolpaths.vertices.len().saturating_sub(1) as f64;
         let preview_z = self.scene.preview_z();
+        let preview_z = if preview_z.is_finite() && preview_z.abs() < 1.0e5 {
+            preview_z
+        } else {
+            0.0
+        };
         let layer_frac = if max_layer <= 0.0 {
             1.0
         } else {
@@ -149,17 +81,16 @@ impl crate::App {
             .unwrap_or_else(|| "—".into());
         scrollable(
             column![
-                text("Preview").size(18),
+                self.printer_card(),
+                self.preview_filament_chips(),
+                self.process_pane(false),
                 text(format!(
                     "Layer {}  Z {:.2} mm  ~{eta}",
                     self.scene.preview_layer + 1,
-                    if preview_z.is_finite() {
-                        preview_z
-                    } else {
-                        0.0
-                    }
+                    preview_z
                 ))
-                .size(12),
+                .size(12)
+                .color(theme::TEXT_MUTED),
                 slider(
                     0.0..=max_layer.max(1.0),
                     f64::from(self.scene.preview_layer),
@@ -172,7 +103,7 @@ impl crate::App {
                     |v| Message::PreviewMove(v as u32)
                 )
                 .step(1.0),
-                text(role_legend()).size(11),
+                text(role_legend()).size(11).color(theme::TEXT_MUTED),
                 checkbox(self.scene.hide_infill)
                     .label("Hide infill")
                     .on_toggle(Message::HideInfill),
@@ -180,18 +111,390 @@ impl crate::App {
                     .label("Hide support")
                     .on_toggle(Message::HideSupport),
                 checkbox(self.scene.realistic)
-                    .label("Realistic preview")
+                    .label("Realistic")
                     .on_toggle(Message::Realistic),
-                button("Reset camera")
-                    .padding([3, 8])
-                    .on_press(Message::ResetCamera),
-                text("Slice from the top bar, then scrub layers.").size(12),
             ]
-            .spacing(6)
-            .padding([10, 12])
+            .spacing(8)
+            .padding(theme::SIDEBAR_PAD)
             .width(SIDEBAR_WIDTH),
         )
         .height(Fill)
+        .into()
+    }
+
+    fn printer_card(&self) -> Element<'_, Message> {
+        let machine_names: Vec<String> = self
+            .machine_profiles
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        container(
+            column![
+                text("Printer").size(theme::TITLE_SIZE).color(theme::TEXT),
+                pick_list(
+                    machine_names,
+                    self.machine_name.clone(),
+                    Message::MachineProfile
+                )
+                .placeholder("machine JSON")
+                .padding([3, 8])
+                .text_size(theme::BODY_SIZE),
+                text(format!(
+                    "Bed {:.0}×{:.0} mm · {}",
+                    self.scene.bed.width(),
+                    self.scene.bed.height(),
+                    self.settings.curr_bed_type
+                ))
+                .size(12)
+                .color(theme::TEXT_MUTED),
+                row![
+                    button(text("Bed texture").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::Toast("Bed texture uses the printer profile".into())),
+                    button(text("Sync").size(12))
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::Toast("Printer sync is a placeholder".into())),
+                ]
+                .spacing(6),
+                self.plate_buttons(),
+            ]
+            .spacing(6),
+        )
+        .padding(10)
+        .width(Fill)
+        .style(|_| theme::card())
+        .into()
+    }
+
+    fn ams_cards(&self) -> Element<'_, Message> {
+        row![self.ams_card(1), self.ams_card(2)]
+            .spacing(8)
+            .into()
+    }
+
+    fn ams_card(&self, n: u8) -> Element<'_, Message> {
+        container(
+            column![
+                text(format!("AMS-{n}")).size(12).color(theme::TEXT),
+                text("Not installed")
+                    .size(theme::BODY_SIZE)
+                    .color(theme::TEXT_MUTED),
+                text(format!(
+                    "Ø {:.2} mm · flow {:.2}",
+                    self.settings.filament_diameter_mm, self.settings.flow_ratio
+                ))
+                .size(11)
+                .color(theme::TEXT_MUTED),
+            ]
+            .spacing(4),
+        )
+        .padding(10)
+        .width(Fill)
+        .style(|_| theme::card())
+        .into()
+    }
+
+    fn project_filaments(&self) -> Element<'_, Message> {
+        container(self.filament_library())
+        .padding(10)
+        .width(Fill)
+        .style(|_| theme::card())
+        .into()
+    }
+
+    fn preview_filament_chips(&self) -> Element<'_, Message> {
+        let mut chips = row![].spacing(6);
+        for i in 0..4 {
+            let (label, colour) = self
+                .filament_slots
+                .get(i)
+                .map(|s| (s.name.as_str(), s.colour.as_str()))
+                .unwrap_or(("—", "#2A2A2AFF"));
+            let parsed = crate::slot_colour_hex(colour);
+            let r = u8::from_str_radix(parsed.get(1..3).unwrap_or("40"), 16).unwrap_or(40);
+            let g = u8::from_str_radix(parsed.get(3..5).unwrap_or("40"), 16).unwrap_or(40);
+            let b = u8::from_str_radix(parsed.get(5..7).unwrap_or("40"), 16).unwrap_or(40);
+            chips = chips.push(
+                container(
+                    column![
+                        container(text(" ").size(8))
+                            .width(28)
+                            .height(18)
+                            .style(move |_| container::Style {
+                                background: Some(iced::Background::Color(iced::Color::from_rgb8(
+                                    r, g, b,
+                                ))),
+                                border: iced::Border {
+                                    color: theme::CARD_BORDER,
+                                    width: 1.0,
+                                    radius: 3.0.into(),
+                                },
+                                ..container::Style::default()
+                            }),
+                        text(format!("{}", i + 1)).size(10).color(theme::TEXT_MUTED),
+                    ]
+                    .spacing(2),
+                )
+                .padding(4)
+                .style(|_| theme::chip()),
+            );
+            let _ = label;
+        }
+        container(
+            column![
+                text("Filament").size(theme::TITLE_SIZE).color(theme::TEXT),
+                chips,
+            ]
+            .spacing(6),
+        )
+        .padding(10)
+        .width(Fill)
+        .style(|_| theme::card())
+        .into()
+    }
+
+    fn process_pane(&self, full_notebook: bool) -> Element<'_, Message> {
+        let process_names: Vec<String> = self
+            .process_profiles
+            .iter()
+            .filter(|p| {
+                self.process_search.is_empty()
+                    || p.name
+                        .to_ascii_lowercase()
+                        .contains(&self.process_search.to_ascii_lowercase())
+            })
+            .map(|p| p.name.clone())
+            .collect();
+        let mut col = column![
+            text("Process").size(theme::TITLE_SIZE).color(theme::TEXT),
+            row![
+                button(text("Global").size(12))
+                    .padding([3, 8])
+                    .style(move |_, status| theme::notebook_tab(
+                        !self.process_objects,
+                        theme::PREPARE,
+                        status
+                    ))
+                    .on_press(Message::ProcessObjects(false)),
+                button(text("Objects").size(12))
+                    .padding([3, 8])
+                    .style(move |_, status| theme::notebook_tab(
+                        self.process_objects,
+                        theme::PREPARE,
+                        status
+                    ))
+                    .on_press(Message::ProcessObjects(true)),
+            ]
+            .spacing(4),
+            text_input("search process", &self.process_search).on_input(Message::ProcessSearch),
+            pick_list(
+                process_names,
+                self.process_name.clone(),
+                Message::ProcessProfile
+            )
+            .placeholder("process JSON")
+            .padding([3, 8])
+            .text_size(theme::BODY_SIZE),
+        ]
+        .spacing(6);
+        if full_notebook {
+            col = col.push(self.process_tabs());
+            col = col.push(self.process_page());
+        } else {
+            col = col.push(self.preview_quality());
+        }
+        container(col)
+            .padding(10)
+            .width(Fill)
+            .style(|_| theme::card())
+            .into()
+    }
+
+    fn process_page(&self) -> Element<'_, Message> {
+        match self.quality_tab {
+            ProcessTab::Quality => self.quality_page(),
+            ProcessTab::Strength => column![
+                text(format!("Walls {}", self.settings.wall_loops)).size(theme::BODY_SIZE),
+                row![
+                    button("-")
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::WallLoops(
+                            self.settings.wall_loops.saturating_sub(1).max(1)
+                        )),
+                    button("+")
+                        .padding([3, 8])
+                        .style(|_, status| theme::quiet(status))
+                        .on_press(Message::WallLoops((self.settings.wall_loops + 1).min(10))),
+                ]
+                .spacing(6),
+                text(format!(
+                    "Sparse infill {:.0}%",
+                    self.settings.infill_density * 100.0
+                ))
+                .size(theme::BODY_SIZE),
+                slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
+            ]
+            .spacing(6)
+            .into(),
+            ProcessTab::Speed => column![
+                text(format!("Layer {:.2} mm", self.settings.layer_height_mm))
+                    .size(theme::BODY_SIZE),
+                slider(
+                    0.08..=0.32,
+                    self.settings.layer_height_mm,
+                    Message::LayerHeight
+                )
+                .step(0.01),
+                text(format!("Nozzle {}°C", self.settings.temperature_c)).size(theme::BODY_SIZE),
+                slider(
+                    180.0..=280.0,
+                    f64::from(self.settings.temperature_c),
+                    Message::NozzleTemp,
+                )
+                .step(1.0),
+            ]
+            .spacing(6)
+            .into(),
+            ProcessTab::Support => column![
+                checkbox(self.settings.enable_support)
+                    .label("Supports")
+                    .on_toggle(Message::EnableSupport),
+                checkbox(self.by_object)
+                    .label("By-object sequence")
+                    .on_toggle(Message::ByObject),
+            ]
+            .spacing(6)
+            .into(),
+            ProcessTab::Others => column![
+                checkbox(self.scene.realistic)
+                    .label("Realistic preview")
+                    .on_toggle(Message::Realistic),
+                button(text("Reset camera").size(12))
+                    .padding([3, 8])
+                    .style(|_, status| theme::quiet(status))
+                    .on_press(Message::ResetCamera),
+            ]
+            .spacing(6)
+            .into(),
+        }
+    }
+
+    fn quality_page(&self) -> Element<'_, Message> {
+        column![
+            text(format!(
+                "Sparse infill {:.0}% {}",
+                self.settings.infill_density * 100.0,
+                self.settings.infill_pattern.as_str()
+            ))
+            .size(theme::BODY_SIZE)
+            .color(theme::TEXT),
+            slider(0.0..=1.0, self.settings.infill_density, Message::Infill).step(0.01),
+            text(format!(
+                "Line width {:.2} · outer {:.2} · inner {:.2} · sparse {:.2}",
+                self.settings.line_width_mm,
+                self.settings.outer_wall_line_width_mm,
+                self.settings.inner_wall_line_width_mm,
+                self.settings.sparse_infill_line_width_mm
+            ))
+            .size(12)
+            .color(theme::TEXT_MUTED),
+            self.seam_group(),
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    fn preview_quality(&self) -> Element<'_, Message> {
+        column![
+            text("Quality").size(theme::TITLE_SIZE).color(theme::TEXT),
+            text(format!("Layer {:.2} mm", self.settings.layer_height_mm)).size(theme::BODY_SIZE),
+            slider(
+                0.08..=0.32,
+                self.settings.layer_height_mm,
+                Message::LayerHeight
+            )
+            .step(0.01),
+            text(format!(
+                "First layer {:.2} mm",
+                self.settings.first_layer_height_mm
+            ))
+            .size(theme::BODY_SIZE),
+            slider(
+                0.08..=0.4,
+                self.settings.first_layer_height_mm,
+                Message::FirstLayerHeight
+            )
+            .step(0.01),
+            self.seam_pick(),
+            checkbox(self.settings.precise_outer_wall)
+                .label("Precise wall")
+                .on_toggle(Message::PreciseOuterWall),
+            checkbox(self.settings.only_one_wall_first_layer)
+                .label("Only one wall first layer")
+                .on_toggle(Message::OnlyOneWallFirst),
+            checkbox(self.settings.top_one_wall == TopOneWallType::AllTop)
+                .label("Only one wall top")
+                .on_toggle(Message::OnlyOneWallTop),
+        ]
+        .spacing(6)
+        .into()
+    }
+
+    fn seam_group(&self) -> Element<'_, Message> {
+        column![
+            text("Seam").size(theme::TITLE_SIZE).color(theme::TEXT),
+            self.seam_pick(),
+            checkbox(self.settings.seam_placement_away_from_overhangs)
+                .label("Staggered inner seams")
+                .on_toggle(Message::SeamAway),
+            checkbox(self.settings.seam_slope_conditional)
+                .label("Apply scarf around sharp corners")
+                .on_toggle(Message::ScarfConditional),
+            text(format!(
+                "Scarf angle ≥ {}°",
+                self.settings.scarf_angle_threshold_deg
+            ))
+            .size(12)
+            .color(theme::TEXT_MUTED),
+            checkbox(self.settings.seam_slope_entire_loop)
+                .label("Scarf around entire wall")
+                .on_toggle(Message::ScarfEntireLoop),
+            text(format!("Scarf steps {}", self.settings.seam_slope_steps))
+                .size(12)
+                .color(theme::TEXT_MUTED),
+            checkbox(self.settings.seam_slope_inner_walls)
+                .label("Scarf on inner walls")
+                .on_toggle(Message::ScarfInnerWalls),
+            checkbox(self.settings.override_filament_scarf_seam_setting)
+                .label("Override filament scarf settings")
+                .on_toggle(Message::OverrideScarf),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    fn seam_pick(&self) -> Element<'_, Message> {
+        column![
+            text("Seam position").size(12).color(theme::TEXT_MUTED),
+            pick_list(
+                SEAM_LABELS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<_>>(),
+                Some(self.settings.seam.as_str().to_string()),
+                |label| {
+                    Message::Seam(
+                        SeamPosition::from_name(&label).unwrap_or(SeamPosition::Aligned),
+                    )
+                }
+            )
+            .padding([3, 8])
+            .text_size(theme::BODY_SIZE),
+        ]
+        .spacing(4)
         .into()
     }
 }
