@@ -55,10 +55,7 @@ fn vulkan_loader_libdir() -> Option<String> {
                     return Some(dir.to_string());
                 }
             }
-            for dir in [
-                "/run/opengl-driver/lib",
-                "/run/current-system/sw/lib",
-            ] {
+            for dir in ["/run/opengl-driver/lib", "/run/current-system/sw/lib"] {
                 if dir_has_loader(dir) {
                     return Some(dir.to_string());
                 }
@@ -94,10 +91,7 @@ fn vulkan_loader_libdir() -> Option<String> {
 fn loader_dir_matching_process_glibc() -> Option<String> {
     let glibc = glibc_store_path_from_maps()?;
     let mut out = None;
-    for bin in [
-        "nix-store",
-        "/run/current-system/sw/bin/nix-store",
-    ] {
+    for bin in ["nix-store", "/run/current-system/sw/bin/nix-store"] {
         if let Ok(o) = std::process::Command::new(bin)
             .args(["-q", "--referrers", &glibc])
             .env_remove("LD_LIBRARY_PATH")
