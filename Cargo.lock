@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-core"
-version = "3.5.1"
+version = "3.5.2"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
