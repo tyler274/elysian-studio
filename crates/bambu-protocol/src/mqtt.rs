@@ -1208,6 +1208,16 @@ mod tests {
     }
 
     #[test]
+    fn empty_holder_without_slots_is_supported() {
+        let st = parse_push_status(r#"{"print":{"command":"push_status","device":{"holder":{}}}}"#)
+            .unwrap();
+        assert!(st.nozzle_rack.supported);
+        assert!(st.nozzle_rack.toolhead.is_empty());
+        assert!(st.nozzle_rack.rack.is_empty());
+        assert!(!st.nozzle_rack.reports_slots());
+    }
+
+    #[test]
     fn nozzle_rack_commands_match_studio() {
         let home: Value = serde_json::from_str(&nozzle_holder_ctrl(9, 0)).unwrap();
         assert_eq!(home["print"]["command"], "nozzle_holder_ctrl");

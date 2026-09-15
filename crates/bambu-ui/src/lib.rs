@@ -4058,6 +4058,46 @@ mod device_sync {
     }
 
     #[test]
+    fn status_keeps_rack_slots_when_holder_empty() {
+        let mut app = App::new_for_gui_test();
+        app.machine.nozzle_rack.supported = true;
+        app.machine.nozzle_rack.status = 0;
+        app.machine.nozzle_rack.position = 1;
+        app.machine
+            .nozzle_rack
+            .toolhead
+            .push(bambu_device::NozzleSlot {
+                id: 0,
+                diameter: 0.4,
+                ..Default::default()
+            });
+        app.machine.nozzle_rack.rack.push(bambu_device::NozzleSlot {
+            id: 0,
+            diameter: 0.2,
+            ..Default::default()
+        });
+        assert_eq!(app.machine.nozzle_rack.toolhead.len(), 1);
+        app.monitor_fetching = true;
+        let mut machine = MachineState::default();
+        machine.nozzle_rack.supported = true;
+        machine.nozzle_rack.status = -1;
+        machine.nozzle_rack.position = -1;
+        let snap = MonitorSnapshot {
+            line: "IDLE".into(),
+            machine,
+            ams: AmsState::default(),
+            hms_lines: Vec::new(),
+        };
+        let _ = app.update(Message::Status(Ok(Box::new(snap))));
+        assert_eq!(app.machine.nozzle_rack.toolhead.len(), 1);
+        assert_eq!(app.machine.nozzle_rack.rack.len(), 1);
+        assert_eq!(app.machine.nozzle_rack.status, 0);
+        assert_eq!(app.machine.nozzle_rack.position, 1);
+        assert!(app.machine.nozzle_rack.supported);
+        assert!(!app.monitor_fetching);
+    }
+
+    #[test]
     fn hotend_rack_hidden_until_holder_reported() {
         let mut app = App::new_for_gui_test();
         app.seed_device_monitor();

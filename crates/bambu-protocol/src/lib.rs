@@ -57,9 +57,9 @@ pub use cloud_api::{
     parse_bind_devices, parse_camera_creds, parse_camera_url_key, parse_login, parse_profile,
     parse_upload_ticket, profile_path, refresh_body, slicer_device_id, slicer_http_headers,
     ticket_body, ticket_path, ttcode_after_post, ttcode_get_path, ttcode_path, ttcode_post_body,
-    ttcode_should_retry_get, upload_ticket_body, CameraCreds, CameraProto, CameraUrlKey, CloudApi,
-    CloudApiError, CloudDevice, CloudProfile, LoginResult, UploadTicket, SLICER_AGENT_VERSION,
-    SLICER_CLIENT_VERSION,
+    ttcode_should_retry_get, ttcode_should_retry_protocol, upload_ticket_body, CameraCreds,
+    CameraProto, CameraUrlKey, CloudApi, CloudApiError, CloudDevice, CloudProfile, LoginResult,
+    UploadTicket, SLICER_AGENT_VERSION, SLICER_CLIENT_VERSION,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,

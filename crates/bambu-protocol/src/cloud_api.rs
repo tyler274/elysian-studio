@@ -827,27 +827,34 @@ impl CloudApi {
             firmware = fw.unwrap_or(""),
             "mint camera creds"
         );
-        let attempts: Vec<(&[&str], Option<&str>)> = if let Some(ver) = fw {
-            vec![(&["agora"], Some(ver)), (&["tutk", "agora"], Some(ver))]
+        // One POST. Extra protocol/user-id retries on iot-service code 8 never
+        // succeeded and trip Cloudflare 1015.
+        let protocols: &[&str] = if fw.is_some() {
+            &["agora"]
         } else {
-            vec![(&["agora"], None), (&["tutk", "agora"], None)]
+            &["tutk", "agora"]
         };
-        let mut last = None;
-        for (protocols, ver) in attempts {
-            match self.ttcode_with(&serial, ver, protocols) {
-                Ok(mut creds) => {
-                    creds.device = serial;
-                    return Ok(creds);
-                }
-                Err(err) if is_cloud_rate_limited(&err) => return Err(err),
-                Err(err) => last = Some(err),
+        match self.ttcode_with(&serial, fw, protocols) {
+            Ok(mut creds) => {
+                creds.device = serial;
+                Ok(creds)
             }
+            Err(err) if !ttcode_should_retry_protocol(&err) => Err(err),
+            Err(err) if protocols == ["agora"] => {
+                match self.ttcode_with(&serial, fw, &["tutk", "agora"]) {
+                    Ok(mut creds) => {
+                        creds.device = serial;
+                        Ok(creds)
+                    }
+                    Err(_) => Err(err),
+                }
+            }
+            Err(err) => Err(err),
         }
-        Err(last.unwrap_or_else(|| CloudApiError::Message("ttcode failed".into())))
     }
 
     /// Studio `NetworkAgent::get_camera_url`: `dev|fw|proto[|channel]`.
-    /// H2 cloud mint is Agora-only; a 403 on `tutk,agora` retries `"agora"` then bare `dev_id`.
+    /// Non-403 failures may retry `"agora"`; iot-service 403 is not retried.
     pub fn get_camera_url(&self, key: &str) -> Result<CameraCreds, CloudApiError> {
         let parsed = parse_camera_url_key(key);
         let protocols: Vec<&str> = parsed.protocols.iter().map(String::as_str).collect();
@@ -859,8 +866,8 @@ impl CloudApi {
         );
         match first {
             Ok(creds) => Ok(creds),
-            Err(err) if is_cloud_rate_limited(&err) => Err(err),
-            Err(err) if is_cloud_forbidden(&err) => {
+            Err(err) if !ttcode_should_retry_protocol(&err) => Err(err),
+            Err(err) => {
                 let agora_only = protocols.len() != 1 || protocols.first() != Some(&"agora");
                 if agora_only {
                     match self.ttcode_post(
@@ -870,20 +877,12 @@ impl CloudApi {
                         parsed.channel.as_deref(),
                     ) {
                         Ok(creds) => return Ok(creds),
-                        Err(err) if is_cloud_rate_limited(&err) => return Err(err),
-                        Err(_) => {}
-                    }
-                }
-                if parsed.firmware.is_some() || !protocols.is_empty() {
-                    match self.ttcode_post(&parsed.dev_id, None, &[], parsed.channel.as_deref()) {
-                        Ok(creds) => return Ok(creds),
-                        Err(err) if is_cloud_rate_limited(&err) => return Err(err),
+                        Err(retry) if !ttcode_should_retry_protocol(&retry) => return Err(retry),
                         Err(_) => {}
                     }
                 }
                 Err(err)
             }
-            Err(err) => Err(err),
         }
     }
 
@@ -907,48 +906,19 @@ impl CloudApi {
         if let Some(ch) = channel.filter(|c| !c.is_empty()) {
             body["channel"] = json!(ch);
         }
-        let bind_uid = self.auth_user_id();
-        let plugin_uid = self.ttcode_user_id();
+        let uid = self.ttcode_user_id();
         tracing::debug!(
             target: "bambu_protocol::cloud",
             dev = %redact_id(dev_id),
             firmware = firmware.unwrap_or(""),
             protocols = ?protocols,
             channel_set = channel.map(|c| !c.is_empty()).unwrap_or(false),
-            user_id_len = bind_uid.len(),
-            user_id_u_prefix = bind_uid.starts_with("u_"),
+            user_id_len = uid.len(),
+            user_id_u_prefix = uid.starts_with("u_"),
             "POST ttcode"
         );
-        let v = match self.send_json_typed(
-            "POST",
-            ttcode_path(),
-            Some(&body),
-            true,
-            Some(bind_uid.as_str()),
-        ) {
-            Ok(v) => v,
-            Err(err)
-                if is_cloud_forbidden(&err) && plugin_uid != bind_uid && !plugin_uid.is_empty() =>
-            {
-                tracing::debug!(
-                    target: "bambu_protocol::cloud",
-                    user_id_len = plugin_uid.len(),
-                    user_id_u_prefix = plugin_uid.starts_with("u_"),
-                    "retry POST ttcode with plugin user-id"
-                );
-                match self.send_json_typed(
-                    "POST",
-                    ttcode_path(),
-                    Some(&body),
-                    true,
-                    Some(plugin_uid.as_str()),
-                ) {
-                    Ok(v) => v,
-                    Err(_) => return Err(err),
-                }
-            }
-            Err(err) => return Err(err),
-        };
+        let v =
+            self.send_json_typed("POST", ttcode_path(), Some(&body), true, Some(uid.as_str()))?;
         let creds = parse_camera_creds(&v).ok_or_else(|| {
             CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
         })?;
@@ -1278,6 +1248,18 @@ fn agora_token_kind(token: &str) -> &'static str {
     }
 }
 
+/// Studio `X-BBL-OS-Version` from `wxGetOsVersion` (kernel release on Linux).
+pub fn slicer_os_version() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "6.1.0".into())
+}
+
+/// Studio `GUI_App::get_extra_header` plus plugin `User-Agent` / agent version.
+/// Do not send `x-bbl-be: go` — that is not a Studio extra header and iot-service
+/// `/ttcode` returns code 8 when the camera mint is routed to the Go backend.
 pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
     let id = if device_id.is_empty() {
         "bambu-studio-rs"
@@ -1292,15 +1274,19 @@ pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
         ("X-BBL-Client-Type", "slicer".into()),
         ("X-BBL-Client-Name", "BambuStudio".into()),
         ("X-BBL-Client-Version", SLICER_CLIENT_VERSION.into()),
-        ("X-BBL-Client-ID", id.into()),
         ("X-BBL-OS-Type", "linux".into()),
-        ("X-BBL-Language", "en".into()),
+        ("X-BBL-OS-Version", slicer_os_version()),
+        ("X-BBL-Language", "en-US".into()),
         ("X-BBL-Device-ID", id.into()),
         ("X-BBL-Agent-Version", SLICER_AGENT_VERSION.into()),
         ("X-BBL-Agent-OS-Type", "linux".into()),
-        ("x-bbl-be", "go".into()),
-        ("x-bbl-client-country", "US".into()),
+        ("X-BBL-Executable-info", "{}".into()),
     ]
+}
+
+/// 403 code 8 / Cloudflare 1015: do not mint again with a different body.
+pub fn ttcode_should_retry_protocol(err: &CloudApiError) -> bool {
+    !is_cloud_forbidden(err) && !is_cloud_rate_limited(err)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1757,6 +1743,17 @@ mod tests {
         assert!(get
             .iter()
             .any(|(k, v)| *k == "X-BBL-Client-Name" && v == "BambuStudio"));
+        assert!(get.iter().any(|(k, _)| *k == "X-BBL-OS-Version"));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "X-BBL-Language" && v == "en-US"));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "X-BBL-Executable-info" && v == "{}"));
+        assert!(!get.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-bbl-be")));
+        assert!(!get
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("x-bbl-client-country")));
         assert!(get
             .iter()
             .any(|(k, v)| *k == "User-Agent" && v.starts_with("bambu_network_agent/")));
@@ -1812,6 +1809,9 @@ mod tests {
         ));
         assert!(!is_cloud_rate_limited(&forbidden));
         assert!(!cloud_error_is_rate_limited(&forbidden.to_string()));
+        assert!(!ttcode_should_retry_protocol(&forbidden));
+        let other = CloudApiError::Message("ttcode response missing uid".into());
+        assert!(ttcode_should_retry_protocol(&other));
     }
 
     #[test]

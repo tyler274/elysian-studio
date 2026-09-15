@@ -122,23 +122,16 @@ fn ttcode_error(err: &impl std::fmt::Display) -> String {
     ttcode_error_with_firmware(err, None)
 }
 
-fn ttcode_error_with_firmware(err: &impl std::fmt::Display, firmware: Option<&str>) -> String {
+fn ttcode_error_with_firmware(err: &impl std::fmt::Display, _firmware: Option<&str>) -> String {
     let text = err.to_string();
     if crate::cloud_api::cloud_error_is_rate_limited(&text) {
         format!(
             "ttcode: {text} Studio/Handy mint the same endpoint; Cloudflare 1015 is IP rate-limit, not a printer setting."
         )
     } else if text.contains("HTTP 403") || text.to_ascii_lowercase().contains("forbidden") {
-        let has_fw = firmware.map(str::trim).is_some_and(|s| !s.is_empty());
-        if has_fw {
-            format!(
-                "ttcode: {text}. Cloud Agora mint is POST /ttcode (Handy works off Wi‑Fi). 403 is the token, serial, or user-id header, not a printer LAN toggle."
-            )
-        } else {
-            format!(
-                "ttcode: {text}. Cloud Agora mint is POST /ttcode (Handy works off Wi‑Fi). Mint had no MQTT ota/dev_ver (Studio always sends it)."
-            )
-        }
+        format!(
+            "ttcode: {text}. Cloud Agora mint is POST /ttcode (Handy works off Wi‑Fi). 403 code 8 is iot-service forbidding this client/token for camera, not a printer LAN toggle."
+        )
     } else {
         format!("ttcode: {text}")
     }
@@ -379,11 +372,11 @@ mod tests {
             Some("01.02.00.00"),
         );
         assert!(msg.contains("403"));
-        assert!(msg.contains("user-id"));
+        assert!(msg.contains("iot-service"));
         assert!(!msg.contains("LAN Only"));
         assert!(!msg.contains("HTTP 405"));
         let missing = ttcode_error(&"cloud: cloud HTTP 403: The specified resource is forbidden.");
-        assert!(missing.contains("dev_ver"));
+        assert!(missing.contains("iot-service"));
         assert!(!missing.contains("LAN Only"));
     }
 

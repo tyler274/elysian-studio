@@ -6,7 +6,9 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
-use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, NozzleSlot, PrinterBackend};
+use bambu_device::{
+    AmsState, AmsTray, AmsUnit, MachineState, NozzleRackState, NozzleSlot, PrinterBackend,
+};
 use bambu_protocol::{
     capture_chamber, cloud_error_is_rate_limited, default_config_dir, describe_hms, jpeg_to_frame,
     load_cached_catalog, load_cloud_session, save_cloud_session, stream_rtsps_frames,
@@ -878,11 +880,34 @@ pub(crate) fn retain_ams(prev: &AmsState, next: AmsState) -> AmsState {
 }
 
 pub(crate) fn retain_machine(prev: &MachineState, mut next: MachineState) -> MachineState {
-    if !next.nozzle_rack.supported && prev.nozzle_rack.supported {
-        next.nozzle_rack = prev.nozzle_rack.clone();
-    }
+    next.nozzle_rack = retain_nozzle_rack(&prev.nozzle_rack, next.nozzle_rack);
     if next.ota_version.is_empty() && !prev.ota_version.is_empty() {
         next.ota_version = prev.ota_version.clone();
+    }
+    next
+}
+
+/// Empty `print.device.holder` still sets `supported`; keep the last populated rack.
+pub(crate) fn retain_nozzle_rack(
+    prev: &NozzleRackState,
+    mut next: NozzleRackState,
+) -> NozzleRackState {
+    if !next.supported {
+        return if prev.supported { prev.clone() } else { next };
+    }
+    if prev.supported {
+        if next.toolhead.is_empty() && !prev.toolhead.is_empty() {
+            next.toolhead = prev.toolhead.clone();
+        }
+        if next.rack.is_empty() && !prev.rack.is_empty() {
+            next.rack = prev.rack.clone();
+        }
+        if next.status < 0 && prev.status >= 0 {
+            next.status = prev.status;
+        }
+        if next.position < 0 && prev.position >= 0 {
+            next.position = prev.position;
+        }
     }
     next
 }
@@ -1369,5 +1394,40 @@ mod tests {
         };
         let updated = retain_ams(&prev, next);
         assert_eq!(updated.trays[0].filament_type, "PETG");
+    }
+
+    #[test]
+    fn retain_nozzle_rack_keeps_slots_on_empty_holder() {
+        let prev = NozzleRackState {
+            supported: true,
+            status: 0,
+            position: 1,
+            toolhead: vec![NozzleSlot {
+                id: 0,
+                diameter: 0.4,
+                ..Default::default()
+            }],
+            rack: vec![NozzleSlot {
+                id: 0,
+                diameter: 0.2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut next = NozzleRackState {
+            supported: true,
+            ..Default::default()
+        };
+        next.status = -1;
+        next.position = -1;
+        let kept = retain_nozzle_rack(&prev, next);
+        assert_eq!(kept.toolhead.len(), 1);
+        assert_eq!(kept.rack.len(), 1);
+        assert_eq!(kept.status, 0);
+        assert_eq!(kept.position, 1);
+        assert!(kept.supported);
+        let omitted = retain_nozzle_rack(&prev, NozzleRackState::default());
+        assert_eq!(omitted.toolhead.len(), 1);
+        assert!(omitted.supported);
     }
 }

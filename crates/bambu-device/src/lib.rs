@@ -189,6 +189,10 @@ pub struct NozzleRackState {
 }
 
 impl NozzleRackState {
+    pub fn reports_slots(&self) -> bool {
+        !self.toolhead.is_empty() || !self.rack.is_empty()
+    }
+
     pub fn status_label(&self) -> &'static str {
         match self.status {
             0 => "idle",
