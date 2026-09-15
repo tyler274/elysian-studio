@@ -151,6 +151,16 @@ fn maybe_png<'a>(name: &str, png: &'a Option<(u32, u32, Vec<u8>)>) -> Option<&'a
     })
 }
 
+fn crop_rgba(rgba: &[u8], width: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for row in y..y + h {
+        let start = ((row * width + x) * 4) as usize;
+        let end = start + (w * 4) as usize;
+        out.extend_from_slice(&rgba[start..end]);
+    }
+    out
+}
+
 #[test]
 fn gui_chrome_prepare_preview_goldens() {
     let mut app = App::new_for_gui_test();
@@ -319,6 +329,32 @@ fn gui_chrome_device_home_filament_goldens() {
     if let Some(px) = rgba {
         assert!(header_has_fill(px, 1200, theme::PREPARE));
     }
+}
+
+#[test]
+fn file_menu_overlays_without_stretching_header() {
+    let mut app = App::new_for_gui_test();
+    let Some(closed) = app.screenshot_rgba() else {
+        return;
+    };
+    drive(&mut app, [Message::ToggleFileMenu]);
+    let (_snap, png) = capture(&app, "file_menu_open");
+    let Some((width, _, open)) = png else {
+        return;
+    };
+    assert_eq!(width, 1200);
+    let header_right = |px: &[u8]| crop_rgba(px, 1200, 700, 0, 480, 40);
+    let (rmse, max) = png_delta(&header_right(&closed), &header_right(&open));
+    assert!(
+        rmse <= 2.0 && max <= 40,
+        "File menu stretched or shifted the header rmse={rmse:.3} max={max}"
+    );
+    let viewport = |px: &[u8]| crop_rgba(px, 1200, 480, 200, 200, 200);
+    let (rmse, max) = png_delta(&viewport(&closed), &viewport(&open));
+    assert!(
+        rmse <= 2.0 && max <= 40,
+        "File menu pushed the viewport down rmse={rmse:.3} max={max}"
+    );
 }
 
 #[test]

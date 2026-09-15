@@ -4,7 +4,7 @@
 use iced::widget::{
     button, column, container, row, shader, slider, stack, text, vertical_slider, Space,
 };
-use iced::{Alignment, Element, Fill};
+use iced::{Alignment, Element, Fill, Padding};
 
 use crate::theme;
 use crate::{Message, ProcessTab, Workspace};
@@ -13,6 +13,7 @@ use bambu_gpu::CameraView;
 impl crate::App {
     pub(crate) fn top_bar(&self) -> Element<'_, Message> {
         let tabs = row![
+            self.file_header_group(),
             self.workspace_tab("⌂", Workspace::Home, theme::PREPARE),
             self.workspace_tab("Prepare", Workspace::Prepare, theme::PREPARE),
             self.workspace_tab("Preview", Workspace::Preview, theme::PREVIEW),
@@ -24,12 +25,7 @@ impl crate::App {
         .spacing(4)
         .align_y(Alignment::Center);
 
-        let actions = row![
-            self.file_header_group(),
-            self.slice_header_group(),
-            self.print_header_group()
-        ]
-        .spacing(6);
+        let actions = row![self.slice_header_group(), self.print_header_group()].spacing(6);
 
         row![tabs, Space::new().width(Fill), actions]
             .spacing(8)
@@ -39,28 +35,62 @@ impl crate::App {
     }
 
     fn file_header_group(&self) -> Element<'_, Message> {
-        let main = container(
-            button(text("File").size(theme::BODY_SIZE).color(theme::PREPARE))
-                .padding([4, 10])
-                .style(|_, status| theme::slice_plate(status))
-                .on_press(Message::ToggleFileMenu),
-        )
-        .style(|_| container::Style {
-            border: iced::Border {
-                color: theme::PREPARE,
-                width: 1.0,
-                radius: theme::RADIUS.into(),
-            },
-            ..container::Style::default()
-        });
-        let chevron = button(text("▾").size(theme::BODY_SIZE))
-            .padding([4, 6])
-            .style(|_, status| theme::slice_plate(status))
-            .on_press(Message::ToggleFileMenu);
-        let row = row![chevron, main].spacing(1).align_y(Alignment::Center);
-        if !self.file_menu_open {
-            return row.into();
-        }
+        let open = self.file_menu_open;
+        button(text("File").size(theme::BODY_SIZE).color(theme::TEXT))
+            .padding([4, 10])
+            .style(move |_, status| theme::menubar(open, status))
+            .on_press(Message::ToggleFileMenu)
+            .into()
+    }
+
+    pub(crate) fn header_menu_overlay(&self) -> Option<Element<'_, Message>> {
+        let (menu, align_end) = if self.file_menu_open {
+            (self.file_dropdown(), false)
+        } else if self.slice_menu_open {
+            (
+                self.split_dropdown(&[
+                    ("Slice plate", Message::SliceAll(false)),
+                    ("Slice all", Message::SliceAll(true)),
+                ]),
+                true,
+            )
+        } else if self.print_menu_open {
+            (
+                self.split_dropdown(&[
+                    ("Print plate", Message::PrintExport(false)),
+                    ("Export plate sliced file", Message::PrintExport(true)),
+                ]),
+                true,
+            )
+        } else {
+            return None;
+        };
+        let pad = if align_end {
+            Padding {
+                top: theme::HEADER_DROPDOWN_TOP,
+                right: theme::HEADER_PAD[1] as f32,
+                bottom: 0.0,
+                left: 0.0,
+            }
+        } else {
+            Padding {
+                top: theme::HEADER_DROPDOWN_TOP,
+                right: 0.0,
+                bottom: 0.0,
+                left: theme::HEADER_PAD[1] as f32,
+            }
+        };
+        Some(if align_end {
+            container(row![Space::new().width(Fill), menu])
+                .width(Fill)
+                .padding(pad)
+                .into()
+        } else {
+            container(menu).padding(pad).into()
+        })
+    }
+
+    fn file_dropdown(&self) -> Element<'_, Message> {
         let mut menu = column![].spacing(2);
         for (label, message) in [
             ("New Project", Message::NewProject),
@@ -69,13 +99,7 @@ impl crate::App {
             ("Save Project as", Message::SaveProjectAs),
             ("Import", Message::ImportModel),
         ] {
-            menu = menu.push(
-                button(text(label).size(12))
-                    .padding([4, 10])
-                    .width(Fill)
-                    .style(|_, status| theme::quiet(status))
-                    .on_press(message),
-            );
+            menu = menu.push(dropdown_item(label, message));
         }
         if !self.recent_models.is_empty() {
             menu = menu.push(text("Recent").size(11).color(theme::TEXT_MUTED));
@@ -85,24 +109,26 @@ impl crate::App {
                     .and_then(|n| n.to_str())
                     .unwrap_or("model")
                     .to_string();
-                menu = menu.push(
-                    button(text(label).size(12))
-                        .padding([4, 10])
-                        .width(Fill)
-                        .style(|_, status| theme::quiet(status))
-                        .on_press(Message::OpenRecent(path.clone())),
-                );
+                menu = menu.push(dropdown_item(label, Message::OpenRecent(path.clone())));
             }
         }
-        column![
-            row,
-            container(menu)
-                .padding(4)
-                .style(|_| theme::chip())
-                .width(240)
-        ]
-        .spacing(2)
-        .into()
+        container(menu)
+            .padding(4)
+            .width(220)
+            .style(|_| theme::dropdown())
+            .into()
+    }
+
+    fn split_dropdown(&self, options: &[(&'static str, Message)]) -> Element<'_, Message> {
+        let mut menu = column![].spacing(2);
+        for (label, message) in options {
+            menu = menu.push(dropdown_item(*label, message.clone()));
+        }
+        container(menu)
+            .padding(4)
+            .width(220)
+            .style(|_| theme::dropdown())
+            .into()
     }
 
     fn slice_header_group(&self) -> Element<'_, Message> {
@@ -125,16 +151,7 @@ impl crate::App {
             },
             ..container::Style::default()
         });
-        self.header_split(
-            Message::ToggleSliceMenu,
-            main.into(),
-            self.slice_menu_open,
-            &[
-                ("Slice plate", Message::SliceAll(false)),
-                ("Slice all", Message::SliceAll(true)),
-            ],
-            true,
-        )
+        self.header_split(Message::ToggleSliceMenu, main.into(), true)
     }
 
     fn print_header_group(&self) -> Element<'_, Message> {
@@ -158,24 +175,13 @@ impl crate::App {
             },
             ..container::Style::default()
         });
-        self.header_split(
-            Message::TogglePrintMenu,
-            main.into(),
-            self.print_menu_open,
-            &[
-                ("Print plate", Message::PrintExport(false)),
-                ("Export plate sliced file", Message::PrintExport(true)),
-            ],
-            false,
-        )
+        self.header_split(Message::TogglePrintMenu, main.into(), false)
     }
 
     fn header_split<'a>(
         &self,
         toggle: Message,
         main: Element<'a, Message>,
-        open: bool,
-        options: &[(&'static str, Message)],
         outlined: bool,
     ) -> Element<'a, Message> {
         let chevron = button(text("▾").size(theme::BODY_SIZE))
@@ -188,29 +194,10 @@ impl crate::App {
                 }
             })
             .on_press(toggle);
-        let row = row![chevron, main].spacing(1).align_y(Alignment::Center);
-        if !open {
-            return row.into();
-        }
-        let mut menu = column![].spacing(2);
-        for (label, message) in options {
-            menu = menu.push(
-                button(text(*label).size(12))
-                    .padding([4, 10])
-                    .width(Fill)
-                    .style(|_, status| theme::quiet(status))
-                    .on_press(message.clone()),
-            );
-        }
-        column![
-            row,
-            container(menu)
-                .padding(4)
-                .style(|_| theme::chip())
-                .width(220)
-        ]
-        .spacing(2)
-        .into()
+        row![chevron, main]
+            .spacing(1)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     fn workspace_tab(
@@ -549,4 +536,13 @@ impl crate::App {
         .spacing(4)
         .into()
     }
+}
+
+fn dropdown_item<'a>(label: impl Into<String>, message: Message) -> Element<'a, Message> {
+    button(text(label.into()).size(12))
+        .padding([6, 12])
+        .width(Fill)
+        .style(|_, status| theme::dropdown_item(status))
+        .on_press(message)
+        .into()
 }

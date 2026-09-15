@@ -44,7 +44,7 @@ use bambu_protocol::{
     StudioPrinter,
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
-use iced::widget::{button, checkbox, column, container, row, text};
+use iced::widget::{button, checkbox, column, container, row, stack, text};
 use iced::{window, Element, Fill, Settings, Size, Subscription, Task, Theme};
 
 /// Studio `MainFrame::SetSize(FromDIP(1200), FromDIP(800))` — 3:2, not iced's 4:3.
@@ -2140,12 +2140,16 @@ impl App {
                 }
             }
         };
-        column![
+        let chrome: Element<'_, Message> = column![
             container(self.top_bar()).style(|_| theme::header_bar()),
             container(body).height(Fill),
         ]
         .height(Fill)
-        .into()
+        .into();
+        match self.header_menu_overlay() {
+            Some(overlay) => stack![chrome, overlay].width(Fill).height(Fill).into(),
+            None => chrome,
+        }
     }
 
     pub fn slice_cpu_blocking(&mut self) {

@@ -26,6 +26,8 @@ pub const PLATE_ORANGE: Color = Color::from_rgb8(0xFF, 0x8A, 0x1A);
 pub const RADIUS: f32 = 4.0;
 
 pub const HEADER_PAD: [u16; 2] = [4, 10];
+/// Overlay menus sit just below the compact header row.
+pub const HEADER_DROPDOWN_TOP: f32 = 32.0;
 pub const SIDEBAR_PAD: [u16; 2] = [10, 12];
 pub const BODY_SIZE: u32 = 13;
 pub const TITLE_SIZE: u32 = 14;
@@ -80,6 +82,24 @@ pub fn chip() -> container::Style {
             color: CARD_BORDER,
             width: 1.0,
             radius: RADIUS.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub fn dropdown() -> container::Style {
+    container::Style {
+        background: Some(Background::Color(CARD)),
+        text_color: Some(TEXT),
+        border: Border {
+            color: CARD_BORDER,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
         },
         ..container::Style::default()
     }
@@ -184,6 +204,44 @@ pub fn quiet(status: button::Status) -> button::Style {
         border: Border {
             color: CARD_BORDER,
             width: 1.0,
+            radius: RADIUS.into(),
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn dropdown_item(status: button::Status) -> button::Style {
+    let bg = match status {
+        button::Status::Hovered | button::Status::Pressed => INACTIVE_HOVER,
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: TEXT,
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: RADIUS.into(),
+        },
+        ..button::Style::default()
+    }
+}
+
+pub fn menubar(open: bool, status: button::Status) -> button::Style {
+    let bg = if open {
+        INACTIVE_HOVER
+    } else {
+        match status {
+            button::Status::Hovered | button::Status::Pressed => INACTIVE_HOVER,
+            _ => Color::TRANSPARENT,
+        }
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: TEXT,
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
             radius: RADIUS.into(),
         },
         ..button::Style::default()
