@@ -10,7 +10,7 @@ use bambu_device::{AmsTray, AmsUnit, NozzleSlot, PrinterBackend};
 use bambu_protocol::{
     capture_chamber, cloud_error_is_rate_limited, default_config_dir, describe_hms, jpeg_to_frame,
     load_cached_catalog, load_cloud_session, save_cloud_session, stream_rtsps_frames,
-    stream_ttcode_frames, ChamberCapture, CloudApi, CloudBackend, JpegStream,
+    stream_ttcode_frames, ChamberCapture, CloudApi, CloudBackend, CloudSession, JpegStream,
 };
 
 use crate::theme;
@@ -1000,7 +1000,7 @@ fn emit_latest(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Mess
     }
 }
 
-fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Message>) {
+fn camera_worker(mut job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Message>) {
     loop {
         let lan = lan_ready(&job.host, &job.code);
         let cloud = !job.token.is_empty() && !job.serial.is_empty();
@@ -1070,6 +1070,9 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
             }
         }
         if cloud {
+            if job.firmware.is_empty() {
+                job.firmware = mqtt_ota_version(&job);
+            }
             match cloud_tutk_loop(&job, &mut tx) {
                 WorkerCtrl::Stop => return,
                 WorkerCtrl::Retry => {}
@@ -1108,6 +1111,48 @@ fn camera_error_backoff(err: &str) -> std::time::Duration {
         std::time::Duration::from_secs(30)
     } else {
         std::time::Duration::from_secs(2)
+    }
+}
+
+fn mqtt_ota_version(job: &CameraJob) -> String {
+    let session = CloudSession {
+        region: job.region.clone(),
+        user_id: job.user_id.clone(),
+        access_token: job.token.clone(),
+        refresh_token: job.refresh.clone(),
+        serial: job.serial.clone(),
+    };
+    if !session.is_ready() {
+        tracing::debug!(
+            target: "bambu_ui::camera",
+            "skip MQTT ota; cloud session incomplete"
+        );
+        return String::new();
+    }
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return String::new();
+    };
+    tracing::debug!(target: "bambu_ui::camera", "fetch MQTT ota for ttcode mint");
+    match rt.block_on(CloudBackend::new(session).status()) {
+        Ok(st) => {
+            tracing::debug!(
+                target: "bambu_ui::camera",
+                firmware_len = st.ota_version.len(),
+                "MQTT ota for camera"
+            );
+            st.ota_version
+        }
+        Err(err) => {
+            tracing::debug!(
+                target: "bambu_ui::camera",
+                error = %err,
+                "MQTT ota fetch failed"
+            );
+            String::new()
+        }
     }
 }
 

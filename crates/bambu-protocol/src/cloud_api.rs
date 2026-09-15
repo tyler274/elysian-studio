@@ -666,11 +666,25 @@ impl CloudApi {
         iot_user_id(&self.user_id)
     }
 
+    /// Plugin `bambu_network_get_user_id` is digits; JWT usernames stay `u_{uid}`.
+    pub fn ttcode_user_id(&self) -> String {
+        if jwt_iot_user_id(&self.access_token).is_some() {
+            self.auth_user_id()
+        } else {
+            http_user_id(&self.user_id)
+        }
+    }
+
     fn host(&self) -> &'static str {
         api_host(&self.region)
     }
 
+    #[cfg(test)]
     fn json_headers(&self, json_body: bool) -> Vec<(&str, String)> {
+        self.json_headers_as(&self.auth_user_id(), json_body)
+    }
+
+    fn json_headers_as(&self, uid: &str, json_body: bool) -> Vec<(&str, String)> {
         let mut h = vec![("Accept", "application/json".into())];
         if json_body {
             h.push(("Content-Type", "application/json".into()));
@@ -678,9 +692,8 @@ impl CloudApi {
         if !self.access_token.is_empty() {
             h.push(("Authorization", format!("Bearer {}", self.access_token)));
         }
-        let uid = self.auth_user_id();
         if !uid.is_empty() {
-            h.push(("user-id", uid));
+            h.push(("user-id", uid.to_string()));
         }
         for (k, v) in slicer_http_headers(&slicer_device_id()) {
             h.push((k, v));
@@ -694,7 +707,7 @@ impl CloudApi {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value, CloudApiError> {
-        self.send_json_typed(method, path, body, body.is_some())
+        self.send_json_typed(method, path, body, body.is_some(), None)
     }
 
     fn send_json_typed(
@@ -703,11 +716,14 @@ impl CloudApi {
         path: &str,
         body: Option<&Value>,
         json_content_type: bool,
+        user_id: Option<&str>,
     ) -> Result<Value, CloudApiError> {
         let payload = body.map(serde_json::to_vec).transpose()?;
-        let owned = self.json_headers(json_content_type);
+        let uid = user_id
+            .map(str::to_string)
+            .unwrap_or_else(|| self.auth_user_id());
+        let owned = self.json_headers_as(&uid, json_content_type);
         let headers: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let uid = self.auth_user_id();
         tracing::debug!(
             target: "bambu_protocol::cloud",
             method,
@@ -891,15 +907,19 @@ impl CloudApi {
         if let Some(ch) = channel.filter(|c| !c.is_empty()) {
             body["channel"] = json!(ch);
         }
+        let uid = self.ttcode_user_id();
         tracing::debug!(
             target: "bambu_protocol::cloud",
             dev = %redact_id(dev_id),
             firmware = firmware.unwrap_or(""),
             protocols = ?protocols,
             channel_set = channel.map(|c| !c.is_empty()).unwrap_or(false),
+            user_id_len = uid.len(),
+            user_id_u_prefix = uid.starts_with("u_"),
             "POST ttcode"
         );
-        let v = self.send_json("POST", ttcode_path(), Some(&body))?;
+        let v =
+            self.send_json_typed("POST", ttcode_path(), Some(&body), true, Some(uid.as_str()))?;
         let creds = parse_camera_creds(&v).ok_or_else(|| {
             CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
         })?;
@@ -1580,6 +1600,14 @@ mod tests {
         assert_eq!(jwt_iot_user_id(&token).as_deref(), Some("u_4242"));
         let api = CloudApi::new("us", token, String::new()).with_user_id("999");
         assert_eq!(api.auth_user_id(), "u_4242");
+        assert_eq!(api.ttcode_user_id(), "u_4242");
+    }
+
+    #[test]
+    fn ttcode_user_id_is_digits_for_studio_token() {
+        let api = CloudApi::new("us", "tok", String::new()).with_user_id("u_4242");
+        assert_eq!(api.auth_user_id(), "u_4242");
+        assert_eq!(api.ttcode_user_id(), "4242");
     }
 
     #[test]
