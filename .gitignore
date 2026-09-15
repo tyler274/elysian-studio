@@ -16,7 +16,9 @@
 .idea/
 .vscode/
 *.code-workspace
-.cursor/
+.cursor/*
+!.cursor/skills/
+!.cursor/skills/**/
 
 # OS
 .DS_Store
