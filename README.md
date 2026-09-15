@@ -10,7 +10,7 @@ Option B command signing when **you** supply `slicer_*.pem`. Those PEMs are neve
 
 | Crate | Role |
 |-------|------|
-| `elysian-alloc` | Process `#[global_allocator]`: sibling mimalloc rewrite |
+| `elysian-alloc` | Process `#[global_allocator]`: [ElyMalloc](https://github.com/tyler274/ElyMalloc) |
 | `elysian-geom` | Scaled integer geometry, clipper, meshes |
 | `elysian-config` | Slice / print settings |
 | `elysian-model` | Objects, instances, plates |
@@ -35,10 +35,11 @@ Vulkan compute when an adapter is present and fall back to CPU otherwise
 ## Build
 
 Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`) and **Git LFS**
-(`git lfs install` before clone or pull; test `.3mf` fixtures are LFS objects). Check out the
-mimalloc rewrite and Wild linker as siblings (`../mimalloc`, `../wild`) and build Wild
-once (`cargo build --release -p wild-linker` in `../wild`). `cargo` links with Wild via
-`.cargo/config.toml`; `elysian-cli` / `elysian-ui` allocate with `mimalloc-core`.
+(`git lfs install` before clone or pull; test `.3mf` fixtures are LFS objects). Check out
+[ElyMalloc](https://github.com/tyler274/ElyMalloc) and [ElyLD](https://github.com/tyler274/ElyLD)
+as siblings (`../mimalloc` or `../ElyMalloc`, `../wild` or `../ElyLD`) and build ElyLD
+once (`cargo build --release -p elyld`). `cargo` links with ElyLD via
+`.cargo/config.toml`; `elysian-cli` / `elysian-ui` allocate with `elymalloc-core`.
 
 ```bash
 cargo test --workspace
@@ -130,5 +131,6 @@ nix build .#elysian-cli
 nix build .#elysian-studio
 ```
 
-The flake takes `git+file` inputs for `../mimalloc` and `../wild` so Nix builds
-link with that Wild and compile against that `mimalloc-core`.
+The flake takes [ElyMalloc](https://github.com/tyler274/ElyMalloc) and
+[ElyLD](https://github.com/tyler274/ElyLD) as GitHub inputs so Nix builds
+link with that linker and compile against that `elymalloc-core`.

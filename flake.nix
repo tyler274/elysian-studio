@@ -7,15 +7,14 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Path inputs copy gitignored rust/target; git+file does not.
-    mimalloc-rs = {
-      url = "git+file:///home/luluco/code/mimalloc";
+    # GitHub ElyMalloc (not path:) so gitignored rust/target stays out of the store.
+    elymalloc = {
+      url = "github:tyler274/ElyMalloc";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.rust-overlay.follows = "rust-overlay";
     };
-    wild = {
-      # Local Wild checkout. Pin the working branch; unadorned git+file follows
-      # origin/main, which does not have the plugin-compile fix.
-      url = "git+file:///home/luluco/code/wild?ref=kernel-lto-incremental";
+    elyld = {
+      url = "github:tyler274/ElyLD";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -25,8 +24,8 @@
       self,
       nixpkgs,
       rust-overlay,
-      mimalloc-rs,
-      wild,
+      elymalloc,
+      elyld,
     }:
     let
       systems = [
@@ -40,8 +39,8 @@
           inherit system;
           overlays = [
             rust-overlay.overlays.default
-            wild.overlays.default
-            mimalloc-rs.overlays.default
+            elyld.overlays.default
+            elymalloc.overlays.default
           ];
         };
       rustFor =
@@ -71,7 +70,7 @@
         };
       placeMimalloc = ''
         mkdir -p "$NIX_BUILD_TOP/mimalloc"
-        cp -a "${mimalloc-rs}/rust" "$NIX_BUILD_TOP/mimalloc/rust"
+        cp -a "${elymalloc}/rust" "$NIX_BUILD_TOP/mimalloc/rust"
         chmod -R u+w "$NIX_BUILD_TOP/mimalloc"
       '';
     in
@@ -104,7 +103,7 @@
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.makeWrapper
-              pkgs.wild
+              pkgs.elyld
               pkgs.autoAddDriverRunpath
             ];
             buildInputs = gpuLibs ++ [
@@ -207,7 +206,7 @@
               pkgs.cargo-deny
               pkgs.git-lfs
               pkgs.pkg-config
-              pkgs.wild
+              pkgs.elyld
             ]
             ++ gpuLibs;
             WGPU_BACKEND = "vulkan";

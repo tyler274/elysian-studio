@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
-# GCC -B helper: this directory is passed as -B so `cc` execs Wild as `ld`.
+# GCC -B helper: this directory is passed as -B so `cc` execs ElyLD as `ld`.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
+if command -v elyld >/dev/null 2>&1; then
+  exec elyld "$@"
+fi
 if command -v wild >/dev/null 2>&1; then
   exec wild "$@"
 fi
 
 for candidate in \
+  "${ELYLD:-}" \
   "${WILD:-}" \
+  "$root/../ElyLD/target/release/elyld" \
+  "$root/../wild/target/release/elyld" \
   "$root/../wild/target/release/wild" \
+  "$root/../ElyLD/target/debug/elyld" \
+  "$root/../wild/target/debug/elyld" \
   "$root/../wild/target/debug/wild"; do
   if [[ -n "$candidate" && -x "$candidate" ]]; then
     exec "$candidate" "$@"
   fi
 done
 
-echo "wild linker not found; build ../wild or enter nix develop" >&2
+echo "elyld not found; build github.com/tyler274/ElyLD or enter nix develop" >&2
 exit 1
