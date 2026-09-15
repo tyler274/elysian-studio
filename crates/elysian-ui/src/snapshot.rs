@@ -109,7 +109,7 @@ impl App {
 
     /// Offscreen iced_wgpu screenshot at [`WINDOW_SIZE`]. `None` without an adapter.
     pub fn screenshot_rgba(&self) -> Option<Vec<u8>> {
-        bambu_gpu::force_vulkan_env();
+        elysian_gpu::force_vulkan_env();
         let mut renderer = pollster::block_on(iced::Renderer::new(
             Font::DEFAULT,
             Pixels::from(theme::BODY_SIZE),

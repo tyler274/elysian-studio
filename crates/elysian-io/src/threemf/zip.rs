@@ -11,7 +11,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use super::parse::{model_from_parsed, parse_xml_bytes, parse_xml_reader, ParsedModel};
 use super::xml::normalize_model_path;
 use crate::IoError;
-use bambu_model::Model;
+use elysian_model::Model;
 
 pub(crate) const MODEL_PATH: &str = "3D/3dmodel.model";
 pub(crate) const MODEL_SETTINGS_PATH: &str = "Metadata/model_settings.config";
@@ -199,7 +199,7 @@ where
     }
     if let Some(project_json) = project_json {
         model.settings = Some(
-            bambu_config::settings_from_json(&project_json)
+            elysian_config::settings_from_json(&project_json)
                 .map_err(|err| IoError::Message(err.to_string()))?,
         );
     }

@@ -4,8 +4,8 @@
 //! reverse look-ahead with XY jerk junctions) used to fill
 //! `; model printing time` / `; total filament …` placeholders.
 
-use bambu_config::SliceSettings;
-use bambu_geom::calc_arc_length_mm;
+use elysian_config::SliceSettings;
+use elysian_geom::calc_arc_length_mm;
 
 const PREVIOUS_FEEDRATE_THRESHOLD: f64 = 1e-4;
 

@@ -9,11 +9,11 @@
 
 mod common;
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 
-use bambu_config::SupportType;
-use bambu_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
-use bambu_io::load_3mf;
+use elysian_config::SupportType;
+use elysian_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
+use elysian_io::load_3mf;
 
 use common::{bambu_studio_or_skip, run_cpp_slice_3mf, rust_slice_plate, scene_3mf};
 
@@ -84,7 +84,7 @@ fn calibration_block_3mf_loads() {
 }
 
 #[test]
-#[ignore = "C++ CLI exits -101 (wipe-tower G-code path conflicts); cargo test -p bambu-cli --test golden_calibration -- --ignored"]
+#[ignore = "C++ CLI exits -101 (wipe-tower G-code path conflicts); cargo test -p elysian-cli --test golden_calibration -- --ignored"]
 fn calibration_block_matches_cpp_bambu_studio() {
     let Some(bin) = bambu_studio_or_skip() else {
         return;
@@ -96,7 +96,7 @@ fn calibration_block_matches_cpp_bambu_studio() {
         .clone()
         .expect("embedded project_settings.config");
     let ours_gcode = rust_slice_plate(&model, &settings, 0).expect("rust slice");
-    let dir = std::env::temp_dir().join("bambu-studio-rs-oracle-calibration");
+    let dir = std::env::temp_dir().join("elysian-studio-oracle-calibration");
     let cpp_dir = dir.join("cpp_out");
     let cpp_data = dir.join("cpp_data");
     let _ = std::fs::create_dir_all(&cpp_dir);

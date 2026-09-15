@@ -124,21 +124,63 @@ impl SlicerCredentials {
     }
 }
 
-/// Config directory for extracted credentials (`$XDG_CONFIG_HOME/bambu-studio-rs`).
-pub fn default_config_dir() -> PathBuf {
+/// Config directory for extracted credentials (`$XDG_CONFIG_HOME/elysian-studio`).
+/// Renames a leftover `bambu-studio-rs` dir (PEMs, tokens, prefs) on first use.
+pub const REWRITE_CONFIG_DIR: &str = "elysian-studio";
+pub const LEGACY_REWRITE_CONFIG_DIR: &str = "bambu-studio-rs";
+
+fn config_home() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("bambu-studio-rs");
+            return PathBuf::from(xdg);
         }
     }
     #[cfg(windows)]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            return PathBuf::from(appdata).join("bambu-studio-rs");
+            return PathBuf::from(appdata);
         }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".config/bambu-studio-rs")
+    PathBuf::from(home).join(".config")
+}
+
+pub fn default_config_dir() -> PathBuf {
+    config_dir_in(&config_home())
+}
+
+pub(crate) fn config_dir_in(config_home: &Path) -> PathBuf {
+    let preferred = config_home.join(REWRITE_CONFIG_DIR);
+    if preferred.exists() {
+        return preferred;
+    }
+    let legacy = config_home.join(LEGACY_REWRITE_CONFIG_DIR);
+    if !legacy.exists() {
+        return preferred;
+    }
+    if std::fs::rename(&legacy, &preferred).is_ok() {
+        return preferred;
+    }
+    if copy_dir_all(&legacy, &preferred).is_ok() {
+        let _ = std::fs::remove_dir_all(&legacy);
+        return preferred;
+    }
+    legacy
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn load_from_dir(dir: impl AsRef<Path>) -> Result<SlicerCredentials, CredentialError> {
@@ -301,4 +343,62 @@ pub fn import_from_known_locations() -> Result<SlicerCredentials, CredentialErro
         }
     }
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "elysian-config-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch config home");
+        dir
+    }
+
+    #[test]
+    fn prefers_elysian_studio_config_dir() {
+        let root = scratch("prefer");
+        std::fs::create_dir_all(root.join(REWRITE_CONFIG_DIR)).unwrap();
+        std::fs::create_dir_all(root.join(LEGACY_REWRITE_CONFIG_DIR)).unwrap();
+        assert_eq!(config_dir_in(&root), root.join(REWRITE_CONFIG_DIR));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn moves_legacy_pems_into_elysian_studio() {
+        let root = scratch("move");
+        let legacy = root.join(LEGACY_REWRITE_CONFIG_DIR);
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("slicer_cert.pem"), "BEGIN CERTIFICATE\n").unwrap();
+        std::fs::create_dir_all(legacy.join("hms")).unwrap();
+        std::fs::write(legacy.join("hms").join("catalog.json"), "{}").unwrap();
+        let dest = config_dir_in(&root);
+        assert_eq!(dest, root.join(REWRITE_CONFIG_DIR));
+        assert!(
+            dest.join("slicer_cert.pem").is_file(),
+            "legacy PEMs must land in elysian-studio, not stay in bambu-studio-rs"
+        );
+        assert!(dest.join("hms").join("catalog.json").is_file());
+        assert!(
+            !legacy.exists(),
+            "legacy dir must be gone after the move, got {legacy:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn uses_elysian_studio_when_neither_dir_exists() {
+        let root = scratch("missing");
+        assert_eq!(config_dir_in(&root), root.join(REWRITE_CONFIG_DIR));
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

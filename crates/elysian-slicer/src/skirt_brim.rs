@@ -1,7 +1,7 @@
 //! Skirt and outer brim (`PrintStep::SkirtBrim`).
 
-use bambu_config::SliceSettings;
-use bambu_geom::{difference_polygons, offset_polygons, Polygon, Polyline};
+use elysian_config::SliceSettings;
+use elysian_geom::{difference_polygons, offset_polygons, Polygon, Polyline};
 
 use crate::clip::subtract_polylines;
 
@@ -30,7 +30,7 @@ pub fn brim(contours: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
     if !settings.has_outer_brim() {
         return Vec::new();
     }
-    let w = settings.line_width_for(bambu_config::FlowRole::ExternalPerimeter, true);
+    let w = settings.line_width_for(elysian_config::FlowRole::ExternalPerimeter, true);
     let loops = (settings.brim_width_mm / w).round().max(1.0) as u32;
     concentric_loops(contours, settings.brim_object_gap_mm.max(0.0), loops, w)
 }
@@ -39,7 +39,7 @@ pub fn skirt(footprint: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
     if !settings.has_skirt() {
         return Vec::new();
     }
-    let brim_outer = if settings.draft_shield != bambu_config::DraftShield::Disabled {
+    let brim_outer = if settings.draft_shield != elysian_config::DraftShield::Disabled {
         0.0
     } else if settings.has_outer_brim() {
         settings.brim_object_gap_mm.max(0.0) + settings.brim_width_mm
@@ -51,12 +51,12 @@ pub fn skirt(footprint: &[Polygon], settings: &SliceSettings) -> Vec<Polyline> {
         footprint,
         start,
         settings.skirt_loops,
-        settings.line_width_for(bambu_config::FlowRole::ExternalPerimeter, true),
+        settings.line_width_for(elysian_config::FlowRole::ExternalPerimeter, true),
     )
 }
 
 fn skirt_spacing_mm(settings: &SliceSettings) -> f64 {
-    settings.line_width_for(bambu_config::FlowRole::ExternalPerimeter, true)
+    settings.line_width_for(elysian_config::FlowRole::ExternalPerimeter, true)
 }
 
 /// Skirt extrusion band: outermost loop grown by half spacing minus innermost
@@ -80,7 +80,7 @@ pub fn trim_brim_for_draft_shield(
 ) -> Vec<Polyline> {
     if brim.is_empty()
         || skirt.is_empty()
-        || settings.draft_shield == bambu_config::DraftShield::Disabled
+        || settings.draft_shield == elysian_config::DraftShield::Disabled
         || settings.skirt_distance_mm >= settings.brim_width_mm
     {
         return brim;
@@ -95,8 +95,8 @@ pub fn trim_brim_for_draft_shield(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::SliceSettings;
-    use bambu_geom::Point;
+    use elysian_config::SliceSettings;
+    use elysian_geom::Point;
 
     fn square(size_mm: f64) -> Polygon {
         vec![
@@ -130,7 +130,7 @@ mod tests {
             (gapped_inner - (flush_inner - 0.5)).abs() < 0.05,
             "innermost brim should move out by the gap: flush={flush_inner} gapped={gapped_inner}"
         );
-        settings.brim_type = bambu_config::BrimType::NoBrim;
+        settings.brim_type = elysian_config::BrimType::NoBrim;
         assert!(brim(&[contour], &settings).is_empty());
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let mut settings = SliceSettings::default();
         settings.skirt_loops = 2;
         settings.skirt_height = 0;
-        settings.draft_shield = bambu_config::DraftShield::Limited;
+        settings.draft_shield = elysian_config::DraftShield::Limited;
         assert_eq!(skirt(&[contour], &settings).len(), 2);
     }
 
@@ -182,7 +182,7 @@ mod tests {
         settings.skirt_loops = 1;
         settings.skirt_distance_mm = 2.0;
         let with_brim = skirt(&[contour.clone()], &settings);
-        settings.draft_shield = bambu_config::DraftShield::Enabled;
+        settings.draft_shield = elysian_config::DraftShield::Enabled;
         let shielded = skirt(&[contour], &settings);
         let brim_clearance = min_x(with_brim.last().unwrap());
         let shield_inner = min_x(shielded.last().unwrap());
@@ -216,7 +216,7 @@ mod tests {
         settings.skirt_loops = 1;
         settings.skirt_height = 1;
         settings.skirt_distance_mm = 2.0;
-        settings.draft_shield = bambu_config::DraftShield::Enabled;
+        settings.draft_shield = elysian_config::DraftShield::Enabled;
         (square(20.0), settings)
     }
 
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn no_draft_shield_leaves_brim_intact() {
         let (contour, mut settings) = shield_brim_settings();
-        settings.draft_shield = bambu_config::DraftShield::Disabled;
+        settings.draft_shield = elysian_config::DraftShield::Disabled;
         let raw = brim(&[contour.clone()], &settings);
         let skirt_paths = skirt(&[contour], &settings);
         let trimmed = trim_brim_for_draft_shield(raw.clone(), &skirt_paths, &settings);

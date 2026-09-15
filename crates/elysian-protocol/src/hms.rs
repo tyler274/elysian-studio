@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bambu_device::HmsCode;
+use elysian_device::HmsCode;
 use serde_json::Value;
 use thiserror::Error;
 

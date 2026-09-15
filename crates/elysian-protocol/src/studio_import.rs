@@ -1,7 +1,7 @@
 //! Import LAN codes, user id, and optional cloud tokens from an existing Studio data dir.
 //!
 //! The C++ Studio tree is a config source only. PEMs are copied or scanned from a
-//! local plugin blob and written under `$XDG_CONFIG_HOME/bambu-studio-rs`.
+//! local plugin blob and written under `$XDG_CONFIG_HOME/elysian-studio`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

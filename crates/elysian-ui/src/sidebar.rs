@@ -1,6 +1,6 @@
 //! Prepare / Preview right panes. `App` / `Message` stay in the crate root.
 
-use bambu_config::{SeamPosition, TopOneWallType};
+use elysian_config::{SeamPosition, TopOneWallType};
 use iced::widget::{
     button, checkbox, column, container, keyed_column, pick_list, row, scrollable, slider, text,
     text_input,

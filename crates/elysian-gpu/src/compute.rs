@@ -3,8 +3,8 @@
 //! Mesh vertices/indices are uploaded once and reused across Z batches. Clipper
 //! union, walls, and infill stay on the CPU (integer, deterministic).
 
-use bambu_geom::{union_polygons, Point, Polygon, Polyline, TriangleMesh};
-use bambu_slicer::{clip_polylines, loops_from_segments, point_from_xy_mm};
+use elysian_geom::{union_polygons, Point, Polygon, Polyline, TriangleMesh};
+use elysian_slicer::{clip_polylines, loops_from_segments, point_from_xy_mm};
 use wgpu::util::DeviceExt;
 
 use crate::GpuError;
@@ -321,10 +321,10 @@ impl VulkanSliceAccel {
         let Some((min, max)) = poly_bbox(region) else {
             return Ok(Vec::new());
         };
-        let min_x = bambu_geom::unscale(min.x) as f32;
-        let min_y = bambu_geom::unscale(min.y) as f32;
-        let max_x = bambu_geom::unscale(max.x) as f32;
-        let max_y = bambu_geom::unscale(max.y) as f32;
+        let min_x = elysian_geom::unscale(min.x) as f32;
+        let min_y = elysian_geom::unscale(min.y) as f32;
+        let max_x = elysian_geom::unscale(max.x) as f32;
+        let max_y = elysian_geom::unscale(max.y) as f32;
         let cell = (period as f32 * 0.25).clamp(0.1, 2.0);
         let grid_w = (((max_x - min_x) / cell).ceil() as u32 + 2).clamp(2, MAX_GRID);
         let grid_h = (((max_y - min_y) / cell).ceil() as u32 + 2).clamp(2, MAX_GRID);

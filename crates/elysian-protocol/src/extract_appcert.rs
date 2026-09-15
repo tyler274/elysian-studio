@@ -351,7 +351,7 @@ pub fn fetch_appcert_from_bootstrap(
         "GET",
         host,
         &path,
-        &[("User-Agent", "bambu-studio-rs")],
+        &[("User-Agent", "elysian-studio")],
         None,
     )
     .map_err(|err| CredentialError::Message(format!("app cert GET: {err}")))?;

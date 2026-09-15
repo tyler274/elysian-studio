@@ -1,4 +1,4 @@
-//! Spawn the isolated `bambu-vmp-dump` helper so VMProtect can self-decrypt.
+//! Spawn the isolated `elysian-vmp-dump` helper so VMProtect can self-decrypt.
 //!
 //! This crate never `dlopen`s the plugin. The helper is a separate process.
 
@@ -31,13 +31,13 @@ pub fn extract_unpack(
     report.notes.extend(map_notes(&plugin));
     let Some(helper) = find_vmp_dump() else {
         report.notes.push(
-            "unpack: bambu-vmp-dump not on PATH (build -p bambu-vmp-dump); skipping self-unpack"
+            "unpack: elysian-vmp-dump not on PATH (build -p elysian-vmp-dump); skipping self-unpack"
                 .into(),
         );
         return Ok(());
     };
     let tmp = std::env::temp_dir().join(format!(
-        "bambu-vmp-dump-{}-{}.bin",
+        "elysian-vmp-dump-{}-{}.bin",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -75,7 +75,7 @@ pub fn extract_unpack(
     }
     let mut child = cmd
         .spawn()
-        .map_err(|err| CredentialError::Message(format!("spawn bambu-vmp-dump: {err}")))?;
+        .map_err(|err| CredentialError::Message(format!("spawn elysian-vmp-dump: {err}")))?;
     let deadline = Instant::now() + timeout.max(Duration::from_secs(5));
     let status = loop {
         match child.try_wait() {
@@ -261,7 +261,7 @@ pub fn find_vmp_dump() -> Option<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join("bambu-vmp-dump");
+            let candidate = dir.join("elysian-vmp-dump");
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -269,7 +269,7 @@ pub fn find_vmp_dump() -> Option<PathBuf> {
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join("bambu-vmp-dump");
+        let candidate = dir.join("elysian-vmp-dump");
         candidate.is_file().then_some(candidate)
     })
 }

@@ -4,7 +4,7 @@
 //! C++ uses `this->spacing` (line width) and `params.density` to form the same
 //! `distance = line_width / density`.
 
-use bambu_geom::{unscale, Point, Polygon, Polyline};
+use elysian_geom::{unscale, Point, Polygon, Polyline};
 
 use super::{bbox, clip_to_region};
 
@@ -141,7 +141,7 @@ fn align_to_grid(coord: f64, spacing: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
+    use elysian_geom::Point;
 
     fn square(size_mm: f64) -> Vec<Polygon> {
         vec![vec![

@@ -23,11 +23,11 @@
 
 mod tree;
 
-use bambu_config::{
+use elysian_config::{
     FlowRole, IroningPattern, SliceSettings, SupportBasePattern, SupportInterfacePattern,
     SupportType, LOOP_CLIPPING_OVER_NOZZLE,
 };
-use bambu_geom::{
+use elysian_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon,
 };
 use rayon::prelude::*;
@@ -275,7 +275,7 @@ pub(super) fn fill_support_base(
     spacing: f64,
     layer_idx: usize,
     settings: &SliceSettings,
-) -> Vec<bambu_geom::Polyline> {
+) -> Vec<elysian_geom::Polyline> {
     if !spacing.is_finite() || spacing <= 1e-6 {
         return Vec::new();
     }
@@ -310,12 +310,12 @@ pub(super) fn fill_support_interface(
     layer_idx: usize,
     settings: &SliceSettings,
     loops: bool,
-) -> Vec<bambu_geom::Polyline> {
+) -> Vec<elysian_geom::Polyline> {
     if loops || settings.support_interface_pattern == SupportInterfacePattern::Concentric {
         infill::concentric(
             region,
             spacing,
-            settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
+            settings.nozzle_diameter_mm * elysian_config::LOOP_CLIPPING_OVER_NOZZLE,
         )
     } else if settings.support_interface_pattern == SupportInterfacePattern::Grid {
         let mut lines = infill::rectilinear(region, spacing, layer_idx, settings.support_angle_deg);
@@ -413,7 +413,7 @@ fn apply_classic(layers: &mut [Layer], settings: &SliceSettings, overhangs: &[Ve
 
     let interface_n = settings.support_interface_layers.max(1);
     let bottom_n = settings.resolved_support_interface_bottom_layers();
-    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let support_w = settings.line_width_for(elysian_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let support_spacing = settings.support_spacing_mm();
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
@@ -506,7 +506,7 @@ fn iron_support_interface(layers: &mut [Layer], settings: &SliceSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
+    use elysian_geom::Point;
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon {
         vec![
@@ -610,7 +610,7 @@ mod tests {
         );
     }
 
-    fn path_spans_both_axes(paths: &[bambu_geom::Polyline]) -> bool {
+    fn path_spans_both_axes(paths: &[elysian_geom::Polyline]) -> bool {
         paths.iter().any(|path| {
             if path.len() < 3 {
                 return false;

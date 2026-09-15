@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::mqtt::LAN_MQTT_USER;
 use crate::oauth::percent_encode_query;
 use crate::tls::{lan_client_config, server_name, TlsError};
-use bambu_device::Frame;
+use elysian_device::Frame;
 
 pub const LAN_CAMERA_PORT: u16 = 6000;
 /// X1 / H2 chamber is RTSPS on TCP 322 (not the P1/A1 JPEG port).

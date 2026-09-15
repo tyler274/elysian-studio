@@ -7,8 +7,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use bambu_geom::TriangleMesh;
-use bambu_model::Model;
+use elysian_geom::TriangleMesh;
+use elysian_model::Model;
 use glam::Vec3;
 use stl_io::{IndexedMesh, Normal, Triangle, Vertex};
 use thiserror::Error;

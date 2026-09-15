@@ -1,7 +1,7 @@
 //! `PrintObjectStep::Ironing`: low-flow recross of top / solid shells.
 
-use bambu_config::{IroningPattern, IroningType, SliceSettings};
-use bambu_geom::offset_polygons;
+use elysian_config::{IroningPattern, IroningType, SliceSettings};
+use elysian_geom::offset_polygons;
 use rayon::prelude::*;
 
 use crate::infill;
@@ -33,7 +33,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
             IroningPattern::Concentric => infill::concentric(
                 &inset_area,
                 spacing,
-                settings.nozzle_diameter_mm * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
+                settings.nozzle_diameter_mm * elysian_config::LOOP_CLIPPING_OVER_NOZZLE,
             ),
             IroningPattern::Rectilinear => {
                 infill::solid_monotonic(&inset_area, spacing, i, settings.ironing_angle_deg())
@@ -42,7 +42,7 @@ pub fn apply(layers: &mut [Layer], settings: &SliceSettings) {
     });
 }
 
-fn ironing_area(kind: IroningType, i: usize, n: usize, layer: &Layer) -> Vec<bambu_geom::Polygon> {
+fn ironing_area(kind: IroningType, i: usize, n: usize, layer: &Layer) -> Vec<elysian_geom::Polygon> {
     match kind {
         IroningType::NoIroning => Vec::new(),
         IroningType::TopSurfaces => layer.top_region.clone(),

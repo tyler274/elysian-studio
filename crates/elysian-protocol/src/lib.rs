@@ -30,7 +30,7 @@ mod tutk;
 
 use std::time::Duration;
 
-use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
+use elysian_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
 use thiserror::Error;
 
 pub use agora::{

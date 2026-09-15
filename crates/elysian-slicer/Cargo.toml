@@ -1,5 +1,5 @@
 [package]
-name = "bambu-slicer"
+name = "elysian-slicer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,9 +10,9 @@ description = "FFF slice step machine: contours, perimeters, shells, infill, iro
 workspace = true
 
 [dependencies]
-bambu-config.workspace = true
-bambu-geom.workspace = true
-bambu-model.workspace = true
+elysian-config.workspace = true
+elysian-geom.workspace = true
+elysian-model.workspace = true
 glam.workspace = true
 rayon.workspace = true
 thiserror.workspace = true

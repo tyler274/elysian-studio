@@ -17,8 +17,8 @@
 //! Internal solid that overlaps a wide `stTop` on the next layer is `stSubTop`
 //! (`sub_top_surface_pattern`; C++ default monotonic).
 
-use bambu_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
-use bambu_geom::{
+use elysian_config::{EnsureVerticalShellThickness, Flow, FlowRole, InfillPattern, SliceSettings};
+use elysian_geom::{
     difference_polygons, intersect_polygons, offset_polygons, offset_polygons_square,
     union_polygons, Point, Polygon, Polyline, TriangleMesh,
 };
@@ -819,7 +819,7 @@ fn closed_concentric(region: &[Polygon], spacing_mm: f64, nozzle_mm: f64) -> Vec
     infill::concentric(
         region,
         spacing_mm,
-        nozzle_mm.max(0.0) * bambu_config::LOOP_CLIPPING_OVER_NOZZLE,
+        nozzle_mm.max(0.0) * elysian_config::LOOP_CLIPPING_OVER_NOZZLE,
     )
 }
 
@@ -886,7 +886,7 @@ fn append_union(dst: &mut Vec<Polygon>, extra: Vec<Polygon>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
+    use elysian_geom::Point;
 
     fn rect(width_mm: f64, height_mm: f64) -> Polygon {
         vec![

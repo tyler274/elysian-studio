@@ -2,20 +2,20 @@
 
 mod common;
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 use std::path::Path;
 use std::process::Command;
 
-use bambu_config::{
+use elysian_config::{
     bbl_oracle_paths, load_bbl_process, overlay_bbl_profile, write_flattened_bbl_profile,
     SliceSettings,
 };
-use bambu_gcode::{
+use elysian_gcode::{
     assert_matches_cpp, layer_stats, parse_config_comments, parse_gcode, write_gcode,
 };
-use bambu_geom::TriangleMesh;
-use bambu_io::write_stl;
-use bambu_slicer::slice_mesh;
+use elysian_geom::TriangleMesh;
+use elysian_io::write_stl;
+use elysian_slicer::slice_mesh;
 
 use common::{find_bambu_studio, find_gcode, require_oracle};
 
@@ -53,7 +53,7 @@ fn cube_matches_cpp_bambu_studio() {
         );
     });
 
-    let dir = std::env::temp_dir().join("bambu-studio-rs-oracle");
+    let dir = std::env::temp_dir().join("elysian-studio-oracle");
     let cpp_dir = dir.join("cpp_out");
     let cpp_data = dir.join("cpp_data");
     let flat_dir = dir.join("flat");

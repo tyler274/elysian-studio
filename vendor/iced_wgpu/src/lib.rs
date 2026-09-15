@@ -926,7 +926,7 @@ impl renderer::Headless for Renderer {
             return None;
         }
 
-        bambu_wgpu_exp::pin_linux_nvidia_vulkan();
+        elysian_wgpu_exp::pin_linux_nvidia_vulkan();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env()
                 .unwrap_or(wgpu::Backends::PRIMARY),

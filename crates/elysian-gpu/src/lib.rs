@@ -10,7 +10,7 @@ mod rt;
 mod scene;
 mod slice_accel;
 
-pub use bambu_preview::{ExtrusionRole, ToolpathBuffer};
+pub use elysian_preview::{ExtrusionRole, ToolpathBuffer};
 pub use compute::VulkanSliceAccel;
 pub use meshlet::{clusterize, Meshlet};
 pub use scene::{
@@ -66,7 +66,7 @@ pub fn probe_vulkan() -> Result<AdapterReport, GpuError> {
 }
 
 pub fn force_vulkan_env() {
-    bambu_wgpu_exp::pin_linux_nvidia_vulkan();
+    elysian_wgpu_exp::pin_linux_nvidia_vulkan();
     if std::env::var("WGPU_BACKEND").ok().as_deref() != Some("vulkan") {
         tracing::warn!("WGPU_BACKEND is not vulkan; iced may pick a non-Vulkan backend");
     }

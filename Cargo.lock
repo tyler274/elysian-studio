@@ -420,208 +420,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "bambu-alloc"
-version = "0.1.0"
-dependencies = [
- "mimalloc-core",
-]
-
-[[package]]
-name = "bambu-cli"
-version = "0.1.0"
-dependencies = [
- "bambu-alloc",
- "bambu-config",
- "bambu-device",
- "bambu-gcode",
- "bambu-geom",
- "bambu-gpu",
- "bambu-io",
- "bambu-model",
- "bambu-protocol",
- "bambu-slicer",
- "clap",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "bambu-config"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "bambu-device"
-version = "0.1.0"
-dependencies = [
- "bambu-config",
- "serde",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "bambu-gcode"
-version = "0.1.0"
-dependencies = [
- "bambu-config",
- "bambu-geom",
- "bambu-model",
- "bambu-slicer",
- "glam 0.29.3",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "bambu-geom"
-version = "0.1.0"
-dependencies = [
- "clipper2-rust",
- "glam 0.29.3",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "bambu-gpu"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "bambu-config",
- "bambu-geom",
- "bambu-model",
- "bambu-preview",
- "bambu-slicer",
- "bambu-wgpu-exp",
- "bytemuck",
- "glam 0.29.3",
- "iced",
- "naga",
- "pollster",
- "rayon",
- "thiserror 2.0.20",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "bambu-io"
-version = "0.1.0"
-dependencies = [
- "bambu-config",
- "bambu-geom",
- "bambu-model",
- "glam 0.29.3",
- "quick-xml 0.37.5",
- "rayon",
- "stl_io",
- "thiserror 2.0.20",
- "zip",
-]
-
-[[package]]
-name = "bambu-model"
-version = "0.1.0"
-dependencies = [
- "bambu-config",
- "bambu-geom",
- "glam 0.29.3",
- "serde",
-]
-
-[[package]]
-name = "bambu-preview"
-version = "0.1.0"
-dependencies = [
- "bambu-geom",
- "bambu-slicer",
- "glam 0.29.3",
-]
-
-[[package]]
-name = "bambu-protocol"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "bambu-device",
- "base64",
- "flate2",
- "hkdf",
- "jpeg-decoder",
- "openh264",
- "rand 0.8.8",
- "rsa",
- "rumqttc",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "x509-parser",
- "zip",
-]
-
-[[package]]
-name = "bambu-slicer"
-version = "0.1.0"
-dependencies = [
- "bambu-config",
- "bambu-geom",
- "bambu-model",
- "glam 0.29.3",
- "rayon",
- "thiserror 2.0.20",
- "tracing",
- "wide 0.7.33",
-]
-
-[[package]]
-name = "bambu-ui"
-version = "0.1.0"
-dependencies = [
- "bambu-alloc",
- "bambu-config",
- "bambu-device",
- "bambu-gcode",
- "bambu-geom",
- "bambu-gpu",
- "bambu-io",
- "bambu-model",
- "bambu-protocol",
- "bambu-slicer",
- "glam 0.29.3",
- "iced",
- "png",
- "pollster",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "bambu-vmp-dump"
-version = "0.1.0"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "bambu-wgpu-exp"
-version = "0.1.0"
-dependencies = [
- "wgpu",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1266,6 +1064,216 @@ name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+
+[[package]]
+name = "elymalloc-core"
+version = "3.5.2"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "elysian-alloc"
+version = "0.1.0"
+dependencies = [
+ "elymalloc-core",
+]
+
+[[package]]
+name = "elysian-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "elysian-alloc",
+ "elysian-config",
+ "elysian-device",
+ "elysian-gcode",
+ "elysian-geom",
+ "elysian-gpu",
+ "elysian-io",
+ "elysian-model",
+ "elysian-protocol",
+ "elysian-slicer",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "elysian-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "elysian-device"
+version = "0.1.0"
+dependencies = [
+ "elysian-config",
+ "serde",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "elysian-gcode"
+version = "0.1.0"
+dependencies = [
+ "elysian-config",
+ "elysian-geom",
+ "elysian-model",
+ "elysian-slicer",
+ "glam 0.29.3",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "elysian-geom"
+version = "0.1.0"
+dependencies = [
+ "clipper2-rust",
+ "glam 0.29.3",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "elysian-gpu"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bytemuck",
+ "elysian-config",
+ "elysian-geom",
+ "elysian-model",
+ "elysian-preview",
+ "elysian-slicer",
+ "elysian-wgpu-exp",
+ "glam 0.29.3",
+ "iced",
+ "naga",
+ "pollster",
+ "rayon",
+ "thiserror 2.0.20",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "elysian-io"
+version = "0.1.0"
+dependencies = [
+ "elysian-config",
+ "elysian-geom",
+ "elysian-model",
+ "glam 0.29.3",
+ "quick-xml 0.37.5",
+ "rayon",
+ "stl_io",
+ "thiserror 2.0.20",
+ "zip",
+]
+
+[[package]]
+name = "elysian-model"
+version = "0.1.0"
+dependencies = [
+ "elysian-config",
+ "elysian-geom",
+ "glam 0.29.3",
+ "serde",
+]
+
+[[package]]
+name = "elysian-preview"
+version = "0.1.0"
+dependencies = [
+ "elysian-geom",
+ "elysian-slicer",
+ "glam 0.29.3",
+]
+
+[[package]]
+name = "elysian-protocol"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "elysian-device",
+ "flate2",
+ "hkdf",
+ "jpeg-decoder",
+ "openh264",
+ "rand 0.8.8",
+ "rsa",
+ "rumqttc",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "x509-parser",
+ "zip",
+]
+
+[[package]]
+name = "elysian-slicer"
+version = "0.1.0"
+dependencies = [
+ "elysian-config",
+ "elysian-geom",
+ "elysian-model",
+ "glam 0.29.3",
+ "rayon",
+ "thiserror 2.0.20",
+ "tracing",
+ "wide 0.7.33",
+]
+
+[[package]]
+name = "elysian-ui"
+version = "0.1.0"
+dependencies = [
+ "elysian-alloc",
+ "elysian-config",
+ "elysian-device",
+ "elysian-gcode",
+ "elysian-geom",
+ "elysian-gpu",
+ "elysian-io",
+ "elysian-model",
+ "elysian-protocol",
+ "elysian-slicer",
+ "glam 0.29.3",
+ "iced",
+ "png",
+ "pollster",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "elysian-vmp-dump"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "elysian-wgpu-exp"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
+]
 
 [[package]]
 name = "endi"
@@ -1949,10 +1957,10 @@ dependencies = [
 name = "iced_wgpu"
 version = "0.14.0"
 dependencies = [
- "bambu-wgpu-exp",
  "bitflags 2.13.1",
  "bytemuck",
  "cryoglyph",
+ "elysian-wgpu-exp",
  "futures",
  "glam 0.25.0",
  "guillotiere",
@@ -2399,14 +2407,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "mimalloc-core"
-version = "3.5.2"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 //! Point-in-polygon and open-polyline clipping.
 
-use bambu_geom::{Point, Polygon, Polyline};
+use elysian_geom::{Point, Polygon, Polyline};
 
 pub fn point_in_polygon(poly: &[Point], p: Point) -> bool {
     let n = poly.len();
@@ -287,7 +287,7 @@ pub fn clip_polylines(paths: &[Polyline], polygons: &[Polygon]) -> Vec<Polyline>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::scale;
+    use elysian_geom::scale;
 
     fn square(size: f64) -> Polygon {
         let h = scale(size / 2.0);

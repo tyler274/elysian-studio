@@ -1,6 +1,6 @@
 //! C++ `PrintObject::detect_overhangs_for_lift`.
 
-use bambu_geom::{difference_polygons, offset_polygons, Polygon};
+use elysian_geom::{difference_polygons, offset_polygons, Polygon};
 use rayon::prelude::*;
 
 use crate::Layer;

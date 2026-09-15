@@ -16,14 +16,14 @@ pub use snapshot::{
     GuiSnapshot,
 };
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use bambu_config::{
+use elysian_config::{
     apply_sku_with_generic_base, clone_filament_as_user, delete_user_filament, list_bbl_profiles,
     list_filament_json_dir, list_instantiated_bbl_profiles, list_studio_user_filaments,
     load_bbl_process, load_default_catalog, overlay_bbl_profile, patch_filament_colour,
@@ -31,25 +31,25 @@ use bambu_config::{
     BblProfileKind, CatalogFilament, CatalogIndex, FilamentMapMode, SeamPosition, SliceSettings,
     TopOneWallType,
 };
-use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, PrintJob, PrinterBackend};
-use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
-use bambu_gpu::{
+use elysian_device::{AmsState, AmsTray, AmsUnit, MachineState, PrintJob, PrinterBackend};
+use elysian_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
+use elysian_gpu::{
     force_vulkan_env, paint_overlay_color, probe_vulkan, screen_axis_len,
     slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole,
     Meshlet, PlaterTool, ShadedSolids, ToolpathBuffer, ViewportEvent, ViewportScene,
 };
-use bambu_io::{
+use elysian_io::{
     load_mesh, load_model_with_progress, read_3mf_thumbnail, write_model_3mf,
     write_model_3mf_bytes_with_thumbnail, LoadStage,
 };
-use bambu_model::{Model, TrianglePaint};
-use bambu_protocol::{
+use elysian_model::{Model, TrianglePaint};
+use elysian_protocol::{
     camera_serial_from_bind, describe_hms, load_cached_catalog, load_cloud_session, load_inventory,
     load_lan_codes, refresh_catalog, save_cloud_session, save_inventory, save_lan_codes, CloudApi,
     CloudBackend, CloudDevice, FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts,
     StudioPrinter,
 };
-use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
+use elysian_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, stack, text};
 use iced::{window, Element, Fill, Settings, Size, Subscription, Task, Theme};
 
@@ -74,13 +74,13 @@ pub fn run() -> iced::Result {
     tracing_subscriber::fmt()
         .with_env_filter({
             let mut filter = tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bambu_ui=info".parse().unwrap())
-                .add_directive("bambu_gpu=info".parse().unwrap());
+                .add_directive("elysian_ui=info".parse().unwrap())
+                .add_directive("elysian_gpu=info".parse().unwrap());
             #[cfg(debug_assertions)]
             {
                 filter = filter
-                    .add_directive("bambu_protocol=debug".parse().unwrap())
-                    .add_directive("bambu_ui=debug".parse().unwrap());
+                    .add_directive("elysian_protocol=debug".parse().unwrap())
+                    .add_directive("elysian_ui=debug".parse().unwrap());
             }
             filter
         })
@@ -126,13 +126,13 @@ pub fn run() -> iced::Result {
         App::view,
     )
     .subscription(App::subscription)
-    .title("Bambu Studio")
+    .title("Elysian Studio")
     .theme(App::theme)
     .style(|_, t| theme::window(t))
     .settings(Settings {
         antialiasing: true,
         default_text_size: iced::Pixels(13.0),
-        id: Some(String::from("bambu-studio-rs")),
+        id: Some(String::from("elysian-studio")),
         ..Settings::default()
     })
     .window(window)
@@ -192,7 +192,7 @@ pub struct App {
     meshlet_gen: u64,
     load_gen: u64,
     load_progress: Option<LoadProgress>,
-    object_aabbs: Vec<bambu_geom::Aabb3>,
+    object_aabbs: Vec<elysian_geom::Aabb3>,
     needs_display_pack: bool,
     pack_inflight: bool,
     pack_gen: u64,
@@ -225,7 +225,7 @@ pub struct App {
     selected_volume: usize,
     drag_last_bed: Option<(f32, f32)>,
     drag_last_ndc: Option<(f32, f32)>,
-    drag_axis: Option<bambu_gpu::GizmoAxis>,
+    drag_axis: Option<elysian_gpu::GizmoAxis>,
     machine: MachineState,
     ams: AmsState,
     hms_lines: Vec<String>,
@@ -318,7 +318,7 @@ pub enum Message {
     ExtractKeys,
     KeysExtracted(Result<ExtractUi, String>),
     Discover,
-    Discovered(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
+    Discovered(Result<Vec<elysian_protocol::DiscoveredPrinter>, String>),
     Host(String),
     AccessCode(String),
     Serial(String),
@@ -328,7 +328,7 @@ pub enum Message {
     Chamber,
     CameraPlay,
     CameraStop,
-    CameraLan(Result<Vec<bambu_protocol::DiscoveredPrinter>, String>),
+    CameraLan(Result<Vec<elysian_protocol::DiscoveredPrinter>, String>),
     ChamberShot(Result<ChamberResult, String>),
     WallLoops(u32),
     Infill(f64),
@@ -653,7 +653,7 @@ struct LoadedModel {
     apply_settings: bool,
     load_ms: u128,
     shaded: ShadedSolids,
-    object_aabbs: Vec<bambu_geom::Aabb3>,
+    object_aabbs: Vec<elysian_geom::Aabb3>,
 }
 
 #[derive(Debug, Clone)]
@@ -667,27 +667,27 @@ struct LoadJob {
     gen: u64,
     path: PathBuf,
     apply_settings: bool,
-    bed: bambu_config::BedShape,
+    bed: elysian_config::BedShape,
 }
 
 #[derive(Debug, Clone)]
 enum SliceOutcome {
     Single {
-        result: bambu_slicer::SliceResult,
+        result: elysian_slicer::SliceResult,
         backend: String,
         settings: SliceSettings,
     },
     Objects {
-        results: Vec<bambu_slicer::SliceResult>,
+        results: Vec<elysian_slicer::SliceResult>,
         settings: SliceSettings,
     },
 }
 
 struct SliceJob {
     settings: SliceSettings,
-    mesh: bambu_geom::TriangleMesh,
-    volumes: Option<Vec<bambu_model::ModelVolume>>,
-    objects: Option<Vec<Vec<bambu_model::ModelVolume>>>,
+    mesh: elysian_geom::TriangleMesh,
+    volumes: Option<Vec<elysian_model::ModelVolume>>,
+    objects: Option<Vec<Vec<elysian_model::ModelVolume>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -704,7 +704,7 @@ enum ChamberResult {
 }
 
 impl ChamberResult {
-    fn from_frame(bytes: usize, frame: bambu_device::Frame) -> Self {
+    fn from_frame(bytes: usize, frame: elysian_device::Frame) -> Self {
         Self::Jpeg {
             bytes,
             width: frame.width,
@@ -722,7 +722,7 @@ struct StudioImportUi {
     printers: Vec<StudioPrinter>,
     default_serial: String,
     status: String,
-    discovered: Vec<bambu_protocol::DiscoveredPrinter>,
+    discovered: Vec<elysian_protocol::DiscoveredPrinter>,
 }
 
 impl App {
@@ -731,7 +731,7 @@ impl App {
         let bed = settings.bed_shape();
         let mut scene = ViewportScene::with_cube_on_bed(adapter.clone(), bed.orbit_mm());
         scene.set_bed_shape(bed.clone());
-        let mut model = Model::from_mesh("cube", bambu_geom::TriangleMesh::cube(20.0));
+        let mut model = Model::from_mesh("cube", elysian_geom::TriangleMesh::cube(20.0));
         model.place_on_bed_if_needed(&bed);
         if let Some(mesh) = model.mesh_for_plate(0) {
             scene.set_mesh(mesh);
@@ -853,7 +853,7 @@ impl App {
         };
         app.reload_user_filaments();
         app.catalog = load_default_catalog();
-        app.inventory = load_inventory(bambu_protocol::default_config_dir()).unwrap_or_default();
+        app.inventory = load_inventory(elysian_protocol::default_config_dir()).unwrap_or_default();
         if let Some(first) = app.inventory.spools.first() {
             app.draft_spool = app.inventory.flatten(first);
             app.draft_location = first.location.clone();
@@ -926,7 +926,7 @@ impl App {
 
     /// Cube with support-paint blockers for overlay goldens / unit tests.
     pub fn seed_support_paint_cube(&mut self) {
-        let mut model = Model::from_mesh("paint", bambu_geom::TriangleMesh::cube(20.0));
+        let mut model = Model::from_mesh("paint", elysian_geom::TriangleMesh::cube(20.0));
         model.place_on_bed_if_needed(&self.scene.bed);
         if let Some(vol) = model.objects.get_mut(0).and_then(|o| o.volumes.get_mut(0)) {
             let n = vol.mesh.indices.len();
@@ -947,7 +947,7 @@ impl App {
 
     /// Tiny 3MF with `Metadata/plate_1.png` for Home recents goldens.
     pub fn write_recent_preview_3mf(path: &std::path::Path) -> Result<(), String> {
-        let model = Model::from_mesh("preview_cube", bambu_geom::TriangleMesh::cube(20.0));
+        let model = Model::from_mesh("preview_cube", elysian_geom::TriangleMesh::cube(20.0));
         let bytes = write_model_3mf_bytes_with_thumbnail(&model, Some(TINY_PNG))
             .map_err(|e| e.to_string())?;
         std::fs::write(path, bytes).map_err(|e| e.to_string())
@@ -1037,7 +1037,7 @@ impl App {
     }
 
     fn load_account_from_disk(&mut self) {
-        let dir = bambu_protocol::default_config_dir();
+        let dir = elysian_protocol::default_config_dir();
         if let Ok(session) = load_cloud_session(&dir) {
             self.cloud_user = session.user_id;
             self.cloud_region = session.region;
@@ -1101,7 +1101,7 @@ impl App {
     }
 
     fn persist_bind_lan_codes(devices: &[CloudDevice]) {
-        let dir = bambu_protocol::default_config_dir();
+        let dir = elysian_protocol::default_config_dir();
         let mut codes = load_lan_codes(&dir);
         let mut changed = false;
         for device in devices {
@@ -1141,13 +1141,13 @@ impl App {
             }
         }
         if self.access_code.is_empty() {
-            if let Some(code) = load_lan_codes(bambu_protocol::default_config_dir()).get(serial) {
+            if let Some(code) = load_lan_codes(elysian_protocol::default_config_dir()).get(serial) {
                 self.access_code = code.clone();
             }
         }
-        if let Ok(mut session) = load_cloud_session(bambu_protocol::default_config_dir()) {
+        if let Ok(mut session) = load_cloud_session(elysian_protocol::default_config_dir()) {
             session.serial = serial.to_string();
-            let _ = save_cloud_session(bambu_protocol::default_config_dir(), &session);
+            let _ = save_cloud_session(elysian_protocol::default_config_dir(), &session);
         }
     }
 
@@ -1318,7 +1318,7 @@ impl App {
             }
             Message::ResetCamera => {
                 let (cx, cy) = self.scene.bed.center();
-                self.scene.camera = bambu_gpu::OrbitCamera::looking_at_center(
+                self.scene.camera = elysian_gpu::OrbitCamera::looking_at_center(
                     glam::Vec3::new(cx, cy, 0.0),
                     self.scene.bed_mm,
                 );
@@ -1338,7 +1338,7 @@ impl App {
                 }
                 return offload(
                     || {
-                        bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts::default())
+                        elysian_protocol::extract_keys(elysian_protocol::ExtractKeysOpts::default())
                             .map(|report| ExtractUi {
                                 can_sign: report.credentials.can_sign(),
                                 note: report.notes.last().cloned().unwrap_or_default(),
@@ -1352,7 +1352,7 @@ impl App {
                 self.busy = false;
                 match result {
                     Ok(report) => {
-                        let dir = bambu_protocol::default_config_dir();
+                        let dir = elysian_protocol::default_config_dir();
                         self.status = format!(
                             "keys → {} · sign={} · {}",
                             dir.display(),
@@ -1372,10 +1372,10 @@ impl App {
                 return Task::perform(
                     async {
                         std::thread::spawn(|| {
-                            let imported = bambu_protocol::import_studio(None, None)
+                            let imported = elysian_protocol::import_studio(None, None)
                                 .map_err(|err| err.to_string())?;
                             let discovered =
-                                bambu_protocol::discover(std::time::Duration::from_secs(3))
+                                elysian_protocol::discover(std::time::Duration::from_secs(3))
                                     .unwrap_or_default();
                             let status = imported
                                 .status_lines()
@@ -1411,7 +1411,7 @@ impl App {
                 return Task::perform(
                     async {
                         std::thread::spawn(|| {
-                            let dir = bambu_protocol::default_config_dir();
+                            let dir = elysian_protocol::default_config_dir();
                             let session =
                                 load_cloud_session(&dir).map_err(|err| err.to_string())?;
                             if !session.has_bearer() {
@@ -1491,7 +1491,7 @@ impl App {
                                     refresh_token,
                                     user_id,
                                 } => {
-                                    let dir = bambu_protocol::default_config_dir();
+                                    let dir = elysian_protocol::default_config_dir();
                                     let mut session = load_cloud_session(&dir).unwrap_or_default();
                                     session.region = region;
                                     session.access_token = access_token;
@@ -1523,14 +1523,14 @@ impl App {
                 return Task::perform(
                     async move {
                         std::thread::spawn(move || {
-                            let result = bambu_protocol::oauth_login(
+                            let result = elysian_protocol::oauth_login(
                                 &region,
                                 true,
                                 std::time::Duration::from_secs(300),
                             )
                             .map_err(|err| err.to_string())?;
-                            let dir = bambu_protocol::default_config_dir();
-                            bambu_protocol::persist_login(&dir, &region, result)
+                            let dir = elysian_protocol::default_config_dir();
+                            elysian_protocol::persist_login(&dir, &region, result)
                                 .map_err(|err| err.to_string())?;
                             Ok("logged in via OAuth (token stored, not shown)".into())
                         })
@@ -1617,7 +1617,7 @@ impl App {
                         match send_via {
                             SendVia::CloudUpload => {
                                 let backend = CloudBackend::from_config_dir(
-                                    bambu_protocol::default_config_dir(),
+                                    elysian_protocol::default_config_dir(),
                                 )
                                 .map_err(|err| err.to_string())?
                                 .with_ams_mapping(mapping)
@@ -1631,8 +1631,8 @@ impl App {
                                     .map_err(|err| err.to_string())
                             }
                             SendVia::LanFtps => {
-                                let creds = bambu_protocol::load_from_dir(
-                                    bambu_protocol::default_config_dir(),
+                                let creds = elysian_protocol::load_from_dir(
+                                    elysian_protocol::default_config_dir(),
                                 )
                                 .unwrap_or_else(|_| Default::default());
                                 let backend = LanBackend::new(host, code)
@@ -2046,7 +2046,7 @@ impl App {
                 return Task::perform(
                     async {
                         std::thread::spawn(|| {
-                            refresh_catalog(bambu_protocol::default_config_dir(), "en")
+                            refresh_catalog(elysian_protocol::default_config_dir(), "en")
                                 .map(|_| "HMS catalog cached".to_string())
                                 .map_err(|err| err.to_string())
                         })
@@ -2059,7 +2059,7 @@ impl App {
             Message::HmsCatalog(Ok(msg)) => {
                 self.status = msg;
                 if !self.machine.hms.is_empty() {
-                    let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
+                    let catalog = load_cached_catalog(elysian_protocol::default_config_dir(), "en");
                     self.hms_lines = self
                         .machine
                         .hms
@@ -2310,7 +2310,7 @@ impl App {
     pub fn slice_cpu_blocking(&mut self) {
         let settings = self.settings.clone();
         let mesh = self.scene.mesh.clone();
-        match bambu_slicer::slice_mesh(&mesh, &settings) {
+        match elysian_slicer::slice_mesh(&mesh, &settings) {
             Ok(result) => {
                 let _ = self.finish_slice(&settings, result, "cpu");
             }
@@ -2385,7 +2385,7 @@ impl App {
             if vols.len() > 1
                 || vols
                     .iter()
-                    .any(bambu_model::ModelVolume::needs_volume_slice)
+                    .any(elysian_model::ModelVolume::needs_volume_slice)
             {
                 return SliceJob {
                     settings,
@@ -2417,7 +2417,7 @@ impl App {
     fn finish_slice(
         &mut self,
         settings: &SliceSettings,
-        result: bambu_slicer::SliceResult,
+        result: elysian_slicer::SliceResult,
         backend: &str,
     ) -> Task<Message> {
         match write_gcode(settings, &result) {
@@ -2452,7 +2452,7 @@ impl App {
     fn finish_objects(
         &mut self,
         settings: &SliceSettings,
-        results: Vec<bambu_slicer::SliceResult>,
+        results: Vec<elysian_slicer::SliceResult>,
     ) -> Task<Message> {
         match write_gcode_for_objects(settings, &results) {
             Ok(gcode) => {
@@ -2464,7 +2464,7 @@ impl App {
                 return Task::none();
             }
         }
-        let mut merged = bambu_slicer::SliceResult { layers: Vec::new() };
+        let mut merged = elysian_slicer::SliceResult { layers: Vec::new() };
         for result in &results {
             merged.layers.extend(result.layers.iter().cloned());
         }
@@ -2741,7 +2741,7 @@ impl App {
     }
 
     fn recents_path() -> PathBuf {
-        bambu_protocol::default_config_dir().join("recent_projects.json")
+        elysian_protocol::default_config_dir().join("recent_projects.json")
     }
 
     fn load_recents(&mut self) {
@@ -2781,7 +2781,7 @@ impl App {
     }
 
     fn ui_prefs_path() -> PathBuf {
-        bambu_protocol::default_config_dir().join("ui_prefs.json")
+        elysian_protocol::default_config_dir().join("ui_prefs.json")
     }
 
     fn load_ui_prefs(&mut self) {
@@ -2817,9 +2817,9 @@ impl App {
     }
 
     fn new_project(&mut self) -> Task<Message> {
-        self.model = Some(Arc::new(bambu_model::Model {
+        self.model = Some(Arc::new(elysian_model::Model {
             objects: Vec::new(),
-            plates: vec![bambu_model::PartPlate {
+            plates: vec![elysian_model::PartPlate {
                 name: "Plate 1".into(),
                 object_indices: Vec::new(),
                 locked: false,
@@ -2832,7 +2832,7 @@ impl App {
         self.plate = 0;
         self.selected_object = 0;
         self.selected_volume = 0;
-        self.scene.set_mesh(bambu_geom::TriangleMesh {
+        self.scene.set_mesh(elysian_geom::TriangleMesh {
             vertices: Vec::new(),
             indices: Vec::new(),
         });
@@ -2923,7 +2923,7 @@ impl App {
     }
 
     fn rewrite_filament_dir() -> PathBuf {
-        bambu_protocol::default_config_dir().join("filament")
+        elysian_protocol::default_config_dir().join("filament")
     }
 
     fn reload_user_filaments(&mut self) {
@@ -3365,7 +3365,7 @@ impl App {
     }
 
     fn persist_spools(&mut self) {
-        if let Err(err) = save_inventory(bambu_protocol::default_config_dir(), &self.inventory) {
+        if let Err(err) = save_inventory(elysian_protocol::default_config_dir(), &self.inventory) {
             self.status = format!("inventory.json: {err}");
         }
     }
@@ -3512,7 +3512,7 @@ impl App {
         );
     }
 
-    fn selected_vol_mut(&mut self) -> Option<&mut bambu_model::ModelVolume> {
+    fn selected_vol_mut(&mut self) -> Option<&mut elysian_model::ModelVolume> {
         let obj_i = self.selected_object;
         let vol_i = self.selected_volume;
         let obj = self.model_mut()?.objects.get_mut(obj_i)?;
@@ -3545,7 +3545,7 @@ impl App {
         let keep = self.scene.keep_solid;
         offload(
             move || {
-                let meshes: Vec<bambu_geom::TriangleMesh> = model
+                let meshes: Vec<elysian_geom::TriangleMesh> = model
                     .world_volumes_for_plate(plate)
                     .into_iter()
                     .map(|vol| vol.mesh)
@@ -3600,7 +3600,7 @@ impl App {
             return false;
         };
         let pad = half.max_element().max(8.0) * 0.25 + 8.0;
-        let aabb = bambu_geom::Aabb3 {
+        let aabb = elysian_geom::Aabb3 {
             min: origin - half - glam::Vec3::splat(pad),
             max: origin + half + glam::Vec3::splat(pad),
         };
@@ -3703,7 +3703,7 @@ impl App {
         }
     }
 
-    fn apply_lan_from_discovered(&mut self, list: &[bambu_protocol::DiscoveredPrinter]) {
+    fn apply_lan_from_discovered(&mut self, list: &[elysian_protocol::DiscoveredPrinter]) {
         let found = if self.serial.is_empty() {
             list.first()
         } else {
@@ -3730,7 +3730,7 @@ impl App {
     }
 
     fn camera_job(&self) -> monitor::CameraJob {
-        let session = load_cloud_session(bambu_protocol::default_config_dir()).unwrap_or_default();
+        let session = load_cloud_session(elysian_protocol::default_config_dir()).unwrap_or_default();
         monitor::CameraJob {
             host: self.host.clone(),
             code: self.access_code.clone(),
@@ -3748,10 +3748,10 @@ impl App {
                 } else {
                     self.cloud_user.clone()
                 };
-                let id = bambu_protocol::iot_user_id(&id);
+                let id = elysian_protocol::iot_user_id(&id);
                 if id.is_empty() {
-                    bambu_protocol::iot_user_id(
-                        &bambu_protocol::jwt_user_id(&session.access_token).unwrap_or_default(),
+                    elysian_protocol::iot_user_id(
+                        &elysian_protocol::jwt_user_id(&session.access_token).unwrap_or_default(),
                     )
                 } else {
                     id
@@ -3791,7 +3791,7 @@ impl App {
 
     fn on_camera_lan(
         &mut self,
-        result: Result<Vec<bambu_protocol::DiscoveredPrinter>, String>,
+        result: Result<Vec<elysian_protocol::DiscoveredPrinter>, String>,
     ) -> Task<Message> {
         match result {
             Ok(list) => {
@@ -3965,7 +3965,7 @@ fn parse_temp_c(raw: &str) -> u16 {
 }
 
 pub(crate) fn slot_colour_hex(raw: &str) -> String {
-    let n = bambu_config::normalize_filament_colour(raw);
+    let n = elysian_config::normalize_filament_colour(raw);
     if n.is_empty() {
         String::from("#FFFFFFFF")
     } else {
@@ -3974,7 +3974,7 @@ pub(crate) fn slot_colour_hex(raw: &str) -> String {
 }
 
 fn default_filament_pick(system: &[BblProfileEntry]) -> (String, FilamentSource) {
-    if let Some(paths) = bambu_config::bbl_oracle_paths() {
+    if let Some(paths) = elysian_config::bbl_oracle_paths() {
         let stem = paths
             .filament
             .file_stem()
@@ -3993,16 +3993,16 @@ fn default_filament_pick(system: &[BblProfileEntry]) -> (String, FilamentSource)
     (name, FilamentSource::System)
 }
 
-async fn discover_lan_job() -> Result<Vec<bambu_protocol::DiscoveredPrinter>, String> {
+async fn discover_lan_job() -> Result<Vec<elysian_protocol::DiscoveredPrinter>, String> {
     std::thread::spawn(|| {
-        bambu_protocol::discover(std::time::Duration::from_secs(3)).map_err(|err| err.to_string())
+        elysian_protocol::discover(std::time::Duration::from_secs(3)).map_err(|err| err.to_string())
     })
     .join()
     .unwrap_or_else(|_| Err("discover thread panicked".into()))
 }
 
 fn pull_cloud_filaments() -> Result<Vec<FilamentSpool>, String> {
-    let dir = bambu_protocol::default_config_dir();
+    let dir = elysian_protocol::default_config_dir();
     let session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
     if !session.has_bearer() {
         return Err("cloud_token missing".into());
@@ -4016,7 +4016,7 @@ fn pull_cloud_filaments() -> Result<Vec<FilamentSpool>, String> {
 }
 
 fn push_cloud_filaments(spools: &[FilamentSpool]) -> Result<String, String> {
-    let dir = bambu_protocol::default_config_dir();
+    let dir = elysian_protocol::default_config_dir();
     let session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
     if !session.has_bearer() {
         return Err("cloud_token missing".into());
@@ -4086,7 +4086,7 @@ async fn pick_export_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn write_exported_3mf(gcode: &str, path: &std::path::Path) -> Result<(), String> {
-    let bytes = bambu_protocol::pack_gcode_3mf(gcode).map_err(|e| e.to_string())?;
+    let bytes = elysian_protocol::pack_gcode_3mf(gcode).map_err(|e| e.to_string())?;
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
@@ -4220,9 +4220,9 @@ fn load_model_worker(job: LoadJob, mut tx: iced::futures::channel::mpsc::Sender<
             },
         );
         model.place_on_bed_if_needed(&bed);
-        let object_aabbs: Vec<bambu_geom::Aabb3> =
+        let object_aabbs: Vec<elysian_geom::Aabb3> =
             model.objects.iter().filter_map(|o| o.mesh.aabb()).collect();
-        let meshes: Vec<bambu_geom::TriangleMesh> = model
+        let meshes: Vec<elysian_geom::TriangleMesh> = model
             .world_volumes_for_plate(0)
             .into_iter()
             .map(|vol| vol.mesh)
@@ -4396,7 +4396,7 @@ fn seed_tray(ams_id: u8, id: u8, filament_type: &str, color: &str, remain: Optio
 }
 
 fn lan_from(host: String, code: String, serial: String) -> LanBackend {
-    let creds = bambu_protocol::load_from_dir(bambu_protocol::default_config_dir())
+    let creds = elysian_protocol::load_from_dir(elysian_protocol::default_config_dir())
         .unwrap_or_else(|_| Default::default());
     LanBackend::new(host, code)
         .with_serial(serial)
@@ -4404,7 +4404,7 @@ fn lan_from(host: String, code: String, serial: String) -> LanBackend {
 }
 
 fn default_slice_settings() -> SliceSettings {
-    match bambu_config::bbl_oracle_paths() {
+    match elysian_config::bbl_oracle_paths() {
         Some(paths) => {
             let mut settings =
                 load_bbl_process(&paths.process).unwrap_or_else(|_| SliceSettings::bbl_0_20());
@@ -4419,7 +4419,7 @@ fn default_slice_settings() -> SliceSettings {
 #[cfg(test)]
 mod device_sync {
     use super::*;
-    use bambu_protocol::DiscoveredPrinter;
+    use elysian_protocol::DiscoveredPrinter;
 
     #[test]
     fn discover_fills_lan_code_and_starts_live_monitor() {
@@ -4501,12 +4501,12 @@ mod device_sync {
         app.machine
             .nozzle_rack
             .toolhead
-            .push(bambu_device::NozzleSlot {
+            .push(elysian_device::NozzleSlot {
                 id: 0,
                 diameter: 0.4,
                 ..Default::default()
             });
-        app.machine.nozzle_rack.rack.push(bambu_device::NozzleSlot {
+        app.machine.nozzle_rack.rack.push(elysian_device::NozzleSlot {
             id: 0,
             diameter: 0.2,
             ..Default::default()
@@ -4567,7 +4567,7 @@ mod device_sync {
     fn open_recent_switches_to_prepare_with_progress() {
         let mut app = App::new_for_gui_test();
         app.workspace = Workspace::Home;
-        let path = std::env::temp_dir().join("bambu-ui-open-progress.3mf");
+        let path = std::env::temp_dir().join("elysian-ui-open-progress.3mf");
         let _ = std::fs::remove_file(&path);
         App::write_recent_preview_3mf(&path).unwrap();
         let _ = app.update(Message::OpenRecent(path.clone()));
@@ -4755,7 +4755,7 @@ mod device_sync {
         assert!(!app.status.contains("printer IP"));
         assert!(!app.status.contains("FTPS"));
 
-        let path = std::env::temp_dir().join("bambu-ui-export-test.gcode.3mf");
+        let path = std::env::temp_dir().join("elysian-ui-export-test.gcode.3mf");
         let _ = std::fs::remove_file(&path);
         write_exported_3mf(app.last_gcode.as_deref().unwrap(), &path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
@@ -4778,7 +4778,7 @@ mod device_sync {
     fn slice_all_visits_each_plate() {
         let mut app = App::new_for_gui_test();
         if let Some(model) = app.model.as_mut().map(Arc::make_mut) {
-            model.plates.push(bambu_model::PartPlate {
+            model.plates.push(elysian_model::PartPlate {
                 name: "Plate 2".into(),
                 object_indices: vec![0],
                 locked: false,

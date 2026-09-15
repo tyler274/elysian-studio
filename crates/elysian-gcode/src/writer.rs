@@ -2,9 +2,9 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::{Flow, FlowRole, PrintAccel, SliceSettings, WallSequence};
-use bambu_geom::{Polygon, Polyline};
-use bambu_slicer::SliceResult;
+use elysian_config::{Flow, FlowRole, PrintAccel, SliceSettings, WallSequence};
+use elysian_geom::{Polygon, Polyline};
+use elysian_slicer::SliceResult;
 
 use crate::envelope::first_layer_print_box;
 use crate::motion::{lift_overhangs_in_window, Writer};

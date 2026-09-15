@@ -1,5 +1,5 @@
 [package]
-name = "bambu-preview"
+name = "elysian-preview"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,6 @@ description = "GPU-agnostic toolpath buffers for preview"
 workspace = true
 
 [dependencies]
-bambu-geom.workspace = true
-bambu-slicer.workspace = true
+elysian-geom.workspace = true
+elysian-slicer.workspace = true
 glam.workspace = true

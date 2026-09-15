@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Capture 1200×800 screenshots of Bambu Studio / OrcaSlicer / PrusaSlicer for
-# crates/bambu-ui/tests/gui/upstream. Does not launch iced.
+# crates/elysian-ui/tests/gui/upstream. Does not launch iced.
 #
 #   UPDATE_GUI_UPSTREAM=1 ./scripts/capture-upstream-gui.sh
 #   UPDATE_GUI_UPSTREAM=1 UPSTREAM_CAPTURE=orca ./scripts/capture-upstream-gui.sh
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${ROOT}/crates/bambu-ui/tests/gui/upstream"
+OUT="${ROOT}/crates/elysian-ui/tests/gui/upstream"
 W=1200
 H=800
 WAIT="${UPSTREAM_GUI_WAIT:-18}"

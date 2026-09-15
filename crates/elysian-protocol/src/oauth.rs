@@ -233,7 +233,7 @@ fn handle_oauth_conn(mut stream: TcpStream) -> Result<Option<OAuthCallback>, Clo
 /// that portal page then opens `bambustudioopen://` (Mac/deep-link). Without a
 /// registered handler, KDE KIO shows "Could not read file bambustudioopen://.".
 fn write_oauth_success(stream: &mut TcpStream) -> Result<(), CloudApiError> {
-    let body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Signed in</title></head><body><h1>Signed in</h1><p>You can close this tab and return to bambu-studio-rs.</p></body></html>";
+    let body = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Signed in</title></head><body><h1>Signed in</h1><p>You can close this tab and return to Elysian Studio.</p></body></html>";
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()

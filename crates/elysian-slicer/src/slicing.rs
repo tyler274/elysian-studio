@@ -12,8 +12,8 @@
 //! after contours exist. `filament_shrink` scales XY before contours (C++
 //! `slice_volumes`); Z layering is unscaled.
 
-use bambu_config::SliceSettings;
-use bambu_geom::TriangleMesh;
+use elysian_config::SliceSettings;
+use elysian_geom::TriangleMesh;
 
 use crate::SlicerError;
 
@@ -192,7 +192,7 @@ pub fn layer_z_values(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::SliceSettings;
+    use elysian_config::SliceSettings;
 
     #[test]
     fn equal_heights_match_midplane_grid() {

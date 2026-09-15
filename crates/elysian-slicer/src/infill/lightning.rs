@@ -5,8 +5,8 @@
 //! that attach to the nearest outline or existing tree. Branches copy to the
 //! layer below so the same XY tree supports every slab under the skins.
 
-use bambu_config::SliceSettings;
-use bambu_geom::{difference_polygons, offset_polygons, scale, Point, Polygon, Polyline};
+use elysian_config::SliceSettings;
+use elysian_geom::{difference_polygons, offset_polygons, scale, Point, Polygon, Polyline};
 
 use super::{bbox, clip_to_region};
 use crate::clip::point_in_polygons;

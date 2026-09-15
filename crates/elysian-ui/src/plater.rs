@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use bambu_config::BedShape;
-use bambu_geom::Aabb3;
-use bambu_gpu::{GizmoAxis, PlaterTool};
-use bambu_model::{
+use elysian_config::BedShape;
+use elysian_geom::Aabb3;
+use elysian_gpu::{GizmoAxis, PlaterTool};
+use elysian_model::{
     auto_orient_instance, drop_instance_to_bed, lay_instance_on_normal, Instance, Model,
 };
 use glam::Vec3;
@@ -253,8 +253,8 @@ impl crate::App {
         self.fill_xform_edits();
     }
 
-    pub(crate) fn handle_viewport(&mut self, event: bambu_gpu::ViewportEvent) {
-        use bambu_gpu::ViewportEvent;
+    pub(crate) fn handle_viewport(&mut self, event: elysian_gpu::ViewportEvent) {
+        use elysian_gpu::ViewportEvent;
         match event {
             ViewportEvent::Orbit { dx, dy } => self.scene.camera.orbit(dx, dy),
             ViewportEvent::Pan { world_x, world_y } => self.scene.camera.pan_xy(world_x, world_y),

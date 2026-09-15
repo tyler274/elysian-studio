@@ -1,39 +1,39 @@
 #![forbid(unsafe_code)]
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 use std::path::PathBuf;
 
-use bambu_config::{
+use elysian_config::{
     bbl_oracle_paths, load_bbl_process, overlay_bbl_profile, ConfigError, FuzzySkinType,
     InfillPattern, IroningType, SeamPosition, SliceSettings, SupportType, SurfacePattern,
     TopOneWallType, WallGenerator,
 };
-use bambu_device::{PrintJob, PrinterBackend};
-use bambu_gcode::write_gcode;
-use bambu_gpu::{
+use elysian_device::{PrintJob, PrinterBackend};
+use elysian_gcode::write_gcode;
+use elysian_gpu::{
     clusterize, slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,
 };
-use bambu_io::{load_3mf_timed, load_model};
-use bambu_protocol::{
+use elysian_io::{load_3mf_timed, load_model};
+use elysian_protocol::{
     default_config_dir, describe_hms, import_studio, install_app_cert, load_cached_catalog,
     load_cloud_session, load_from_dir, refresh_catalog, save_cloud_session, send_gcode_line,
     snapshot_jpeg, stream_ttcode_jpegs, CloudApi, CloudBackend, CloudSession, LanBackend,
     LoginResult, ProjectFileOpts,
 };
-use bambu_slicer::slice_mesh;
+use elysian_slicer::slice_mesh;
 use clap::{Parser, Subcommand};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CliError {
     #[error(transparent)]
-    Io(#[from] bambu_io::IoError),
+    Io(#[from] elysian_io::IoError),
     #[error(transparent)]
-    Slice(#[from] bambu_slicer::SlicerError),
+    Slice(#[from] elysian_slicer::SlicerError),
     #[error(transparent)]
-    Gcode(#[from] bambu_gcode::GcodeError),
+    Gcode(#[from] elysian_gcode::GcodeError),
     #[error(transparent)]
-    Gpu(#[from] bambu_gpu::GpuError),
+    Gpu(#[from] elysian_gpu::GpuError),
     #[error(transparent)]
     StdIo(#[from] std::io::Error),
     #[error(transparent)]
@@ -62,8 +62,8 @@ pub enum CliError {
 
 #[derive(Parser)]
 #[command(
-    name = "bambu-cli",
-    about = "Headless Bambu Studio slicer (Rust rewrite)"
+    name = "elysian-cli",
+    about = "Headless Elysian Studio slicer (Rust rewrite)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -188,7 +188,7 @@ enum KeysCommand {
         /// Path to libbambu_networking.so / bambu_networking.dll.
         #[arg(long)]
         plugin: Option<PathBuf>,
-        /// Destination directory (default: $XDG_CONFIG_HOME/bambu-studio-rs).
+        /// Destination directory (default: $XDG_CONFIG_HOME/elysian-studio).
         #[arg(long)]
         out: Option<PathBuf>,
         /// Skip sandboxed official Studio memory harvest if the on-disk scan misses.
@@ -217,7 +217,7 @@ enum KeysCommand {
         /// Studio data dir (default: ~/.config/BambuStudio).
         #[arg(long)]
         studio: Option<PathBuf>,
-        /// Rewrite config dir (default: $XDG_CONFIG_HOME/bambu-studio-rs).
+        /// Rewrite config dir (default: $XDG_CONFIG_HOME/elysian-studio).
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -503,10 +503,10 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter({
             let mut filter = tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bambu_cli=info".parse().unwrap());
+                .add_directive("elysian_cli=info".parse().unwrap());
             #[cfg(debug_assertions)]
             {
-                filter = filter.add_directive("bambu_protocol=debug".parse().unwrap());
+                filter = filter.add_directive("elysian_protocol=debug".parse().unwrap());
             }
             filter
         })
@@ -695,7 +695,7 @@ fn run() -> Result<(), CliError> {
                 from_dump,
                 timeout,
             } => {
-                let report = bambu_protocol::extract_keys(bambu_protocol::ExtractKeysOpts {
+                let report = elysian_protocol::extract_keys(elysian_protocol::ExtractKeysOpts {
                     plugin,
                     out_dir: out,
                     live: !no_live,
@@ -713,8 +713,8 @@ fn run() -> Result<(), CliError> {
                 }
             }
             KeysCommand::Status { dir } => {
-                let dir = dir.unwrap_or_else(bambu_protocol::default_config_dir);
-                let creds = bambu_protocol::load_from_dir(&dir)
+                let dir = dir.unwrap_or_else(elysian_protocol::default_config_dir);
+                let creds = elysian_protocol::load_from_dir(&dir)
                     .map_err(|err| CliError::Message(err.to_string()))?;
                 println!("config dir: {}", dir.display());
                 for line in creds.status_lines() {
@@ -735,7 +735,7 @@ fn run() -> Result<(), CliError> {
         },
         Commands::Device { command } => match command {
             DeviceCommand::Discover { timeout } => {
-                let printers = bambu_protocol::discover(std::time::Duration::from_secs(timeout))
+                let printers = elysian_protocol::discover(std::time::Duration::from_secs(timeout))
                     .map_err(|err| CliError::Message(err.to_string()))?;
                 if printers.is_empty() {
                     println!("no printers advertised on UDP 2021 ({timeout}s)");
@@ -1026,18 +1026,18 @@ fn run() -> Result<(), CliError> {
             } => {
                 let dir = default_config_dir();
                 let result = if let Some(ticket) = ticket.filter(|t| !t.trim().is_empty()) {
-                    bambu_protocol::login_with_ticket(&region, ticket.trim())
+                    elysian_protocol::login_with_ticket(&region, ticket.trim())
                         .map_err(|err| CliError::Message(err.to_string()))?
                 } else if oauth {
                     let url =
-                        bambu_protocol::sign_in_url(&region, &bambu_protocol::oauth_callback_url());
+                        elysian_protocol::sign_in_url(&region, &elysian_protocol::oauth_callback_url());
                     println!("Open this URL and sign in with Google / Apple / email:");
                     println!("{url}");
                     println!(
                         "Waiting on {} (Studio ticket callback)…",
-                        bambu_protocol::oauth_callback_url()
+                        elysian_protocol::oauth_callback_url()
                     );
-                    bambu_protocol::oauth_login(
+                    elysian_protocol::oauth_login(
                         &region,
                         !no_open,
                         std::time::Duration::from_secs(1200),
@@ -1063,7 +1063,7 @@ fn run() -> Result<(), CliError> {
                         other => other,
                     }
                 };
-                let session = bambu_protocol::persist_login(&dir, &region, result)
+                let session = elysian_protocol::persist_login(&dir, &region, result)
                     .map_err(|err| CliError::Message(err.to_string()))?;
                 for line in session.status_lines() {
                     println!("{line}");
@@ -1157,7 +1157,7 @@ fn default_open_timing_path() -> PathBuf {
 }
 
 pub fn slice_file(
-    model: &bambu_model::Model,
+    model: &elysian_model::Model,
     settings: &SliceSettings,
     force_cpu: bool,
     force_gpu: bool,
@@ -1168,10 +1168,10 @@ pub fn slice_file(
     }
     let plate_idx = (plate - 1) as usize;
     let volumes = model.world_volumes_for_plate(plate_idx);
-    let object_settings = bambu_model::agreed_object_settings(&volumes, settings);
+    let object_settings = elysian_model::agreed_object_settings(&volumes, settings);
     if volumes
         .iter()
-        .any(bambu_model::ModelVolume::needs_volume_slice)
+        .any(elysian_model::ModelVolume::needs_volume_slice)
     {
         if !volumes.iter().any(|v| v.volume_type.is_model_part()) {
             return Err(CliError::Message(format!(
@@ -1184,7 +1184,7 @@ pub fn slice_file(
         }
         let (sliced, backend) = if force_cpu {
             (
-                bambu_slicer::slice_volumes(&volumes, settings)?,
+                elysian_slicer::slice_volumes(&volumes, settings)?,
                 SliceBackend::Cpu,
             )
         } else if force_gpu {
@@ -1267,7 +1267,7 @@ fn lan_backend(host: String, code: String, serial: String) -> Result<LanBackend,
 }
 
 fn block_on<T>(
-    fut: impl std::future::Future<Output = Result<T, bambu_device::DeviceError>>,
+    fut: impl std::future::Future<Output = Result<T, elysian_device::DeviceError>>,
 ) -> Result<T, CliError> {
     tokio::runtime::Runtime::new()?
         .block_on(fut)

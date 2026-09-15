@@ -6,13 +6,13 @@
 
 mod common;
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 use std::path::PathBuf;
 
-use bambu_config::SupportType;
-use bambu_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
-use bambu_io::load_3mf;
-use bambu_model::ModelVolume;
+use elysian_config::SupportType;
+use elysian_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
+use elysian_io::load_3mf;
+use elysian_model::ModelVolume;
 
 use common::{bambu_studio_or_skip, run_cpp_slice_3mf, rust_slice_plate, tests_dir};
 
@@ -121,7 +121,7 @@ fn tower_matches_cpp_bambu_studio() {
         .expect("embedded project_settings.config");
 
     let ours_gcode = rust_slice_plate(&model, &settings, 0).expect("rust slice");
-    let dir = std::env::temp_dir().join("bambu-studio-rs-oracle-tower");
+    let dir = std::env::temp_dir().join("elysian-studio-oracle-tower");
     let cpp_dir = dir.join("cpp_out");
     let cpp_data = dir.join("cpp_data");
     let _ = std::fs::create_dir_all(&cpp_dir);

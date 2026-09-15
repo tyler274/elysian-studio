@@ -1,6 +1,6 @@
 //! Nanite-like triangle clusters for frustum-culled Fast raster.
 
-use bambu_geom::{Aabb3, TriangleMesh};
+use elysian_geom::{Aabb3, TriangleMesh};
 use glam::{Mat4, Vec3, Vec4};
 use rayon::prelude::*;
 

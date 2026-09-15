@@ -736,7 +736,7 @@ impl CloudApi {
         let owned = self.json_headers_as(&uid, json_content_type);
         let headers: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
         tracing::debug!(
-            target: "bambu_protocol::cloud",
+            target: "elysian_protocol::cloud",
             method,
             host = self.host(),
             path,
@@ -755,7 +755,7 @@ impl CloudApi {
             .map(|(_, v)| v.as_str());
         let text = resp.body_text();
         tracing::debug!(
-            target: "bambu_protocol::cloud",
+            target: "elysian_protocol::cloud",
             method,
             path,
             status = resp.status,
@@ -803,7 +803,7 @@ impl CloudApi {
                     .map(|d| d.dev_ver.trim().to_string())
                     .filter(|v| !v.is_empty());
                 tracing::debug!(
-                    target: "bambu_protocol::cloud",
+                    target: "elysian_protocol::cloud",
                     requested = %redact_id(&serial),
                     device_count = devs.len(),
                     bind_fw_len = bind_fw.as_ref().map(String::len).unwrap_or(0),
@@ -813,7 +813,7 @@ impl CloudApi {
             }
             Err(err) => {
                 tracing::debug!(
-                    target: "bambu_protocol::cloud",
+                    target: "elysian_protocol::cloud",
                     error = %err,
                     "bind list failed; using requested serial"
                 );
@@ -833,7 +833,7 @@ impl CloudApi {
             .or(bind_fw);
         let fw = owned.as_deref();
         tracing::debug!(
-            target: "bambu_protocol::cloud",
+            target: "elysian_protocol::cloud",
             requested = %redact_id(&serial),
             firmware = fw.unwrap_or(""),
             "mint camera creds"
@@ -919,7 +919,7 @@ impl CloudApi {
         }
         let uid = self.ttcode_user_id();
         tracing::debug!(
-            target: "bambu_protocol::cloud",
+            target: "elysian_protocol::cloud",
             dev = %redact_id(dev_id),
             firmware = firmware.unwrap_or(""),
             protocols = ?protocols,
@@ -934,7 +934,7 @@ impl CloudApi {
             CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
         })?;
         tracing::debug!(
-            target: "bambu_protocol::cloud",
+            target: "elysian_protocol::cloud",
             proto = ?creds.proto,
             has_channel = !creds.channel.is_empty(),
             has_token = !creds.token.is_empty(),

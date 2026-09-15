@@ -4,8 +4,8 @@
 //! staying outside an XY gap around the part. Disk radius follows
 //! `tree_support_branch_diameter_angle`. This is not the full 3D organic solver.
 
-use bambu_config::{SliceSettings, SupportBasePattern, LOOP_CLIPPING_OVER_NOZZLE};
-use bambu_geom::{offset_polygons, scale, union_polygons, Point, Polygon, Polyline};
+use elysian_config::{SliceSettings, SupportBasePattern, LOOP_CLIPPING_OVER_NOZZLE};
+use elysian_geom::{offset_polygons, scale, union_polygons, Point, Polygon, Polyline};
 use rayon::prelude::*;
 
 use crate::clip::point_in_polygons;
@@ -136,7 +136,7 @@ fn draw(
     let n = layers.len();
     let top_gap = settings.support_top_gap_layers();
     let interface_n = settings.support_interface_layers.max(1);
-    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let support_w = settings.line_width_for(elysian_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
     let pad_spacing = support_w.max(MIN_MM);

@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use bambu_config::SliceSettings;
-use bambu_gcode::write_gcode;
-use bambu_geom::TriangleMesh;
-use bambu_model::{Model, ModelVolume};
-use bambu_slicer::{slice_mesh, slice_volumes};
+use elysian_config::SliceSettings;
+use elysian_gcode::write_gcode;
+use elysian_geom::TriangleMesh;
+use elysian_model::{Model, ModelVolume};
+use elysian_slicer::{slice_mesh, slice_volumes};
 
 pub fn require_oracle() -> bool {
     matches!(
@@ -115,7 +115,7 @@ pub fn rust_slice_plate(
         return Err(format!("plate {plate_n} has no volumes"));
     }
     ensure_on_bed_volumes(&mut volumes);
-    let object_settings = bambu_model::agreed_object_settings(&volumes, settings);
+    let object_settings = elysian_model::agreed_object_settings(&volumes, settings);
     let sliced = if volumes.iter().any(ModelVolume::needs_volume_slice) {
         slice_volumes(&volumes, settings).map_err(|e| e.to_string())?
     } else {

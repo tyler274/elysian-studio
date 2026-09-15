@@ -1,5 +1,5 @@
 [package]
-name = "bambu-gpu"
+name = "elysian-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,11 @@ workspace = true
 
 [dependencies]
 ab_glyph.workspace = true
-bambu-config.workspace = true
-bambu-geom.workspace = true
-bambu-model.workspace = true
-bambu-preview.workspace = true
-bambu-slicer.workspace = true
+elysian-config.workspace = true
+elysian-geom.workspace = true
+elysian-model.workspace = true
+elysian-preview.workspace = true
+elysian-slicer.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 iced.workspace = true
@@ -24,7 +24,7 @@ rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
-bambu-wgpu-exp.workspace = true
+elysian-wgpu-exp.workspace = true
 
 [dev-dependencies]
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }

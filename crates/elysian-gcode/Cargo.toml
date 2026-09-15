@@ -1,5 +1,5 @@
 [package]
-name = "bambu-gcode"
+name = "elysian-gcode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,11 +10,11 @@ description = "G-code writer and processor"
 workspace = true
 
 [dependencies]
-bambu-config.workspace = true
-bambu-geom.workspace = true
-bambu-slicer.workspace = true
+elysian-config.workspace = true
+elysian-geom.workspace = true
+elysian-slicer.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-bambu-model.workspace = true
+elysian-model.workspace = true
 glam.workspace = true

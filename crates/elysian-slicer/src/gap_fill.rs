@@ -1,7 +1,7 @@
 //! Classic leftover gap fill: C++ `opening_ex` / too-wide `offset2_ex`, then an
 //! open centerline instead of walking a closed leftover ring.
 
-use bambu_geom::{difference_polygons, offset_polygons, Point, Polygon, Polyline};
+use elysian_geom::{difference_polygons, offset_polygons, Point, Polygon, Polyline};
 
 /// C++ `ClipperSafetyOffset` in millimetres (10 scaled units).
 const SAFETY_OFFSET_MM: f64 = 10.0 / 1_000_000.0;
@@ -134,7 +134,7 @@ fn scan_vertical(poly: &[Point], x_mm: f64) -> Vec<f64> {
         }
         let dy = b.y - a.y;
         let y = a.y as f64 + dy as f64 * (x - a.x) as f64 / (b.x - a.x) as f64;
-        ys.push(y / bambu_geom::SCALING_FACTOR_F64);
+        ys.push(y / elysian_geom::SCALING_FACTOR_F64);
     }
     ys
 }
@@ -154,7 +154,7 @@ fn scan_horizontal(poly: &[Point], y_mm: f64) -> Vec<f64> {
         }
         let dx = b.x - a.x;
         let x = a.x as f64 + dx as f64 * (y - a.y) as f64 / (b.y - a.y) as f64;
-        xs.push(x / bambu_geom::SCALING_FACTOR_F64);
+        xs.push(x / elysian_geom::SCALING_FACTOR_F64);
     }
     xs
 }

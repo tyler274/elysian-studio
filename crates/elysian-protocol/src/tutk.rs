@@ -6,7 +6,7 @@
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
-use bambu_device::Frame;
+use elysian_device::Frame;
 
 use crate::camera::{jpeg_to_frame, CameraError, JpegStream};
 use crate::cloud_api::{CameraCreds, CameraProto, CloudApi};
@@ -177,7 +177,7 @@ pub fn stream_ttcode_frames(
         creds.device = serial.to_string();
     }
     tracing::debug!(
-        target: "bambu_protocol::cloud",
+        target: "elysian_protocol::cloud",
         proto = ?creds.proto,
         device = %crate::cloud_api::redact_id(&creds.device),
         has_channel = !creds.channel.is_empty(),

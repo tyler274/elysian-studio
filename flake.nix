@@ -1,5 +1,5 @@
 {
-  description = "Safe-Rust Bambu Studio rewrite (iced + wgpu/Vulkan)";
+  description = "Safe-Rust Elysian Studio rewrite (iced + wgpu/Vulkan)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -96,7 +96,7 @@
             libxrandr
           ];
           common = {
-            pname = "bambu-studio-rs";
+            pname = "elysian-studio";
             version = "0.1.0";
             src = srcFor pkgs;
             cargoLock.lockFile = ./Cargo.lock;
@@ -134,52 +134,51 @@
             });
         in
         rec {
-          bambu-cli = wrapVulkan (
+          elysian-cli = wrapVulkan (
             rustPlatform.buildRustPackage (
               common
               // {
-                pname = "bambu-cli";
+                pname = "elysian-cli";
                 cargoBuildFlags = [
                   "-p"
-                  "bambu-cli"
+                  "elysian-cli"
                   "-p"
-                  "bambu-vmp-dump"
+                  "elysian-vmp-dump"
                 ];
                 cargoTestFlags = [
                   "-p"
-                  "bambu-cli"
+                  "elysian-cli"
                   "-p"
-                  "bambu-geom"
+                  "elysian-geom"
                   "-p"
-                  "bambu-slicer"
+                  "elysian-slicer"
                 ];
                 doCheck = true;
               }
             )
           );
-          bambu-ui = wrapVulkan (
+          elysian-studio = wrapVulkan (
             rustPlatform.buildRustPackage (
               common
               // {
-                pname = "bambu-ui";
+                pname = "elysian-studio";
                 cargoBuildFlags = [
                   "-p"
-                  "bambu-ui"
+                  "elysian-ui"
                   "-p"
-                  "bambu-vmp-dump"
+                  "elysian-vmp-dump"
                 ];
                 doCheck = false;
                 postInstall = ''
-                  install -Dm644 ${./resources/bambu-studio-rs.desktop} \
-                    "$out/share/applications/bambu-studio-rs.desktop"
+                  install -Dm644 ${./resources/elysian-studio.desktop} \
+                    "$out/share/applications/elysian-studio.desktop"
                   mkdir -p "$out/share/icons"
                   cp -R ${./resources/icons}/hicolor "$out/share/icons/hicolor"
                 '';
               }
             )
           );
-          default = bambu-cli;
-          bambu-studio-rs = bambu-ui;
+          default = elysian-cli;
         }
       );
 

@@ -21,8 +21,8 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 
-use bambu_geom::TriangleMesh;
-use bambu_model::Model;
+use elysian_geom::TriangleMesh;
+use elysian_model::Model;
 
 use crate::IoError;
 
@@ -39,7 +39,7 @@ pub fn load_3mf(path: impl AsRef<Path>) -> Result<Model, IoError> {
     load_3mf_timed(path).map(|(model, _)| model)
 }
 
-/// Timed 3MF open used by `bambu-cli open-timing`. Opens the zip from a file
+/// Timed 3MF open used by `elysian-cli open-timing`. Opens the zip from a file
 /// handle (no extra full-file copy).
 pub fn load_3mf_timed(path: impl AsRef<Path>) -> Result<(Model, LoadTimings), IoError> {
     load_3mf_with_progress(path, |_| {})
@@ -92,7 +92,7 @@ pub fn write_model_3mf_bytes_with_thumbnail(
     let settings = crate::bbs::write(model, &exported.object_ids, &exported.volume_ids);
     let project = if let Some(slice) = &model.settings {
         Some(
-            bambu_config::project_settings_json(slice)
+            elysian_config::project_settings_json(slice)
                 .map_err(|err| IoError::Message(err.to_string()))?,
         )
     } else {

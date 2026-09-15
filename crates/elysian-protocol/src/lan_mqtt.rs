@@ -14,7 +14,7 @@ use crate::mqtt::{
 };
 use crate::signing::maybe_sign_ex;
 use crate::tls::{lan_client_config, peek_peer_cn, TlsError};
-use bambu_device::{AmsState, MachineState};
+use elysian_device::{AmsState, MachineState};
 
 #[derive(Debug, Error)]
 pub enum MqttSessionError {

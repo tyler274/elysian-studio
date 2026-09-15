@@ -4,7 +4,7 @@
 //! `filament_id` then colour/type. Cube stays `filament_map = [1]` because
 //! `filament_count == 1`.
 
-use bambu_config::{FilamentMapMode, SliceSettings};
+use elysian_config::{FilamentMapMode, SliceSettings};
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupSlot {

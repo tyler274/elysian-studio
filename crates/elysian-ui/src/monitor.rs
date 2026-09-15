@@ -6,10 +6,10 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
-use bambu_device::{
+use elysian_device::{
     AmsState, AmsTray, AmsUnit, MachineState, NozzleRackState, NozzleSlot, PrinterBackend,
 };
-use bambu_protocol::{
+use elysian_protocol::{
     capture_chamber, cloud_error_is_rate_limited, default_config_dir, describe_hms, jpeg_to_frame,
     load_cached_catalog, load_cloud_session, save_cloud_session, stream_rtsps_frames,
     stream_ttcode_frames, ChamberCapture, CloudApi, CloudBackend, CloudSession, JpegStream,
@@ -873,7 +873,7 @@ fn tray_card(tray: &AmsTray, active: bool) -> Element<'_, Message> {
 }
 
 fn monitor_snapshot(st: MachineState, ams: AmsState) -> MonitorSnapshot {
-    let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
+    let catalog = load_cached_catalog(elysian_protocol::default_config_dir(), "en");
     let hms_lines = st
         .hms
         .iter()
@@ -1076,7 +1076,7 @@ pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, 
 }
 
 fn cloud_backend(serial: &str) -> Result<CloudBackend, String> {
-    let dir = bambu_protocol::default_config_dir();
+    let dir = elysian_protocol::default_config_dir();
     let mut session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
     if !serial.trim().is_empty() {
         session.serial = serial.trim().to_string();
@@ -1107,7 +1107,7 @@ fn camera_worker(mut job: CameraJob, mut tx: iced::futures::channel::mpsc::Sende
         let lan = lan_ready(&job.host, &job.code);
         let cloud = !job.token.is_empty() && !job.serial.is_empty();
         tracing::debug!(
-            target: "bambu_ui::camera",
+            target: "elysian_ui::camera",
             lan,
             cloud,
             serial_len = job.serial.len(),
@@ -1148,7 +1148,7 @@ fn camera_worker(mut job: CameraJob, mut tx: iced::futures::channel::mpsc::Sende
                 },
                 Err(err) => {
                     tracing::debug!(
-                        target: "bambu_ui::camera",
+                        target: "elysian_ui::camera",
                         error = %err,
                         "LAN JPEG :6000 failed"
                     );
@@ -1162,7 +1162,7 @@ fn camera_worker(mut job: CameraJob, mut tx: iced::futures::channel::mpsc::Sende
                         Ok(()) => return,
                         Err(err) => {
                             tracing::debug!(
-                                target: "bambu_ui::camera",
+                                target: "elysian_ui::camera",
                                 error = %err,
                                 "LAN RTSPS :322 failed"
                             );
@@ -1180,7 +1180,7 @@ fn camera_worker(mut job: CameraJob, mut tx: iced::futures::channel::mpsc::Sende
                 WorkerCtrl::Retry => {}
                 WorkerCtrl::Wait(delay) => {
                     tracing::debug!(
-                        target: "bambu_ui::camera",
+                        target: "elysian_ui::camera",
                         secs = delay.as_secs(),
                         "cloud camera backoff"
                     );
@@ -1226,7 +1226,7 @@ fn mqtt_ota_version(job: &CameraJob) -> String {
     };
     if !session.is_ready() {
         tracing::debug!(
-            target: "bambu_ui::camera",
+            target: "elysian_ui::camera",
             "skip MQTT ota; cloud session incomplete"
         );
         return String::new();
@@ -1237,11 +1237,11 @@ fn mqtt_ota_version(job: &CameraJob) -> String {
     else {
         return String::new();
     };
-    tracing::debug!(target: "bambu_ui::camera", "fetch MQTT ota for ttcode mint");
+    tracing::debug!(target: "elysian_ui::camera", "fetch MQTT ota for ttcode mint");
     match rt.block_on(CloudBackend::new(session).status()) {
         Ok(st) => {
             tracing::debug!(
-                target: "bambu_ui::camera",
+                target: "elysian_ui::camera",
                 firmware_len = st.ota_version.len(),
                 "MQTT ota for camera"
             );
@@ -1249,7 +1249,7 @@ fn mqtt_ota_version(job: &CameraJob) -> String {
         }
         Err(err) => {
             tracing::debug!(
-                target: "bambu_ui::camera",
+                target: "elysian_ui::camera",
                 error = %err,
                 "MQTT ota fetch failed"
             );
@@ -1263,7 +1263,7 @@ fn cloud_tutk_loop(
     tx: &mut iced::futures::channel::mpsc::Sender<Message>,
 ) -> WorkerCtrl {
     tracing::debug!(
-        target: "bambu_ui::camera",
+        target: "elysian_ui::camera",
         serial_len = job.serial.len(),
         firmware_len = job.firmware.len(),
         region = %job.region,
@@ -1288,7 +1288,7 @@ fn cloud_tutk_loop(
         Err(err) => {
             let text = err.to_string();
             tracing::debug!(
-                target: "bambu_ui::camera",
+                target: "elysian_ui::camera",
                 error = %text,
                 rate_limited = cloud_error_is_rate_limited(&text),
                 "cloud camera failed"

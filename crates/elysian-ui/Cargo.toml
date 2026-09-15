@@ -1,25 +1,29 @@
 [package]
-name = "bambu-ui"
+name = "elysian-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "iced GUI for Bambu Studio"
+description = "iced GUI for Elysian Studio"
 
 [lints]
 workspace = true
 
+[[bin]]
+name = "elysian-studio"
+path = "src/main.rs"
+
 [dependencies]
-bambu-alloc.workspace = true
-bambu-config.workspace = true
-bambu-device.workspace = true
-bambu-gcode.workspace = true
-bambu-geom.workspace = true
-bambu-gpu.workspace = true
-bambu-io.workspace = true
-bambu-model.workspace = true
-bambu-protocol.workspace = true
-bambu-slicer.workspace = true
+elysian-alloc.workspace = true
+elysian-config.workspace = true
+elysian-device.workspace = true
+elysian-gcode.workspace = true
+elysian-geom.workspace = true
+elysian-gpu.workspace = true
+elysian-io.workspace = true
+elysian-model.workspace = true
+elysian-protocol.workspace = true
+elysian-slicer.workspace = true
 glam.workspace = true
 iced.workspace = true
 png = "0.17"

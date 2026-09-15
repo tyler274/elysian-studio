@@ -1,9 +1,9 @@
 //! Sparse infill patterns (classic Slic3r / Bambu set).
 
-use bambu_config::{
+use elysian_config::{
     FlowRole, InfillPattern, SliceSettings, SurfacePattern, LOOP_CLIPPING_OVER_NOZZLE,
 };
-use bambu_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline, TriangleMesh};
+use elysian_geom::{clip_end, offset_polygons, scale, Point, Polygon, Polyline, TriangleMesh};
 use wide::{i64x4, CmpLt};
 
 use crate::clip::clip_polylines;
@@ -774,8 +774,8 @@ fn collect_scanline_us_scalar(edges: &[ScanEdge], v: i64) -> Vec<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::{InfillPattern, SliceSettings};
-    use bambu_geom::scale;
+    use elysian_config::{InfillPattern, SliceSettings};
+    use elysian_geom::scale;
 
     #[test]
     fn monotonic_line_wipes_overshoot_into_walls() {

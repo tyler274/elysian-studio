@@ -1,5 +1,5 @@
 [package]
-name = "bambu-device"
+name = "elysian-device"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,6 @@ description = "Printer, AMS, camera, and HMS traits (no I/O)"
 workspace = true
 
 [dependencies]
-bambu-config.workspace = true
+elysian-config.workspace = true
 serde.workspace = true
 thiserror.workspace = true

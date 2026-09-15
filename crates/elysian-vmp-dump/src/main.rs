@@ -10,11 +10,11 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(plugin) = args.next() else {
-        eprintln!("usage: bambu-vmp-dump <plugin.so> <dump.bin>");
+        eprintln!("usage: elysian-vmp-dump <plugin.so> <dump.bin>");
         return ExitCode::from(2);
     };
     let Some(dump) = args.next() else {
-        eprintln!("usage: bambu-vmp-dump <plugin.so> <dump.bin>");
+        eprintln!("usage: elysian-vmp-dump <plugin.so> <dump.bin>");
         return ExitCode::from(2);
     };
     match run(&plugin, &dump) {
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
 
 #[cfg(not(target_os = "linux"))]
 fn run(_plugin: &str, _dump: &str) -> Result<(), String> {
-    Err("bambu-vmp-dump is Linux-only".into())
+    Err("elysian-vmp-dump is Linux-only".into())
 }
 
 #[cfg(target_os = "linux")]

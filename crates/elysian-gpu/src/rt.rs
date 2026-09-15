@@ -49,7 +49,7 @@ impl RtGpu {
         format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Option<Self> {
-        if !bambu_wgpu_exp::device_has_ray_query(device) {
+        if !elysian_wgpu_exp::device_has_ray_query(device) {
             return None;
         }
         // wgpu treats uncaptured validation as fatal; keep Fast raster if RT SPIR-V/WGSL fails.
@@ -64,11 +64,11 @@ impl RtGpu {
 
     fn create(device: &wgpu::Device, format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("bambu-gpu-path"),
+            label: Some("elysian-gpu-path"),
             source: wgpu::ShaderSource::Wgsl(include_str!("path.wgsl").into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bambu-gpu-rt-bgl"),
+            label: Some("elysian-gpu-rt-bgl"),
             entries: &[
                 uniform_entry(0, wgpu::ShaderStages::COMPUTE),
                 wgpu::BindGroupLayoutEntry {
@@ -94,12 +94,12 @@ impl RtGpu {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("bambu-gpu-rt-pl"),
+            label: Some("elysian-gpu-rt-pl"),
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("bambu-gpu-rt-pipeline"),
+            label: Some("elysian-gpu-rt-pipeline"),
             layout: Some(&layout),
             module: &shader,
             entry_point: Some("main"),
@@ -107,7 +107,7 @@ impl RtGpu {
             cache: None,
         });
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bambu-gpu-rt-uniforms"),
+            label: Some("elysian-gpu-rt-uniforms"),
             size: std::mem::size_of::<RtUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -115,24 +115,24 @@ impl RtGpu {
         let vert_buf = empty_buf(device, 256, true);
         let idx_buf = empty_buf(device, 256, false);
         let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
-            label: Some("bambu-gpu-tlas"),
+            label: Some("elysian-gpu-tlas"),
             max_instances: MAX_INSTANCES,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
         let (radiance, radiance_view) = make_radiance(device, 64, 64);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("bambu-gpu-rt-sampler"),
+            label: Some("elysian-gpu-rt-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("bambu-gpu-blit"),
+            label: Some("elysian-gpu-blit"),
             source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
         });
         let blit_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bambu-gpu-blit-bgl"),
+            label: Some("elysian-gpu-blit-bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -153,12 +153,12 @@ impl RtGpu {
             ],
         });
         let blit_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("bambu-gpu-blit-pl"),
+            label: Some("elysian-gpu-blit-pl"),
             bind_group_layouts: &[Some(&blit_bgl)],
             immediate_size: 0,
         });
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("bambu-gpu-blit-pipeline"),
+            label: Some("elysian-gpu-blit-pipeline"),
             layout: Some(&blit_layout),
             vertex: wgpu::VertexState {
                 module: &blit_shader,
@@ -193,7 +193,7 @@ impl RtGpu {
             cache: None,
         });
         let blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bambu-gpu-blit-bg"),
+            label: Some("elysian-gpu-blit-bg"),
             layout: &blit_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -241,7 +241,7 @@ impl RtGpu {
         self.radiance_view = view;
         self.size = (width, height);
         self.blit_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bambu-gpu-blit-bg"),
+            label: Some("elysian-gpu-blit-bg"),
             layout: &self.blit_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -335,7 +335,7 @@ impl RtGpu {
             };
             let blas = device.create_blas(
                 &wgpu::CreateBlasDescriptor {
-                    label: Some("bambu-gpu-blas"),
+                    label: Some("elysian-gpu-blas"),
                     flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
                     update_mode: wgpu::AccelerationStructureUpdateMode::Build,
                 },
@@ -361,7 +361,7 @@ impl RtGpu {
             return;
         }
         self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bambu-gpu-rt-bg"),
+            label: Some("elysian-gpu-rt-bg"),
             layout: &self.bgl,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -432,7 +432,7 @@ impl RtGpu {
             return;
         };
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("bambu-gpu-rt-pass"),
+            label: Some("elysian-gpu-rt-pass"),
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
@@ -503,9 +503,9 @@ fn empty_buf(device: &wgpu::Device, bytes: u64, verts: bool) -> wgpu::Buffer {
     let size = bytes.max(256).min(device.limits().max_buffer_size).max(4);
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(if verts {
-            "bambu-gpu-rt-verts"
+            "elysian-gpu-rt-verts"
         } else {
-            "bambu-gpu-rt-idx"
+            "elysian-gpu-rt-idx"
         }),
         size,
         usage: extra,
@@ -519,7 +519,7 @@ fn make_radiance(
     height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("bambu-gpu-radiance"),
+        label: Some("elysian-gpu-radiance"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -543,7 +543,7 @@ fn make_radiance(
 mod tests {
     use super::*;
     use crate::GpuError;
-    use bambu_geom::TriangleMesh;
+    use elysian_geom::TriangleMesh;
 
     fn rt_device() -> Result<(wgpu::Device, wgpu::Queue), GpuError> {
         crate::force_vulkan_env();
@@ -558,11 +558,11 @@ mod tests {
             apply_limit_buckets: false,
         }))
         .map_err(|e| GpuError::NoAdapter(e.to_string()))?;
-        if bambu_wgpu_exp::ray_query_features(&adapter).is_empty() {
+        if elysian_wgpu_exp::ray_query_features(&adapter).is_empty() {
             return Err(GpuError::Request("no EXPERIMENTAL_RAY_QUERY".into()));
         }
         let limits = wgpu::Limits::default().using_acceleration_structure_values(adapter.limits());
-        let (features, exp, limits) = bambu_wgpu_exp::ray_query_device(&adapter, limits);
+        let (features, exp, limits) = elysian_wgpu_exp::ray_query_device(&adapter, limits);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("bambu-rt-test"),
             required_features: features,

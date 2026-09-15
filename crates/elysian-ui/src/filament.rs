@@ -3,7 +3,7 @@
 use iced::widget::{button, checkbox, column, container, pick_list, row, slider, text, text_input};
 use iced::{Background, Border, Color, Element};
 
-use bambu_config::FilamentMapMode;
+use elysian_config::FilamentMapMode;
 
 use crate::theme;
 use crate::{slot_colour_hex, FilamentPage, FilamentSource, Message};

@@ -6,8 +6,8 @@
 //! [`SliceSettings::wipe_tower_skips_sparse_layers`] skips fill on layers with
 //! no toolchange, matching `wipe_tower_no_sparse_layers`.
 
-use bambu_config::{FlowRole, SliceSettings, LOOP_CLIPPING_OVER_NOZZLE};
-use bambu_geom::{clip_end, offset_polygons, Point, Polygon};
+use elysian_config::{FlowRole, SliceSettings, LOOP_CLIPPING_OVER_NOZZLE};
+use elysian_geom::{clip_end, offset_polygons, Point, Polygon};
 use rayon::prelude::*;
 
 use crate::infill;
@@ -115,7 +115,7 @@ fn tower_square(settings: &SliceSettings) -> Vec<Polygon> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::SliceSettings;
+    use elysian_config::SliceSettings;
 
     #[test]
     fn square_sits_at_wipe_tower_origin() {

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::BufRead;
 
-use bambu_model::{Model, TrianglePaint};
+use elysian_model::{Model, TrianglePaint};
 use glam::{Mat4, Vec3};
 use quick_xml::events::Event;
 use quick_xml::Reader;

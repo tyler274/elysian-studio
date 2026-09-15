@@ -1,6 +1,6 @@
 //! Gyroid sparse infill (Slic3r `FillGyroid`, simplified wave generator).
 
-use bambu_geom::{unscale, Point, Polygon, Polyline};
+use elysian_geom::{unscale, Point, Polygon, Polyline};
 
 use super::{bbox, clip_to_region};
 

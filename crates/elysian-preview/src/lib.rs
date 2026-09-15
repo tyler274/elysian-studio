@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-use bambu_geom::unscale;
-use bambu_slicer::SliceResult;
+use elysian_geom::unscale;
+use elysian_slicer::SliceResult;
 use glam::Vec3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +211,7 @@ impl ToolpathBuffer {
 
 fn emit_paths(
     vertices: &mut Vec<ToolpathVertex>,
-    paths: &[bambu_geom::Polyline],
+    paths: &[elysian_geom::Polyline],
     z: f32,
     role: ExtrusionRole,
     closed: bool,
@@ -231,7 +231,7 @@ fn emit_paths(
     }
 }
 
-fn vertex(p: bambu_geom::Point, z: f32, role: ExtrusionRole) -> ToolpathVertex {
+fn vertex(p: elysian_geom::Point, z: f32, role: ExtrusionRole) -> ToolpathVertex {
     ToolpathVertex {
         position: Vec3::new(unscale(p.x) as f32, unscale(p.y) as f32, z),
         role,

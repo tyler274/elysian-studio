@@ -5,8 +5,8 @@
 //! wall line in each of three 120° directions, then lines are clipped to the
 //! sparse infill region.
 
-use bambu_config::SliceSettings;
-use bambu_geom::{Point, Polygon, Polyline, TriangleMesh};
+use elysian_config::SliceSettings;
+use elysian_geom::{Point, Polygon, Polyline, TriangleMesh};
 use glam::{DQuat, DVec2, DVec3};
 
 use super::clip_to_region;
@@ -36,7 +36,7 @@ const DIRECTION_ANGLES: [f64; 3] = [
 
 pub fn line_spacing_mm(settings: &SliceSettings) -> f64 {
     let density = settings.infill_density.max(0.05);
-    settings.line_width_for(bambu_config::FlowRole::SparseInfill, false) / (density / 3.0)
+    settings.line_width_for(elysian_config::FlowRole::SparseInfill, false) / (density / 3.0)
         * f64::from(settings.sparse_fill_multiline())
 }
 

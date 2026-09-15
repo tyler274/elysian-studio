@@ -1,5 +1,5 @@
 [package]
-name = "bambu-wgpu-exp"
+name = "elysian-wgpu-exp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

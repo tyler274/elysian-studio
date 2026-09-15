@@ -4,12 +4,12 @@
 //! uses the configured width square plus brim, expanded like
 //! `expand_object_projection`.
 
-use bambu_config::SliceSettings;
-use bambu_geom::{
+use elysian_config::SliceSettings;
+use elysian_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, unscale, Point,
     Polygon,
 };
-use bambu_slicer::{point_in_polygons, Layer, SliceResult};
+use elysian_slicer::{point_in_polygons, Layer, SliceResult};
 
 /// C++ `DefaultTimelapsePos` after `unscale_` (integer millimeters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,7 +279,7 @@ fn to_mm_int(p: Point) -> TimelapsePos {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::SliceSettings;
+    use elysian_config::SliceSettings;
 
     fn h2c_like() -> SliceSettings {
         let mut s = SliceSettings::default();

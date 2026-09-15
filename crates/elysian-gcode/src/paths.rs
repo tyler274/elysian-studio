@@ -1,8 +1,8 @@
 //! Extrusion path emission: roles, overhang classification, small-perimeter slowdown.
 
-use bambu_config::{PrintAccel, SliceSettings};
-use bambu_geom::{offset_polygons, Polygon, Polyline};
-use bambu_slicer::{classify_floating, classify_overhang, ClassifiedPath, Layer};
+use elysian_config::{PrintAccel, SliceSettings};
+use elysian_geom::{offset_polygons, Polygon, Polyline};
+use elysian_slicer::{classify_floating, classify_overhang, ClassifiedPath, Layer};
 
 use crate::motion::Writer;
 use crate::GcodeError;
@@ -218,7 +218,7 @@ fn small_perimeter_max_length_mm(threshold_mm: f64) -> f64 {
     std::f64::consts::TAU * threshold_mm
 }
 
-fn polyline_length_mm(path: &[bambu_geom::Point], closed: bool) -> f64 {
+fn polyline_length_mm(path: &[elysian_geom::Point], closed: bool) -> f64 {
     if path.len() < 2 {
         return 0.0;
     }
@@ -235,7 +235,7 @@ fn polyline_length_mm(path: &[bambu_geom::Point], closed: bool) -> f64 {
 /// C++ `extrude_loop`: if the whole loop is a small perimeter, take `min` with the role speed.
 fn small_perimeter_feed(
     settings: &SliceSettings,
-    path: &[bambu_geom::Point],
+    path: &[elysian_geom::Point],
     closed: bool,
     print_f: f64,
 ) -> f64 {

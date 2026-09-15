@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use bambu_device::Frame;
+use elysian_device::Frame;
 use base64::Engine;
 use openh264::formats::YUVSource;
 use rustls::{ClientConnection, StreamOwned};
@@ -156,13 +156,13 @@ impl RtspConn {
     }
 
     fn describe(&mut self, base: &str) -> Result<(String, String), CameraError> {
-        let _ = self.roundtrip("OPTIONS", base, &[("User-Agent", "bambu-studio-rs")])?;
+        let _ = self.roundtrip("OPTIONS", base, &[("User-Agent", "elysian-studio")])?;
         let (status, headers, body) = self.roundtrip(
             "DESCRIBE",
             base,
             &[
                 ("Accept", "application/sdp"),
-                ("User-Agent", "bambu-studio-rs"),
+                ("User-Agent", "elysian-studio"),
             ],
         )?;
         if status != 200 {
@@ -187,7 +187,7 @@ impl RtspConn {
             control,
             &[
                 ("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1"),
-                ("User-Agent", "bambu-studio-rs"),
+                ("User-Agent", "elysian-studio"),
             ],
         )?;
         if status != 200 {
@@ -204,7 +204,7 @@ impl RtspConn {
             &[
                 ("Session", session),
                 ("Range", "npt=0.000-"),
-                ("User-Agent", "bambu-studio-rs"),
+                ("User-Agent", "elysian-studio"),
             ],
         )?;
         if status != 200 {

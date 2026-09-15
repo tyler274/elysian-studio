@@ -4,8 +4,8 @@ mod plater;
 
 use std::collections::BTreeMap;
 
-use bambu_config::SliceSettings;
-use bambu_geom::TriangleMesh;
+use elysian_config::SliceSettings;
+use elysian_geom::TriangleMesh;
 use glam::{EulerRot, Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -232,20 +232,20 @@ impl ModelVolume {
     }
 
     pub fn has_region_config(&self) -> bool {
-        self.config.keys().any(|k| bambu_config::is_region_key(k))
+        self.config.keys().any(|k| elysian_config::is_region_key(k))
     }
 
     /// Parent region settings with this volume's PrintRegion keys applied.
     pub fn region_settings(&self, parent: &SliceSettings) -> SliceSettings {
         let mut out = parent.clone();
-        bambu_config::apply_config_pairs(&mut out, &self.config, true);
+        elysian_config::apply_config_pairs(&mut out, &self.config, true);
         out
     }
 
     /// Parent settings with this volume's object-level keys applied too.
     pub fn object_settings(&self, parent: &SliceSettings) -> SliceSettings {
         let mut out = parent.clone();
-        bambu_config::apply_config_pairs(&mut out, &self.config, false);
+        elysian_config::apply_config_pairs(&mut out, &self.config, false);
         out
     }
 
@@ -381,7 +381,7 @@ impl Instance {
     }
 
     /// Transform an AABB by this instance (8 corners). Safe on the UI thread.
-    pub fn transform_aabb(self, aabb: bambu_geom::Aabb3) -> bambu_geom::Aabb3 {
+    pub fn transform_aabb(self, aabb: elysian_geom::Aabb3) -> elysian_geom::Aabb3 {
         if self.is_identity() {
             return aabb;
         }
@@ -400,7 +400,7 @@ impl Instance {
             Vec3::new(x1, y1, z1),
         ]
         .map(|p| m.transform_point3(p));
-        bambu_geom::Aabb3::from_points(pts).unwrap_or(aabb)
+        elysian_geom::Aabb3::from_points(pts).unwrap_or(aabb)
     }
 }
 
@@ -521,7 +521,7 @@ pub fn agreed_object_settings(volumes: &[ModelVolume], parent: &SliceSettings) -
         let keys: BTreeMap<String, String> = vol
             .config
             .iter()
-            .filter(|(k, _)| !bambu_config::is_region_key(k))
+            .filter(|(k, _)| !elysian_config::is_region_key(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         agreed = Some(match agreed {
@@ -534,7 +534,7 @@ pub fn agreed_object_settings(volumes: &[ModelVolume], parent: &SliceSettings) -
     }
     let mut out = parent.clone();
     if let Some(pairs) = agreed {
-        bambu_config::apply_config_pairs(&mut out, &pairs, false);
+        elysian_config::apply_config_pairs(&mut out, &pairs, false);
     }
     out
 }

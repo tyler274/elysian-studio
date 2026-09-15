@@ -1,11 +1,11 @@
 use super::*;
 use crate::parse::parse_axis;
-use bambu_config::{
+use elysian_config::{
     FilamentMetalStickiness, InfillPattern, ReduceInfillRetractionMode, SeamScarfType,
     SliceSettings, SupportType, WallSequence,
 };
-use bambu_geom::TriangleMesh;
-use bambu_slicer::{slice_mesh, slice_volumes};
+use elysian_geom::TriangleMesh;
+use elysian_slicer::{slice_mesh, slice_volumes};
 
 #[test]
 fn cube_gcode_has_layers() {
@@ -53,7 +53,7 @@ fn skirt_height_emits_on_early_layers() {
 fn draft_shield_emits_skirt_on_top_layer() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
-    settings.draft_shield = bambu_config::DraftShield::Enabled;
+    settings.draft_shield = elysian_config::DraftShield::Enabled;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     let last = sliced.layers.len() - 1;
@@ -274,15 +274,15 @@ fn scarf_external_ramps_z_on_later_outer_walls() {
 #[test]
 fn process_scarf_type_needs_filament_override() {
     let path = vec![
-        bambu_geom::Point::from_mm(0.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 10.0),
-        bambu_geom::Point::from_mm(0.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 10.0),
     ];
     let layer0 = empty_gcode_layer(0, 0.2);
     let mut layer1 = empty_gcode_layer(1, 0.4);
     layer1.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer0, layer1],
     };
     let mut settings = SliceSettings::default();
@@ -319,12 +319,12 @@ fn scarf_test_settings() -> SliceSettings {
     settings
 }
 
-fn scarf_square(clockwise: bool) -> Vec<bambu_geom::Point> {
+fn scarf_square(clockwise: bool) -> Vec<elysian_geom::Point> {
     let pts = vec![
-        bambu_geom::Point::from_mm(0.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 10.0),
-        bambu_geom::Point::from_mm(0.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 10.0),
     ];
     if clockwise {
         let mut rev = pts;
@@ -335,11 +335,11 @@ fn scarf_square(clockwise: bool) -> Vec<bambu_geom::Point> {
     }
 }
 
-fn sliced_outer_wall(path: Vec<bambu_geom::Point>) -> bambu_slicer::SliceResult {
+fn sliced_outer_wall(path: Vec<elysian_geom::Point>) -> elysian_slicer::SliceResult {
     let layer0 = empty_gcode_layer(0, 0.2);
     let mut layer1 = empty_gcode_layer(1, 0.4);
     layer1.outer_walls = vec![path];
-    bambu_slicer::SliceResult {
+    elysian_slicer::SliceResult {
         layers: vec![layer0, layer1],
     }
 }
@@ -433,7 +433,7 @@ fn only_one_wall_first_layer_skips_inner_feature_on_layer_zero() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
     settings.only_one_wall_first_layer = true;
-    settings.top_one_wall = bambu_config::TopOneWallType::None;
+    settings.top_one_wall = elysian_config::TopOneWallType::None;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     let layer0 = layer_block(&gcode, 0).expect("layer 0");
@@ -449,14 +449,14 @@ fn only_one_wall_first_layer_skips_inner_feature_on_layer_zero() {
 #[test]
 fn spiral_mode_skips_seam_gap() {
     let path = vec![
-        bambu_geom::Point::from_mm(0.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 10.0),
-        bambu_geom::Point::from_mm(0.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 10.0),
     ];
     let mut layer = empty_gcode_layer(0, 0.2);
     layer.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer],
     };
     let mut settings = SliceSettings::default();
@@ -478,16 +478,16 @@ fn spiral_mode_skips_seam_gap() {
 #[test]
 fn spiral_mode_ramps_z_along_perimeter() {
     let path = vec![
-        bambu_geom::Point::from_mm(0.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 0.0),
-        bambu_geom::Point::from_mm(10.0, 10.0),
-        bambu_geom::Point::from_mm(0.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 0.0),
+        elysian_geom::Point::from_mm(10.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 10.0),
     ];
     let mut layer0 = empty_gcode_layer(0, 0.2);
     layer0.outer_walls = vec![path.clone()];
     let mut layer1 = empty_gcode_layer(1, 0.4);
     layer1.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer0, layer1],
     };
     let mut settings = SliceSettings::default();
@@ -711,9 +711,9 @@ fn two_extruders_emit_wall_toolchange() {
     let left = TriangleMesh::cube(20.0);
     let mut right = TriangleMesh::cube(20.0);
     right.translate(glam::Vec3::new(25.0, 0.0, 0.0));
-    let mut a = bambu_model::ModelVolume::model_part("left", left, 1);
+    let mut a = elysian_model::ModelVolume::model_part("left", left, 1);
     a.config.insert("extruder".into(), "1".into());
-    let mut b = bambu_model::ModelVolume::model_part("right", right, 2);
+    let mut b = elysian_model::ModelVolume::model_part("right", right, 2);
     b.config.insert("extruder".into(), "2".into());
     let mut settings = SliceSettings::default();
     settings.filament_count = 2;
@@ -832,7 +832,7 @@ fn support_interface_uses_interface_speed() {
 fn cube_ironing_gcode_feature() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
-    settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+    settings.ironing_type = elysian_config::IroningType::TopSurfaces;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
     assert!(gcode.contains("; FEATURE: Ironing"));
@@ -952,7 +952,7 @@ fn bridge_uses_bridge_speed() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
     settings.enable_support = false;
-    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.infill_pattern = elysian_config::InfillPattern::Rectilinear;
     settings.bridge_speed_mm_s = 35.0;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     assert!(sliced.layers.iter().any(|l| !l.bridge.is_empty()));
@@ -966,7 +966,7 @@ fn bridge_flow_scales_bridge_extrusion() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
     settings.enable_support = false;
-    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.infill_pattern = elysian_config::InfillPattern::Rectilinear;
     settings.bridge_flow = 1.0;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let e_full = feature_extrusion(&write_gcode(&settings, &sliced).unwrap(), "Bridge");
@@ -984,7 +984,7 @@ fn thick_bridges_uses_circular_nozzle_width() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::default();
     settings.enable_support = false;
-    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.infill_pattern = elysian_config::InfillPattern::Rectilinear;
     settings.bridge_flow = 1.0;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     assert!(sliced.layers.iter().any(|l| !l.bridge.is_empty()));
@@ -1005,16 +1005,16 @@ fn thick_bridges_uses_circular_nozzle_width() {
         .find(|l| !l.bridge.is_empty())
         .map(|l| l.height_mm)
         .unwrap_or(settings.layer_height_mm);
-    let thin_flow = bambu_config::Flow::bridging_flow(
+    let thin_flow = elysian_config::Flow::bridging_flow(
         &settings,
-        bambu_config::FlowRole::SolidInfill,
+        elysian_config::FlowRole::SolidInfill,
         height,
         false,
         false,
     );
-    let thick_flow = bambu_config::Flow::bridging_flow(
+    let thick_flow = elysian_config::Flow::bridging_flow(
         &settings,
-        bambu_config::FlowRole::SolidInfill,
+        elysian_config::FlowRole::SolidInfill,
         height,
         false,
         true,
@@ -1031,12 +1031,12 @@ fn arc_fitting_emits_g2_or_g3() {
     let path: Vec<_> = (0..=48)
         .map(|i| {
             let t = f64::from(i) / 48.0 * std::f64::consts::PI;
-            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+            elysian_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
         })
         .collect();
     let mut layer = empty_gcode_layer(0, 0.2);
     layer.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer],
     };
     let mut settings = SliceSettings::default();
@@ -1065,11 +1065,11 @@ fn arc_fitting_emits_g2_or_g3() {
 #[test]
 fn douglas_peucker_when_arc_fitting_off() {
     let path: Vec<_> = (0..=10)
-        .map(|i| bambu_geom::Point::from_mm(f64::from(i), 0.0))
+        .map(|i| elysian_geom::Point::from_mm(f64::from(i), 0.0))
         .collect();
     let mut layer = empty_gcode_layer(0, 0.2);
     layer.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer],
     };
     let mut settings = SliceSettings::default();
@@ -1094,7 +1094,7 @@ fn sparse_infill_arc_fit_uses_coarse_tolerance() {
     let path: Vec<_> = (0..=24)
         .map(|i| {
             let t = f64::from(i) / 24.0 * std::f64::consts::PI;
-            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+            elysian_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
         })
         .collect();
     let mut wall_layer = empty_gcode_layer(0, 0.2);
@@ -1109,7 +1109,7 @@ fn sparse_infill_arc_fit_uses_coarse_tolerance() {
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     let wall = write_gcode(
         &settings,
-        &bambu_slicer::SliceResult {
+        &elysian_slicer::SliceResult {
             layers: vec![wall_layer],
         },
     )
@@ -1122,7 +1122,7 @@ fn sparse_infill_arc_fit_uses_coarse_tolerance() {
     );
     let sparse = write_gcode(
         &settings,
-        &bambu_slicer::SliceResult {
+        &elysian_slicer::SliceResult {
             layers: vec![infill_layer],
         },
     )
@@ -1140,12 +1140,12 @@ fn spiral_mode_skips_arc_fitting() {
     let path: Vec<_> = (0..=48)
         .map(|i| {
             let t = f64::from(i) / 48.0 * std::f64::consts::PI;
-            bambu_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
+            elysian_geom::Point::from_mm(10.0 + 10.0 * t.cos(), 10.0 + 10.0 * t.sin())
         })
         .collect();
     let mut layer = empty_gcode_layer(0, 0.2);
     layer.outer_walls = vec![path];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer],
     };
     let mut settings = SliceSettings::default();
@@ -1404,7 +1404,7 @@ fn floating_vertical_shell_feature() {
     let mut settings = SliceSettings::default();
     settings.wall_loops = 1;
     settings.infill_density = 0.15;
-    settings.infill_pattern = bambu_config::InfillPattern::Rectilinear;
+    settings.infill_pattern = elysian_config::InfillPattern::Rectilinear;
     settings.top_shell_layers = 3;
     settings.solid_infill_speed_mm_s = 80.0;
     settings.vertical_shell_speed = 80.0;
@@ -1441,20 +1441,20 @@ fn floating_shell_over_sparse_uses_bridge_speed() {
         s
     };
     let bed = vec![
-        bambu_geom::Point::from_mm(0.0, 0.0),
-        bambu_geom::Point::from_mm(20.0, 0.0),
-        bambu_geom::Point::from_mm(20.0, 20.0),
-        bambu_geom::Point::from_mm(0.0, 20.0),
+        elysian_geom::Point::from_mm(0.0, 0.0),
+        elysian_geom::Point::from_mm(20.0, 0.0),
+        elysian_geom::Point::from_mm(20.0, 20.0),
+        elysian_geom::Point::from_mm(0.0, 20.0),
     ];
     let sparse = vec![
-        bambu_geom::Point::from_mm(10.0, 0.0),
-        bambu_geom::Point::from_mm(20.0, 0.0),
-        bambu_geom::Point::from_mm(20.0, 20.0),
-        bambu_geom::Point::from_mm(10.0, 20.0),
+        elysian_geom::Point::from_mm(10.0, 0.0),
+        elysian_geom::Point::from_mm(20.0, 0.0),
+        elysian_geom::Point::from_mm(20.0, 20.0),
+        elysian_geom::Point::from_mm(10.0, 20.0),
     ];
     let path = vec![
-        bambu_geom::Point::from_mm(0.0, 10.0),
-        bambu_geom::Point::from_mm(20.0, 10.0),
+        elysian_geom::Point::from_mm(0.0, 10.0),
+        elysian_geom::Point::from_mm(20.0, 10.0),
     ];
     let mut layer0 = empty_gcode_layer(0, 0.2);
     layer0.contours = vec![bed.clone()];
@@ -1463,7 +1463,7 @@ fn floating_shell_over_sparse_uses_bridge_speed() {
     layer1.contours = vec![bed];
     layer1.floating_vertical_shell = vec![path];
     layer1.floating_areas = vec![sparse];
-    let sliced = bambu_slicer::SliceResult {
+    let sliced = elysian_slicer::SliceResult {
         layers: vec![layer0, layer1],
     };
     let gcode = write_gcode(&settings, &sliced).unwrap();
@@ -1483,8 +1483,8 @@ fn floating_shell_over_sparse_uses_bridge_speed() {
     );
 }
 
-fn empty_gcode_layer(index: usize, print_z_mm: f64) -> bambu_slicer::Layer {
-    bambu_slicer::Layer {
+fn empty_gcode_layer(index: usize, print_z_mm: f64) -> elysian_slicer::Layer {
+    elysian_slicer::Layer {
         z_mm: print_z_mm - 0.1,
         index,
         height_mm: print_z_mm.min(0.2),
@@ -1560,7 +1560,7 @@ fn overhang_table_boosts_part_fan() {
     settings.close_fan_the_first_x_layers = 0;
     settings.reduce_fan_stop_start_freq = true;
     settings.overhang_fan_speed = 100;
-    settings.overhang_fan_threshold = bambu_config::OverhangFanThreshold::Bridge;
+    settings.overhang_fan_threshold = elysian_config::OverhangFanThreshold::Bridge;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
     let gcode = write_gcode(&settings, &sliced).unwrap();
@@ -1574,7 +1574,7 @@ fn overhang_table_boosts_part_fan() {
 fn ironing_uses_ironing_fan_speed() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::default();
-    settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+    settings.ironing_type = elysian_config::IroningType::TopSurfaces;
     settings.fan_min_speed = 100;
     settings.fan_max_speed = 100;
     settings.close_fan_the_first_x_layers = 1;
@@ -1800,7 +1800,7 @@ fn exhaust_fan_when_filtration_enabled() {
 fn normal_lift_uses_g1_z() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    settings.z_hop_type = bambu_config::ZHopType::Normal;
+    settings.z_hop_type = elysian_config::ZHopType::Normal;
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -1814,7 +1814,7 @@ fn normal_lift_uses_g1_z() {
 fn slope_lift_emits_diagonal() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    settings.z_hop_type = bambu_config::ZHopType::Slope;
+    settings.z_hop_type = elysian_config::ZHopType::Slope;
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -1845,7 +1845,7 @@ fn spiral_falls_back_when_off_bed() {
 fn auto_hop_cube_uses_slope() {
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    settings.z_hop_type = bambu_config::ZHopType::Auto;
+    settings.z_hop_type = elysian_config::ZHopType::Auto;
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     settings.brim_width_mm = 0.0;
@@ -1861,7 +1861,7 @@ fn auto_hop_cube_uses_slope() {
 fn auto_hop_over_air_uses_spiral() {
     let mesh = TriangleMesh::overhang_table(8.0, 8.0, 24.0, 4.0);
     let mut settings = SliceSettings::bbl_0_20();
-    settings.z_hop_type = bambu_config::ZHopType::Auto;
+    settings.z_hop_type = elysian_config::ZHopType::Auto;
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     settings.enable_support = false;
@@ -2000,13 +2000,13 @@ fn default_cube_keeps_generic_marlin_footer() {
 
 #[test]
 fn h2c_emits_machine_end_gcode() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -2062,11 +2062,11 @@ fn h2c_emits_machine_end_gcode() {
 
 #[test]
 fn h2c_emits_machine_start_gcode() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -2227,11 +2227,11 @@ fn cube_gcode_has_bbl_envelope() {
 
 #[test]
 fn h2c_opens_and_closes_spaghetti_detector() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -2274,11 +2274,11 @@ fn default_cube_skips_time_lapse_gcode() {
 
 #[test]
 fn h2c_emits_time_lapse_gcode_each_layer() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     let sliced = slice_mesh(&mesh, &settings).unwrap();
@@ -2335,11 +2335,11 @@ fn h2c_emits_time_lapse_gcode_each_layer() {
 
 #[test]
 fn h2c_i3_timelapse_adds_legacy_z_offset() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     settings.printer_structure = String::from("i3");
@@ -2363,11 +2363,11 @@ fn h2c_i3_timelapse_adds_legacy_z_offset() {
 
 #[test]
 fn h2c_filament_start_emits_exhaust_pwm_when_filtration_on() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     settings.support_air_filtration = true;
@@ -2401,11 +2401,11 @@ fn default_cube_skips_wrapping_detection() {
 
 #[test]
 fn h2c_skips_wrapping_detection_when_disabled() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     assert!(!settings.enable_wrapping_detection);
@@ -2426,11 +2426,11 @@ fn h2c_skips_wrapping_detection_when_disabled() {
 
 #[test]
 fn h2c_emits_wrapping_detection_on_layers_3_10_19() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     settings.enable_wrapping_detection = true;
@@ -2505,11 +2505,11 @@ fn default_cube_skips_first_layer_scan() {
 
 #[test]
 fn h2c_skips_first_layer_scan_by_default() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     assert!(!settings.scan_first_layer);
@@ -2590,11 +2590,11 @@ fn second_layer_emits_m104_m140_when_temps_change() {
 
 #[test]
 fn h2c_cool_plate_skips_second_layer_bed_temp() {
-    let paths = bambu_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
+    let paths = elysian_config::bbl_oracle_paths().expect("upstream BambuStudio profiles");
     let mesh = TriangleMesh::cube(20.0);
     let mut settings = SliceSettings::bbl_0_20();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
-    bambu_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.machine).unwrap();
+    elysian_config::overlay_bbl_profile(&mut settings, &paths.filament).unwrap();
     settings.filament_max_volumetric_speed_mm3_s = 0.0;
     settings.slow_down_for_layer_cooling = false;
     assert_eq!(settings.bed_temperature_c, 35);

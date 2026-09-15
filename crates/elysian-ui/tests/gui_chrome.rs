@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use bambu_config::SeamPosition;
-use bambu_ui::theme;
-use bambu_ui::{
+use elysian_config::SeamPosition;
+use elysian_ui::theme;
+use elysian_ui::{
     decode_png, encode_png, header_has_fill, png_delta, sidebar_is_width, write_png, App,
     GuiSnapshot, Message, ProcessTab, Workspace, WINDOW_SIZE,
 };
@@ -36,7 +36,7 @@ fn capture(app: &App, name: &str) -> (GuiSnapshot, Option<(u32, u32, Vec<u8>)>) 
         .screenshot_rgba()
         .map(|rgba| (WINDOW_SIZE.width as u32, WINDOW_SIZE.height as u32, rgba));
     if let Some((w, h, ref rgba)) = png {
-        let dir = std::env::temp_dir().join("bambu-ui-gui");
+        let dir = std::env::temp_dir().join("elysian-ui-gui");
         let _ = fs::create_dir_all(&dir);
         let _ = write_png(&dir.join(format!("{name}.png")), rgba, w, h);
         eprintln!("wrote {}/{name}.png", dir.display());
@@ -342,7 +342,7 @@ fn gui_chrome_paint_overlay_and_recents_goldens() {
     assert_json("prepare_paint_support", &snap);
     let _ = maybe_png("prepare_paint_support", &png);
 
-    let dir = std::env::temp_dir().join("bambu-ui-recent-golden");
+    let dir = std::env::temp_dir().join("elysian-ui-recent-golden");
     fs::create_dir_all(&dir).expect("temp recents dir");
     let path = dir.join("preview_cube.3mf");
     App::write_recent_preview_3mf(&path).expect("preview 3mf");

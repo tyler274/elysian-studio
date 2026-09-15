@@ -1,12 +1,12 @@
 //! Optional cloud MQTT + HTTPS file-upload print.
 //!
 //! Does **not** dlopen `libbambu_networking` and does **not** ship PEMs.
-//! Tokens live under `$XDG_CONFIG_HOME/bambu-studio-rs` (never logged).
+//! Tokens live under `$XDG_CONFIG_HOME/elysian-studio` (never logged).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
+use elysian_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
 
 use crate::cloud_api::{md5_hex, CloudApi};
 use crate::credentials::{default_config_dir, CredentialError};

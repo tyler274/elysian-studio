@@ -3,7 +3,7 @@
 use iced::widget::{button, checkbox, column, row, scrollable, text, text_input};
 use iced::{Element, Fill};
 
-use bambu_protocol::{remain_percent, remaining_weight, InventorySpool};
+use elysian_protocol::{remain_percent, remaining_weight, InventorySpool};
 
 use crate::theme;
 use crate::Message;

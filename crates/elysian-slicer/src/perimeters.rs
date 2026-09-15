@@ -16,8 +16,8 @@
 //! the layer above (C++ `generate_one_wall_by_top_most` / `Alltop`).
 //! `only_one_wall_first_layer` does the same on object layer 0.
 
-use bambu_config::{FlowRole, SliceSettings, TopOneWallType, WallGenerator};
-use bambu_geom::{
+use elysian_config::{FlowRole, SliceSettings, TopOneWallType, WallGenerator};
+use elysian_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Polygon, Polyline,
 };
 
@@ -72,13 +72,13 @@ pub struct PerimeterResult {
     pub inner: Vec<Polyline>,
     pub infill_region: Vec<Polygon>,
     pub gap_infill: Vec<Polyline>,
-    pub seam_hint: Option<bambu_geom::Point>,
+    pub seam_hint: Option<elysian_geom::Point>,
 }
 
 pub fn generate(
     contours: &[Polygon],
     settings: &SliceSettings,
-    seam_hint: Option<bambu_geom::Point>,
+    seam_hint: Option<elysian_geom::Point>,
     upper: Option<&[Polygon]>,
     layer_idx: usize,
     lower: Option<&[Polygon]>,
@@ -109,7 +109,7 @@ pub fn generate(
 fn classic_perimeters(
     contours: &[Polygon],
     settings: &SliceSettings,
-    seam_hint: Option<bambu_geom::Point>,
+    seam_hint: Option<elysian_geom::Point>,
     upper: Option<&[Polygon]>,
     layer_idx: usize,
 ) -> PerimeterResult {
@@ -202,7 +202,7 @@ fn classic_perimeters(
 fn arachne_perimeters(
     contours: &[Polygon],
     settings: &SliceSettings,
-    seam_hint: Option<bambu_geom::Point>,
+    seam_hint: Option<elysian_geom::Point>,
     upper: Option<&[Polygon]>,
     layer_idx: usize,
 ) -> PerimeterResult {
@@ -267,7 +267,7 @@ fn apply_all_top(
     settings: &SliceSettings,
     inner: &mut Vec<Polyline>,
     infill_region: &mut Vec<Polygon>,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
     arachne: bool,
 ) {
     let cover = cover_upper(upper);
@@ -315,8 +315,8 @@ fn onion_split(
     loops: u32,
     walls: WallSpacing,
     settings: &SliceSettings,
-    mut hint: Option<bambu_geom::Point>,
-    hint_out: &mut Option<bambu_geom::Point>,
+    mut hint: Option<elysian_geom::Point>,
+    hint_out: &mut Option<elysian_geom::Point>,
 ) -> (Vec<Polyline>, Vec<Polyline>) {
     let mut outer = Vec::new();
     let mut inner = Vec::new();
@@ -337,8 +337,8 @@ fn onion_rings(
     loops: u32,
     w: f64,
     settings: &SliceSettings,
-    mut hint: Option<bambu_geom::Point>,
-) -> (Vec<Polyline>, Option<bambu_geom::Point>) {
+    mut hint: Option<elysian_geom::Point>,
+) -> (Vec<Polyline>, Option<elysian_geom::Point>) {
     let mut out = Vec::new();
     for i in 0..loops {
         out.extend(offset_loops(
@@ -357,7 +357,7 @@ fn arachne_split(
     loops: u32,
     walls: WallSpacing,
     settings: &SliceSettings,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
 ) -> (Vec<Polyline>, Vec<Polyline>) {
     let mut outer = Vec::new();
     let mut inner = Vec::new();
@@ -391,7 +391,7 @@ fn leftover_centerline(
     fitted: u32,
     walls: WallSpacing,
     settings: &SliceSettings,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
 ) -> Option<Vec<Polyline>> {
     let min_feat = settings.min_feature_size_mm();
     let min_bead = settings.min_bead_width_mm();
@@ -534,7 +534,7 @@ fn centerline_gaps(
     gaps: &[Polygon],
     w: f64,
     settings: &SliceSettings,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
 ) -> Vec<Polyline> {
     let min = 0.2 * w * (1.0 - INSET_OVERLAP_TOLERANCE);
     let max = 2.0 * w;
@@ -569,14 +569,14 @@ fn centerline_gaps(
     paths
 }
 
-fn polyline_len_mm(path: &[bambu_geom::Point]) -> f64 {
+fn polyline_len_mm(path: &[elysian_geom::Point]) -> f64 {
     path.windows(2).map(|w| w[0].distance_mm(w[1])).sum()
 }
 
 fn seam_rings(
     mut rings: Vec<Polygon>,
     settings: &SliceSettings,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
 ) -> Vec<Polyline> {
     rings.retain(|r| r.len() >= 3);
     for ring in &mut rings {
@@ -590,7 +590,7 @@ fn offset_loops(
     contours: &[Polygon],
     inset_mm: f64,
     settings: &SliceSettings,
-    hint: &mut Option<bambu_geom::Point>,
+    hint: &mut Option<elysian_geom::Point>,
 ) -> Vec<Polyline> {
     let rings = offset_polygons(contours, -inset_mm);
     seam_rings(rings, settings, hint)
@@ -599,8 +599,8 @@ fn offset_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::{SliceSettings, WallGenerator};
-    use bambu_geom::Point;
+    use elysian_config::{SliceSettings, WallGenerator};
+    use elysian_geom::Point;
 
     fn rect(width_mm: f64, height_mm: f64) -> Polygon {
         vec![

@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bambu_device::{
+use elysian_device::{
     AmsState, AmsTray, AmsUnit, HmsCode, MachineState, NozzleRackState, NozzleSlot,
 };
 use serde_json::Value;

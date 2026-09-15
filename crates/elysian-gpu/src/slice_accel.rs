@@ -4,10 +4,10 @@
 
 use std::sync::OnceLock;
 
-use bambu_config::SliceSettings;
-use bambu_geom::TriangleMesh;
-use bambu_model::ModelVolume;
-use bambu_slicer::{
+use elysian_config::SliceSettings;
+use elysian_geom::TriangleMesh;
+use elysian_model::ModelVolume;
+use elysian_slicer::{
     layer_plan, slice_from_contours_with_assist, slice_mesh, slice_volumes,
     slice_volumes_with_planes, zip_plan_contours, GpuAssist, SliceResult, SlicerError,
 };
@@ -114,7 +114,7 @@ pub fn slice_volumes_with_gpu_or_cpu(
             Err(err) => {
                 tracing::warn!("Vulkan volume plane failed ({err}); CPU plane for one mesh");
                 zs.iter()
-                    .map(|&z| bambu_geom::union_polygons(&bambu_slicer::slice_at_z(mesh, z as f32)))
+                    .map(|&z| elysian_geom::union_polygons(&elysian_slicer::slice_at_z(mesh, z as f32)))
                     .collect()
             }
         }
@@ -148,8 +148,8 @@ pub fn slice_on_vulkan(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
-    use bambu_slicer::{slice_from_contours, zip_plan_contours};
+    use elysian_geom::Point;
+    use elysian_slicer::{slice_from_contours, zip_plan_contours};
 
     #[test]
     fn gpu_cube_layer_count_matches_cpu_when_adapter_exists() {
@@ -159,7 +159,7 @@ mod tests {
         };
         let mesh = TriangleMesh::cube(20.0);
         let settings = SliceSettings::default();
-        let plan = bambu_slicer::layer_plan(&mesh, &settings).unwrap();
+        let plan = elysian_slicer::layer_plan(&mesh, &settings).unwrap();
         let zs: Vec<f64> = plan.iter().map(|s| s.slice_z_mm).collect();
         let gpu_layers = accel.contours_for_layers(&mesh, &zs).unwrap();
         let gpu = slice_from_contours(zip_plan_contours(&plan, gpu_layers), &settings, Some(&mesh));

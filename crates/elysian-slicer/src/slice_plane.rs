@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use bambu_geom::{scale, Point, Polygon, TriangleMesh};
+use elysian_geom::{scale, Point, Polygon, TriangleMesh};
 use glam::Vec3;
 use rayon::prelude::*;
 use wide::{f32x4, CmpGe, CmpLe};
@@ -251,7 +251,7 @@ fn collect_segments_scalar(mesh: &TriangleMesh, z: f32) -> Vec<(Point, Point)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::TriangleMesh;
+    use elysian_geom::TriangleMesh;
 
     #[test]
     fn simd_cull_matches_scalar_segments() {

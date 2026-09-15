@@ -1,7 +1,7 @@
 //! Seam placement on closed loops (aligned / rear).
 
-use bambu_config::SeamPosition;
-use bambu_geom::{Point, Polygon, Polyline};
+use elysian_config::SeamPosition;
+use elysian_geom::{Point, Polygon, Polyline};
 
 use crate::clip::point_in_polygons;
 
@@ -93,7 +93,7 @@ fn rotate_to(loop_pts: &mut Polyline, idx: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
+    use elysian_geom::Point;
 
     #[test]
     fn rear_seam_picks_highest_y() {

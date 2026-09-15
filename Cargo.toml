@@ -1,34 +1,34 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-default-members = ["crates/bambu-cli", "crates/bambu-ui"]
+default-members = ["crates/elysian-cli", "crates/elysian-ui"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.90"
-repository = "https://github.com/bambulab/BambuStudio"
-authors = ["Bambu Studio Rust rewrite contributors"]
+repository = "https://github.com/tyler274/elysian-studio"
+authors = ["Elysian Studio contributors"]
 
 [workspace.lints.rust]
 unsafe_code = "deny"
 
 [workspace.dependencies]
-bambu-geom = { path = "crates/bambu-geom" }
-bambu-config = { path = "crates/bambu-config" }
-bambu-model = { path = "crates/bambu-model" }
-bambu-io = { path = "crates/bambu-io" }
-bambu-slicer = { path = "crates/bambu-slicer" }
-bambu-gcode = { path = "crates/bambu-gcode" }
-bambu-preview = { path = "crates/bambu-preview" }
-bambu-gpu = { path = "crates/bambu-gpu" }
-bambu-device = { path = "crates/bambu-device" }
-bambu-protocol = { path = "crates/bambu-protocol" }
-bambu-alloc = { path = "crates/bambu-alloc" }
-bambu-wgpu-exp = { path = "crates/bambu-wgpu-exp" }
+elysian-geom = { path = "crates/elysian-geom" }
+elysian-config = { path = "crates/elysian-config" }
+elysian-model = { path = "crates/elysian-model" }
+elysian-io = { path = "crates/elysian-io" }
+elysian-slicer = { path = "crates/elysian-slicer" }
+elysian-gcode = { path = "crates/elysian-gcode" }
+elysian-preview = { path = "crates/elysian-preview" }
+elysian-gpu = { path = "crates/elysian-gpu" }
+elysian-device = { path = "crates/elysian-device" }
+elysian-protocol = { path = "crates/elysian-protocol" }
+elysian-alloc = { path = "crates/elysian-alloc" }
+elysian-wgpu-exp = { path = "crates/elysian-wgpu-exp" }
 # Sibling checkout of the mimalloc Rust rewrite (`../mimalloc`).
-mimalloc-core = { path = "../mimalloc/rust/crates/mimalloc-core" }
+mimalloc-core = { path = "../mimalloc/rust/crates/elymalloc-core", package = "elymalloc-core" }
 
 base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }

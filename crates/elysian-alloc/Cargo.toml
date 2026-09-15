@@ -1,10 +1,10 @@
 [package]
-name = "bambu-alloc"
+name = "elysian-alloc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Process allocator: mimalloc-core rewrite as GlobalAlloc"
+description = "Process allocator: elymalloc-core rewrite as GlobalAlloc"
 
 [lints]
 workspace = true

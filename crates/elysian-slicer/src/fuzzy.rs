@@ -4,8 +4,8 @@
 //! the layer index, slice Z, and the first point so the same mesh slices the same
 //! way twice. Perlin / Billow / Ridged / Voronoi sample `(x, y, z)` instead.
 
-use bambu_config::{FuzzySkinNoiseType, FuzzySkinType, SliceSettings};
-use bambu_geom::{Point, Polyline};
+use elysian_config::{FuzzySkinNoiseType, FuzzySkinType, SliceSettings};
+use elysian_geom::{Point, Polyline};
 
 use crate::clip;
 
@@ -250,7 +250,7 @@ pub fn apply_walls(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::Point;
+    use elysian_geom::Point;
 
     fn square() -> Vec<Point> {
         vec![

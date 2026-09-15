@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use bambu_geom::TriangleMesh;
-use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
+use elysian_geom::TriangleMesh;
+use elysian_model::{Instance, Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
 use glam::Mat4;
 
 use rayon::prelude::*;

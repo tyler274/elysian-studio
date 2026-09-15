@@ -14,7 +14,7 @@ use flate2::Compression;
 use openh264::decoder::Decoder;
 use rand::Rng;
 
-use bambu_device::Frame;
+use elysian_device::Frame;
 
 use crate::agora::{
     encryption_config, on_encoded_video_frame, AgoraJoin, RtcSession, AREA_CODE_AS, AREA_CODE_CN,

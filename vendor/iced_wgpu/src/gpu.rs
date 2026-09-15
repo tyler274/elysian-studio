@@ -2,7 +2,7 @@
 
 /// Adapter ∩ [`wgpu::Features::EXPERIMENTAL_RAY_QUERY`].
 pub fn ray_query_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    bambu_wgpu_exp::ray_query_features(adapter)
+    elysian_wgpu_exp::ray_query_features(adapter)
 }
 
 /// Experimental-feature token required to request `EXPERIMENTAL_*` wgpu features.
@@ -12,7 +12,7 @@ pub fn experimental_features(
     if ray_query_features(adapter).is_empty() {
         wgpu::ExperimentalFeatures::disabled()
     } else {
-        bambu_wgpu_exp::experimental_features()
+        elysian_wgpu_exp::experimental_features()
     }
 }
 
@@ -27,6 +27,6 @@ pub fn device_limits(
         ..base
     };
     let (_features, _exp, limits) =
-        bambu_wgpu_exp::ray_query_device(adapter, limits);
+        elysian_wgpu_exp::ray_query_device(adapter, limits);
     limits
 }

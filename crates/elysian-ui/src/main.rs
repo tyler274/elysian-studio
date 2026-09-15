@@ -1,3 +1,3 @@
 fn main() -> iced::Result {
-    bambu_ui::run()
+    elysian_ui::run()
 }

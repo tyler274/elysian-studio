@@ -45,3 +45,4 @@ obn.state.json
 # VMProtect self-unpack dumps (never commit)
 *.vmp.dump
 bambu-vmp-dump-*.bin
+elysian-vmp-dump-*.bin

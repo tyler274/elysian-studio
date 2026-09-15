@@ -34,12 +34,12 @@ mod steps;
 mod support;
 mod wipe_tower;
 
-use bambu_config::{FuzzySkinType, SliceSettings};
-use bambu_geom::{
+use elysian_config::{FuzzySkinType, SliceSettings};
+use elysian_geom::{
     difference_polygons, intersect_polygons, offset_polygons, union_polygons, Point, Polygon,
     Polyline, TriangleMesh,
 };
-use bambu_model::{ModelVolume, TrianglePaint};
+use elysian_model::{ModelVolume, TrianglePaint};
 use rayon::prelude::*;
 use thiserror::Error;
 
@@ -384,7 +384,7 @@ pub fn slice_volumes_with_planes<F>(
 where
     F: FnMut(&TriangleMesh, &[f64]) -> Vec<Vec<Polygon>>,
 {
-    let object_settings = bambu_model::agreed_object_settings(volumes, settings);
+    let object_settings = elysian_model::agreed_object_settings(volumes, settings);
     let settings = &object_settings;
     let part_vols: Vec<&ModelVolume> = volumes
         .iter()
@@ -1252,12 +1252,12 @@ fn signed_contour_area_mm2(poly: &Polygon) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::{
+    use elysian_config::{
         BrimType, DraftShield, EnsureVerticalShellThickness, FuzzySkinType, InfillPattern,
         SeamPosition, SliceSettings, SupportBasePattern, SupportInterfacePattern, SupportType,
         SurfacePattern, TopOneWallType, WallGenerator,
     };
-    use bambu_geom::TriangleMesh;
+    use elysian_geom::TriangleMesh;
 
     #[test]
     fn cube_layer_count() {
@@ -2797,7 +2797,7 @@ mod tests {
         let diagonal = slice_mesh(&mesh, &settings).unwrap();
         settings.infill_direction_deg = 0.0;
         let along_x = slice_mesh(&mesh, &settings).unwrap();
-        let dir = |paths: &[bambu_geom::Polyline]| {
+        let dir = |paths: &[elysian_geom::Polyline]| {
             let mut ax = 0.0;
             let mut ay = 0.0;
             let mut n = 0.0;
@@ -2888,7 +2888,7 @@ mod tests {
         let none = slice_mesh(&mesh, &settings).unwrap();
         settings.infill_wall_overlap = 0.15;
         let overlap = slice_mesh(&mesh, &settings).unwrap();
-        let path_len = |paths: &[bambu_geom::Polyline]| {
+        let path_len = |paths: &[elysian_geom::Polyline]| {
             paths
                 .iter()
                 .map(|path| path.windows(2).map(|w| w[0].distance_mm(w[1])).sum::<f64>())
@@ -3049,7 +3049,7 @@ mod tests {
     fn ironing_direction_rotates_top_hatch() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
-        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        settings.ironing_type = elysian_config::IroningType::TopSurfaces;
         settings.infill_direction_deg = 0.0;
         settings.ironing_direction_deg = 0.0;
         let along_zero = slice_mesh(&mesh, &settings).unwrap();
@@ -3068,7 +3068,7 @@ mod tests {
     fn cube_top_surfaces_get_ironing() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
-        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        settings.ironing_type = elysian_config::IroningType::TopSurfaces;
         let result = slice_mesh(&mesh, &settings).unwrap();
         let n = result.layers.len();
         assert!(
@@ -3091,7 +3091,7 @@ mod tests {
     fn all_solid_irons_shells_without_sparse() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
-        settings.ironing_type = bambu_config::IroningType::AllSolid;
+        settings.ironing_type = elysian_config::IroningType::AllSolid;
         let result = slice_mesh(&mesh, &settings).unwrap();
         let ironed = result
             .layers
@@ -3113,7 +3113,7 @@ mod tests {
     fn topmost_only_irons_last_layer() {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
-        settings.ironing_type = bambu_config::IroningType::TopmostOnly;
+        settings.ironing_type = elysian_config::IroningType::TopmostOnly;
         let result = slice_mesh(&mesh, &settings).unwrap();
         let n = result.layers.len();
         assert!(!result.layers[n - 1].ironing.is_empty());
@@ -3592,9 +3592,9 @@ mod tests {
         let solid = TriangleMesh::cube(20.0);
         let mut cutter = TriangleMesh::cube(10.0);
         cutter.translate(glam::Vec3::new(5.0, 5.0, 5.0));
-        let mut hole = bambu_model::ModelVolume::model_part("cut", cutter, 2);
-        hole.volume_type = bambu_model::VolumeType::Negative;
-        let volumes = vec![bambu_model::ModelVolume::model_part("body", solid, 1), hole];
+        let mut hole = elysian_model::ModelVolume::model_part("cut", cutter, 2);
+        hole.volume_type = elysian_model::VolumeType::Negative;
+        let volumes = vec![elysian_model::ModelVolume::model_part("body", solid, 1), hole];
         let plain = slice_volumes(&volumes, &settings).unwrap();
         let mut grown = settings;
         grown.xy_hole_compensation_mm = 0.4;
@@ -3621,7 +3621,7 @@ mod tests {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
         settings.infill_pattern = InfillPattern::Rectilinear;
-        settings.ironing_type = bambu_config::IroningType::TopSurfaces;
+        settings.ironing_type = elysian_config::IroningType::TopSurfaces;
         let one = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -3660,10 +3660,10 @@ mod tests {
         let solid = TriangleMesh::cube(20.0);
         let mut cutter = TriangleMesh::cube(10.0);
         cutter.translate(glam::Vec3::new(5.0, 5.0, 5.0));
-        let mut hole = bambu_model::ModelVolume::model_part("cut", cutter, 2);
-        hole.volume_type = bambu_model::VolumeType::Negative;
+        let mut hole = elysian_model::ModelVolume::model_part("cut", cutter, 2);
+        hole.volume_type = elysian_model::VolumeType::Negative;
         let volumes = vec![
-            bambu_model::ModelVolume::model_part("body", solid.clone(), 1),
+            elysian_model::ModelVolume::model_part("body", solid.clone(), 1),
             hole,
         ];
         let solid_slice = slice_mesh(&solid, &settings).unwrap();
@@ -3707,7 +3707,7 @@ mod tests {
         settings.enable_support = true;
         settings.support_type = SupportType::Classic;
         settings.infill_pattern = InfillPattern::Rectilinear;
-        let mut part = bambu_model::ModelVolume::model_part("table", mesh, 1);
+        let mut part = elysian_model::ModelVolume::model_part("table", mesh, 1);
         part.config.insert("enable_support".into(), "0".into());
         let sliced = slice_volumes(&[part], &settings).unwrap();
         assert_eq!(
@@ -3782,7 +3782,7 @@ mod tests {
         let open = slice_mesh(&mesh, &settings).unwrap();
         let open_n = support_fill_layers(&open);
         assert!(open_n >= 10, "expected auto support, got {open_n}");
-        let mut blocker = bambu_model::ModelVolume::model_part(
+        let mut blocker = elysian_model::ModelVolume::model_part(
             "block",
             TriangleMesh::aabb_box(
                 glam::Vec3::new(-1.0, -1.0, 7.5),
@@ -3790,10 +3790,10 @@ mod tests {
             ),
             2,
         );
-        blocker.volume_type = bambu_model::VolumeType::SupportBlocker;
+        blocker.volume_type = elysian_model::VolumeType::SupportBlocker;
         let blocked = slice_volumes(
             &[
-                bambu_model::ModelVolume::model_part("table", mesh, 1),
+                elysian_model::ModelVolume::model_part("table", mesh, 1),
                 blocker,
             ],
             &settings,
@@ -3820,15 +3820,15 @@ mod tests {
             0,
             "89° threshold should skip the table slab"
         );
-        let mut enforcer = bambu_model::ModelVolume::model_part(
+        let mut enforcer = elysian_model::ModelVolume::model_part(
             "enforce",
             TriangleMesh::aabb_box(glam::Vec3::ZERO, glam::Vec3::new(24.0, 24.0, 12.0)),
             2,
         );
-        enforcer.volume_type = bambu_model::VolumeType::SupportEnforcer;
+        enforcer.volume_type = elysian_model::VolumeType::SupportEnforcer;
         let forced = slice_volumes(
             &[
-                bambu_model::ModelVolume::model_part("table", mesh, 1),
+                elysian_model::ModelVolume::model_part("table", mesh, 1),
                 enforcer,
             ],
             &settings,
@@ -3844,8 +3844,8 @@ mod tests {
     fn paint_at_z(
         mesh: &TriangleMesh,
         z: f32,
-        paint: bambu_model::TrianglePaint,
-    ) -> Vec<bambu_model::TrianglePaint> {
+        paint: elysian_model::TrianglePaint,
+    ) -> Vec<elysian_model::TrianglePaint> {
         mesh.indices
             .iter()
             .map(|&idx| {
@@ -3853,7 +3853,7 @@ mod tests {
                 if (a.z - z).abs() < 1e-3 && (b.z - z).abs() < 1e-3 && (c.z - z).abs() < 1e-3 {
                     paint
                 } else {
-                    bambu_model::TrianglePaint::None
+                    elysian_model::TrianglePaint::None
                 }
             })
             .collect()
@@ -3867,8 +3867,8 @@ mod tests {
         settings.support_type = SupportType::Classic;
         settings.support_threshold_angle_deg = 89.0;
         settings.infill_pattern = InfillPattern::Rectilinear;
-        let mut part = bambu_model::ModelVolume::model_part("table", mesh.clone(), 1);
-        part.triangle_support = paint_at_z(&mesh, 8.0, bambu_model::TrianglePaint::Enforcer);
+        let mut part = elysian_model::ModelVolume::model_part("table", mesh.clone(), 1);
+        part.triangle_support = paint_at_z(&mesh, 8.0, elysian_model::TrianglePaint::Enforcer);
         assert!(part.has_support_paint());
         let forced = slice_volumes(&[part], &settings).unwrap();
         let n = support_fill_layers(&forced);
@@ -3883,8 +3883,8 @@ mod tests {
         settings.support_type = SupportType::Classic;
         settings.infill_pattern = InfillPattern::Rectilinear;
         let open_n = support_fill_layers(&slice_mesh(&mesh, &settings).unwrap());
-        let mut part = bambu_model::ModelVolume::model_part("table", mesh.clone(), 1);
-        part.triangle_support = paint_at_z(&mesh, 8.0, bambu_model::TrianglePaint::Blocker);
+        let mut part = elysian_model::ModelVolume::model_part("table", mesh.clone(), 1);
+        part.triangle_support = paint_at_z(&mesh, 8.0, elysian_model::TrianglePaint::Blocker);
         let blocked = slice_volumes(&[part], &settings).unwrap();
         let blocked_n = support_fill_layers(&blocked);
         assert!(
@@ -3903,14 +3903,14 @@ mod tests {
         settings.infill_density = 0.15;
         settings.wall_loops = 2;
         let open = slice_mesh(&body, &settings).unwrap();
-        let mut modifier = bambu_model::ModelVolume::model_part("dense", inset, 2);
-        modifier.volume_type = bambu_model::VolumeType::Modifier;
+        let mut modifier = elysian_model::ModelVolume::model_part("dense", inset, 2);
+        modifier.volume_type = elysian_model::VolumeType::Modifier;
         modifier
             .config
             .insert("sparse_infill_density".into(), "100%".into());
         let denser = slice_volumes(
             &[
-                bambu_model::ModelVolume::model_part("body", body, 1),
+                elysian_model::ModelVolume::model_part("body", body, 1),
                 modifier,
             ],
             &settings,
@@ -3942,12 +3942,12 @@ mod tests {
         settings.infill_pattern = InfillPattern::Rectilinear;
         settings.wall_loops = 2;
         let open = slice_mesh(&body, &settings).unwrap();
-        let mut modifier = bambu_model::ModelVolume::model_part("shells", inset, 2);
-        modifier.volume_type = bambu_model::VolumeType::Modifier;
+        let mut modifier = elysian_model::ModelVolume::model_part("shells", inset, 2);
+        modifier.volume_type = elysian_model::VolumeType::Modifier;
         modifier.config.insert("wall_loops".into(), "6".into());
         let thick = slice_volumes(
             &[
-                bambu_model::ModelVolume::model_part("body", body, 1),
+                elysian_model::ModelVolume::model_part("body", body, 1),
                 modifier,
             ],
             &settings,
@@ -3963,9 +3963,9 @@ mod tests {
         let left = TriangleMesh::cube(20.0);
         let mut right = TriangleMesh::cube(20.0);
         right.translate(glam::Vec3::new(25.0, 0.0, 0.0));
-        let mut a = bambu_model::ModelVolume::model_part("left", left, 1);
+        let mut a = elysian_model::ModelVolume::model_part("left", left, 1);
         a.config.insert("extruder".into(), "1".into());
-        let mut b = bambu_model::ModelVolume::model_part("right", right, 2);
+        let mut b = elysian_model::ModelVolume::model_part("right", right, 2);
         b.config.insert("extruder".into(), "2".into());
         let mut settings = SliceSettings::default();
         settings.infill_pattern = InfillPattern::Rectilinear;
@@ -3997,9 +3997,9 @@ mod tests {
         let lower = TriangleMesh::cube(20.0);
         let mut upper = TriangleMesh::cube(20.0);
         upper.translate(glam::Vec3::new(0.0, 0.0, 10.0));
-        let mut a = bambu_model::ModelVolume::model_part("lower", lower, 1);
+        let mut a = elysian_model::ModelVolume::model_part("lower", lower, 1);
         a.config.insert("extruder".into(), "1".into());
-        let mut b = bambu_model::ModelVolume::model_part("upper", upper, 2);
+        let mut b = elysian_model::ModelVolume::model_part("upper", upper, 2);
         b.config.insert("extruder".into(), "2".into());
         let mut settings = SliceSettings::default();
         settings.infill_pattern = InfillPattern::Rectilinear;
@@ -4032,9 +4032,9 @@ mod tests {
             glam::Vec3::new(8.0, 0.0, 8.0),
             glam::Vec3::new(12.0, 20.0, 20.0),
         );
-        let mut base = bambu_model::ModelVolume::model_part("body", body, 1);
+        let mut base = elysian_model::ModelVolume::model_part("body", body, 1);
         base.config.insert("extruder".into(), "1".into());
-        let mut letter = bambu_model::ModelVolume::model_part("letter", rib, 2);
+        let mut letter = elysian_model::ModelVolume::model_part("letter", rib, 2);
         letter.config.insert("extruder".into(), "2".into());
         let settings = thin_rib_settings();
         let sliced = slice_volumes(&[base, letter], &settings).unwrap();
@@ -4052,8 +4052,8 @@ mod tests {
     fn paint_on_y(
         mesh: &TriangleMesh,
         y: f32,
-        paint: bambu_model::TrianglePaint,
-    ) -> Vec<bambu_model::TrianglePaint> {
+        paint: elysian_model::TrianglePaint,
+    ) -> Vec<elysian_model::TrianglePaint> {
         mesh.indices
             .iter()
             .map(|&idx| {
@@ -4061,7 +4061,7 @@ mod tests {
                 if (a.y - y).abs() < 1e-3 && (b.y - y).abs() < 1e-3 && (c.y - y).abs() < 1e-3 {
                     paint
                 } else {
-                    bambu_model::TrianglePaint::None
+                    elysian_model::TrianglePaint::None
                 }
             })
             .collect()
@@ -4074,8 +4074,8 @@ mod tests {
         settings.seam = SeamPosition::Aligned;
         settings.infill_pattern = InfillPattern::Rectilinear;
         let open = slice_mesh(&mesh, &settings).unwrap();
-        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
-        part.triangle_seam = paint_on_y(&mesh, 0.0, bambu_model::TrianglePaint::Enforcer);
+        let mut part = elysian_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        part.triangle_seam = paint_on_y(&mesh, 0.0, elysian_model::TrianglePaint::Enforcer);
         let painted = slice_volumes(&[part], &settings).unwrap();
         let mid_open = &open.layers[open.layers.len() / 2];
         let mid_paint = &painted.layers[painted.layers.len() / 2];
@@ -4098,8 +4098,8 @@ mod tests {
         settings.fuzzy_skin = FuzzySkinType::None;
         settings.infill_pattern = InfillPattern::Rectilinear;
         let open = slice_mesh(&mesh, &settings).unwrap();
-        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
-        part.triangle_fuzzy_skin = paint_on_y(&mesh, 0.0, bambu_model::TrianglePaint::Enforcer);
+        let mut part = elysian_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        part.triangle_fuzzy_skin = paint_on_y(&mesh, 0.0, elysian_model::TrianglePaint::Enforcer);
         let painted = slice_volumes(&[part], &settings).unwrap();
         let mid_open = &open.layers[open.layers.len() / 2];
         let mid_paint = &painted.layers[painted.layers.len() / 2];
@@ -4140,7 +4140,7 @@ mod tests {
         let mesh = TriangleMesh::cube(20.0);
         let mut settings = SliceSettings::default();
         settings.enable_support = true;
-        settings.support_type = bambu_config::SupportType::Classic;
+        settings.support_type = elysian_config::SupportType::Classic;
         settings.independent_support_layer_height = true;
         settings.max_layer_height_mm = 0.4;
         settings.enable_prime_tower = false;
@@ -4169,7 +4169,7 @@ mod tests {
         let mut settings = SliceSettings::default();
         settings.filament_count = 2;
         settings.infill_pattern = InfillPattern::Rectilinear;
-        let mut part = bambu_model::ModelVolume::model_part("cube", mesh.clone(), 1);
+        let mut part = elysian_model::ModelVolume::model_part("cube", mesh.clone(), 1);
         part.triangle_color = mesh.indices.iter().map(|_| String::from("8")).collect();
         let sliced = slice_volumes(&[part], &settings).unwrap();
         let mid = &sliced.layers[sliced.layers.len() / 2];

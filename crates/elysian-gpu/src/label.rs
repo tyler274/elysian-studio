@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
-use bambu_config::BedRect;
+use elysian_config::BedRect;
 use bytemuck::{Pod, Zeroable};
 
 const TTF: &[u8] = include_bytes!("../fonts/NotoSans-Regular.ttf");
@@ -227,7 +227,7 @@ fn push_glyph_rotated(
     out.extend_from_slice(&verts);
 }
 
-pub fn plate_labels(bed: &bambu_config::BedShape, color: [f32; 3]) -> Vec<LabelVertex> {
+pub fn plate_labels(bed: &elysian_config::BedShape, color: [f32; 3]) -> Vec<LabelVertex> {
     let mut out = Vec::new();
     let (left, right) = bed.visible_only_rects();
     if let Some(rect) = left {
@@ -242,7 +242,7 @@ pub fn plate_labels(bed: &bambu_config::BedShape, color: [f32; 3]) -> Vec<LabelV
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::BedShape;
+    use elysian_config::BedShape;
 
     #[test]
     fn atlas_contains_plate_letters() {

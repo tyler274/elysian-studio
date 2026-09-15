@@ -3,7 +3,7 @@
 //! Horizontal slices of a truncated-octahedron tessellation (David Eccles).
 //! Coordinates stay in millimetres until conversion to scaled [`Point`]s.
 
-use bambu_geom::{unscale, Point, Polygon, Polyline};
+use elysian_geom::{unscale, Point, Polygon, Polyline};
 use wide::{f64x4, CmpGt, CmpLt};
 
 use super::{bbox, clip_to_region};

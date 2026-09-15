@@ -7,11 +7,11 @@
 
 mod common;
 
-use bambu_alloc as _;
+use elysian_alloc as _;
 
-use bambu_config::SupportType;
-use bambu_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
-use bambu_io::load_3mf;
+use elysian_config::SupportType;
+use elysian_gcode::{assert_matches_cpp_with, parse_config_comments, parse_gcode};
+use elysian_io::load_3mf;
 
 use common::{bambu_studio_or_skip, run_cpp_slice_3mf, rust_slice_plate, scene_3mf};
 
@@ -109,7 +109,7 @@ fn eous_3mf_loads() {
 }
 
 #[test]
-#[ignore = "210k-face tree-supported figurine; cargo test -p bambu-cli --test golden_eous -- --ignored"]
+#[ignore = "210k-face tree-supported figurine; cargo test -p elysian-cli --test golden_eous -- --ignored"]
 fn eous_figurine_matches_cpp_bambu_studio() {
     slice_plate_against_cpp(1, FIGURINE_ROLES, 0.8);
 }
@@ -135,7 +135,7 @@ fn slice_plate_against_cpp(plate: u32, roles: &[&str], z_slop_mm: f64) {
         .clone()
         .expect("embedded project_settings.config");
     let ours_gcode = rust_slice_plate(&model, &settings, (plate - 1) as usize).expect("rust slice");
-    let dir = std::env::temp_dir().join(format!("bambu-studio-rs-oracle-eous-{plate}"));
+    let dir = std::env::temp_dir().join(format!("elysian-studio-oracle-eous-{plate}"));
     let cpp_dir = dir.join("cpp_out");
     let cpp_data = dir.join("cpp_data");
     let _ = std::fs::create_dir_all(&cpp_dir);

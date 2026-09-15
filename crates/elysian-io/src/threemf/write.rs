@@ -1,7 +1,7 @@
 //! [`Model`] → core 3MF `3dmodel.model` XML.
 
-use bambu_geom::TriangleMesh;
-use bambu_model::{Instance, Model, ModelVolume};
+use elysian_geom::TriangleMesh;
+use elysian_model::{Instance, Model, ModelVolume};
 
 use super::xml::{xml_escape, CORE_NS};
 use crate::IoError;

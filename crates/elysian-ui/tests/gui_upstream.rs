@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use bambu_ui::{
+use elysian_ui::{
     decode_png, png_delta, scale_rgba, write_png, App, Message, Workspace, WINDOW_SIZE,
 };
 
@@ -86,7 +86,7 @@ fn compare_or_skip(iced: &[u8], rel: &str) {
         path.display()
     );
     let (rmse, max) = png_delta(iced, &up);
-    let dir = std::env::temp_dir().join("bambu-ui-gui");
+    let dir = std::env::temp_dir().join("elysian-ui-gui");
     let _ = fs::create_dir_all(&dir);
     let stem = rel.replace('/', "_").replace(".png", "");
     let _ = write_png(

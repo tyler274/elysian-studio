@@ -2,9 +2,9 @@
 
 pub use crate::camera::{CameraView, OrbitCamera};
 
-use bambu_config::{BedRect, BedShape};
-use bambu_geom::{Aabb3, Bvh, TriangleMesh};
-use bambu_preview::{ExtrusionRole, ToolpathBuffer};
+use elysian_config::{BedRect, BedShape};
+use elysian_geom::{Aabb3, Bvh, TriangleMesh};
+use elysian_preview::{ExtrusionRole, ToolpathBuffer};
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
@@ -1255,19 +1255,19 @@ impl shader::Pipeline for ScenePipeline {
 impl ScenePipeline {
     fn create(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("bambu-gpu-solid"),
+            label: Some("elysian-gpu-solid"),
             source: wgpu::ShaderSource::Wgsl(include_str!("solid.wgsl").into()),
         });
 
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bambu-gpu-uniforms"),
+            label: Some("elysian-gpu-uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bambu-gpu-bgl"),
+            label: Some("elysian-gpu-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -1281,7 +1281,7 @@ impl ScenePipeline {
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bambu-gpu-bg"),
+            label: Some("elysian-gpu-bg"),
             layout: &layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -1290,7 +1290,7 @@ impl ScenePipeline {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("bambu-gpu-pl"),
+            label: Some("elysian-gpu-pl"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
@@ -1320,7 +1320,7 @@ impl ScenePipeline {
         let vertex_buffers = [Some(vertex_layout)];
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("bambu-gpu-solid-pipeline"),
+            label: Some("elysian-gpu-solid-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1356,7 +1356,7 @@ impl ScenePipeline {
         });
 
         let gizmo_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("bambu-gpu-gizmo-pipeline"),
+            label: Some("elysian-gpu-gizmo-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1388,7 +1388,7 @@ impl ScenePipeline {
         });
 
         let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("bambu-gpu-line-pipeline"),
+            label: Some("elysian-gpu-line-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1424,16 +1424,16 @@ impl ScenePipeline {
         });
 
         let solid_bufs = vec![GpuVertBuf {
-            buffer: empty_vertex_buffer(device, 4096, "bambu-gpu-solid-verts"),
+            buffer: empty_vertex_buffer(device, 4096, "elysian-gpu-solid-verts"),
             capacity: 4096,
             count: 0,
         }];
         let line_bufs = vec![GpuVertBuf {
-            buffer: empty_vertex_buffer(device, 4096, "bambu-gpu-line-verts"),
+            buffer: empty_vertex_buffer(device, 4096, "elysian-gpu-line-verts"),
             capacity: 4096,
             count: 0,
         }];
-        let gizmo_buf = empty_vertex_buffer(device, 1024, "bambu-gpu-gizmo-verts");
+        let gizmo_buf = empty_vertex_buffer(device, 1024, "elysian-gpu-gizmo-verts");
         let (label_pipeline, label_bind_group, label_buf, atlas_texture) =
             label_gpu(device, queue, format, &uniform_buf);
 
@@ -1480,7 +1480,7 @@ impl ScenePipeline {
             depth_or_array_layers: 1,
         };
         let msaa = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("bambu-gpu-msaa"),
+            label: Some("elysian-gpu-msaa"),
             size,
             mip_level_count: 1,
             sample_count: SAMPLE_COUNT,
@@ -1490,7 +1490,7 @@ impl ScenePipeline {
             view_formats: &[],
         });
         let depth = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("bambu-gpu-depth"),
+            label: Some("elysian-gpu-depth"),
             size,
             mip_level_count: 1,
             sample_count: SAMPLE_COUNT,
@@ -1545,7 +1545,7 @@ impl shader::Primitive for ScenePrimitive {
                 &mut pipeline.solid_bufs,
                 self.solid.iter().map(|c| c.as_ref()),
                 3,
-                "bambu-gpu-solid-verts",
+                "elysian-gpu-solid-verts",
             );
             upload_vert_chunks(
                 device,
@@ -1553,7 +1553,7 @@ impl shader::Primitive for ScenePrimitive {
                 &mut pipeline.line_bufs,
                 std::iter::once(self.lines.as_ref()),
                 2,
-                "bambu-gpu-line-verts",
+                "elysian-gpu-line-verts",
             );
             pipeline.label_count = upload_labels(
                 device,
@@ -1570,7 +1570,7 @@ impl shader::Primitive for ScenePrimitive {
             &mut pipeline.gizmo_buf,
             &mut pipeline.gizmo_capacity,
             &self.gizmos,
-            "bambu-gpu-gizmo-verts",
+            "elysian-gpu-gizmo-verts",
         );
 
         if self.realistic {
@@ -1629,7 +1629,7 @@ impl shader::Primitive for ScenePrimitive {
         );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("bambu-gpu-viewport"),
+            label: Some("elysian-gpu-viewport"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: msaa_view,
                 resolve_target: Some(target),
@@ -1869,7 +1869,7 @@ fn empty_label_buffer(device: &wgpu::Device, count: u64) -> wgpu::Buffer {
     let max_count = (device.limits().max_buffer_size / stride).max(1);
     let count = count.min(max_count).max(1);
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("bambu-gpu-label-verts"),
+        label: Some("elysian-gpu-label-verts"),
         size: count * stride,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -1943,7 +1943,7 @@ fn label_gpu(
 ) {
     let atlas = crate::label::atlas();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("bambu-gpu-label-atlas"),
+        label: Some("elysian-gpu-label-atlas"),
         size: wgpu::Extent3d {
             width: atlas.width,
             height: atlas.height,
@@ -1977,7 +1977,7 @@ fn label_gpu(
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("bambu-gpu-label-sampler"),
+        label: Some("elysian-gpu-label-sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
         address_mode_v: wgpu::AddressMode::ClampToEdge,
         mag_filter: wgpu::FilterMode::Linear,
@@ -1985,11 +1985,11 @@ fn label_gpu(
         ..Default::default()
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("bambu-gpu-label"),
+        label: Some("elysian-gpu-label"),
         source: wgpu::ShaderSource::Wgsl(include_str!("label.wgsl").into()),
     });
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("bambu-gpu-label-bgl"),
+        label: Some("elysian-gpu-label-bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -2020,7 +2020,7 @@ fn label_gpu(
         ],
     });
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("bambu-gpu-label-bg"),
+        label: Some("elysian-gpu-label-bg"),
         layout: &layout,
         entries: &[
             wgpu::BindGroupEntry {
@@ -2038,7 +2038,7 @@ fn label_gpu(
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("bambu-gpu-label-pl"),
+        label: Some("elysian-gpu-label-pl"),
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
@@ -2064,7 +2064,7 @@ fn label_gpu(
         ],
     };
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("bambu-gpu-label-pipeline"),
+        label: Some("elysian-gpu-label-pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -2441,7 +2441,7 @@ fn push_line(out: &mut Vec<Vertex>, a: [f32; 3], b: [f32; 3], normal: [f32; 3], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_geom::TriangleMesh;
+    use elysian_geom::TriangleMesh;
 
     #[test]
     fn grow_element_count_stays_under_256mib_max_buffer() {

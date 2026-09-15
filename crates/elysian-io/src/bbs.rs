@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use bambu_model::{Model, ModelVolume, PartPlate, VolumeType};
+use elysian_model::{Model, ModelVolume, PartPlate, VolumeType};
 use glam::Mat4;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -103,7 +103,7 @@ pub fn apply(model: &mut Model, xml: &str) -> Result<(), IoError> {
     Ok(())
 }
 
-fn apply_parts(obj: &mut bambu_model::ModelObject, parts: &[PartRec]) {
+fn apply_parts(obj: &mut elysian_model::ModelObject, parts: &[PartRec]) {
     let object_id = obj.object_id;
     for vol in &mut obj.volumes {
         let Some(part) = find_part(parts, vol.part_id) else {
@@ -122,7 +122,7 @@ fn apply_parts(obj: &mut bambu_model::ModelObject, parts: &[PartRec]) {
 }
 
 /// Part keys win over object keys (C++ volume config overlays object config).
-fn apply_object_config(obj: &mut bambu_model::ModelObject, cfg: &BTreeMap<String, String>) {
+fn apply_object_config(obj: &mut elysian_model::ModelObject, cfg: &BTreeMap<String, String>) {
     if cfg.is_empty() {
         return;
     }

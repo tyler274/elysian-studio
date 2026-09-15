@@ -2,12 +2,12 @@
 
 use std::fmt::Write as _;
 
-use bambu_config::{FlowRole, PrintAccel, SliceSettings, ZHopType};
-use bambu_geom::{
+use elysian_config::{FlowRole, PrintAccel, SliceSettings, ZHopType};
+use elysian_geom::{
     clip_end, douglas_peucker, fit_arcs_and_simplify, intersect_polygons, offset_polygons, unscale,
     ArcDir, PathFit, PathFitKind, Point, Polygon, Polyline,
 };
-use bambu_slicer::{point_in_polygons, Layer};
+use elysian_slicer::{point_in_polygons, Layer};
 
 use crate::cooling::{apply_layer_cooling_slowdown, apply_part_cooling};
 use crate::processor::process_gcode;
@@ -1301,7 +1301,7 @@ fn segment_intersection_t(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::ReduceInfillRetractionMode;
+    use elysian_config::ReduceInfillRetractionMode;
 
     #[test]
     fn clip_suffix_shortens_closed_square() {

@@ -5,8 +5,8 @@
 //! skipped; the first raft layer is the bed flange (C++ `Brim.cpp` skips rafted
 //! objects). Layer-0 support columns are unioned into the raft outline.
 
-use bambu_config::SliceSettings;
-use bambu_geom::{offset_polygons, union_polygons, Polygon, Polyline};
+use elysian_config::SliceSettings;
+use elysian_geom::{offset_polygons, union_polygons, Polygon, Polyline};
 
 use crate::infill;
 use crate::Layer;
@@ -180,11 +180,11 @@ pub fn apply(layers: &mut Vec<Layer>, settings: &SliceSettings) {
     }
     let body = expand(&object_outline, settings.raft_expansion_mm.max(0.0));
     let flange = expand(&object_outline, first_layer_expansion_mm(settings));
-    let support_w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, false);
+    let support_w = settings.line_width_for(elysian_config::FlowRole::SupportMaterial, false);
     let inset = support_w * 0.5;
     let first_spacing = {
         let density = settings.raft_first_layer_density.clamp(0.10, 1.0);
-        let w = settings.line_width_for(bambu_config::FlowRole::SupportMaterial, true);
+        let w = settings.line_width_for(elysian_config::FlowRole::SupportMaterial, true);
         (w / density).max(w)
     };
     let interface_spacing = settings.support_interface_hatch_spacing_mm();
@@ -217,7 +217,7 @@ pub fn apply(layers: &mut Vec<Layer>, settings: &SliceSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bambu_config::SliceSettings;
+    use elysian_config::SliceSettings;
 
     #[test]
     fn one_raft_layer_is_first_print_height() {

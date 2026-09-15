@@ -1,7 +1,7 @@
 //! Place, arrange, auto-orient, and lay-on-face for instances on a bed.
 
-use bambu_config::BedShape;
-use bambu_geom::TriangleMesh;
+use elysian_config::BedShape;
+use elysian_geom::TriangleMesh;
 use glam::{Mat3, Quat, Vec3};
 
 use crate::{Instance, Model};
@@ -241,7 +241,7 @@ pub fn lay_instance_on_normal(mesh: &TriangleMesh, inst: &mut Instance, world_no
 mod tests {
     use super::*;
     use crate::Model;
-    use bambu_geom::TriangleMesh;
+    use elysian_geom::TriangleMesh;
 
     #[test]
     fn arrange_two_cubes_do_not_overlap() {

@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Bambu Studio
+Name=Elysian Studio
 GenericName=3D Printing Slicer
-Comment=Bambu Studio (Rust rewrite)
-Exec=bambu-ui
-Icon=bambu-studio-rs
+Comment=Elysian Studio (Rust rewrite)
+Exec=elysian-studio
+Icon=elysian-studio
 Terminal=false
 Categories=Graphics;3DGraphics;Engineering;
-StartupWMClass=bambu-studio-rs
-Keywords=slicer;3D;printing;bambu;
+StartupWMClass=elysian-studio
+Keywords=slicer;3D;printing;bambu;elysian;

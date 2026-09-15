@@ -115,8 +115,8 @@ features = [
 ]
 default-features = false
 
-[dependencies.bambu-wgpu-exp]
-path = "../../crates/bambu-wgpu-exp"
+[dependencies.elysian-wgpu-exp]
+path = "../../crates/elysian-wgpu-exp"
 
 [lints.clippy]
 default_trait_access = "deny"

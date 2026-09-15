@@ -9,7 +9,7 @@ use iced::{Alignment, ContentFit, Element, Fill, Padding};
 
 use crate::theme;
 use crate::{Message, ProcessTab, Workspace};
-use bambu_gpu::CameraView;
+use elysian_gpu::CameraView;
 
 impl crate::App {
     pub(crate) fn top_bar(&self) -> Element<'_, Message> {

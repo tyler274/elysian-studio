@@ -1,7 +1,7 @@
 use std::io::{Cursor, Read, Write};
 
-use bambu_geom::TriangleMesh;
-use bambu_model::{Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
+use elysian_geom::TriangleMesh;
+use elysian_model::{Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
 use glam::Vec3;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -422,10 +422,10 @@ fn project_settings_load_from_zip() {
 #[test]
 fn write_model_roundtrips_project_settings() {
     let mut model = Model::from_mesh("cube", TriangleMesh::cube(20.0));
-    let mut settings = bambu_config::SliceSettings::default();
+    let mut settings = elysian_config::SliceSettings::default();
     settings.layer_height_mm = 0.16;
-    settings.infill_pattern = bambu_config::InfillPattern::Grid;
-    settings.wall_generator = bambu_config::WallGenerator::Arachne;
+    settings.infill_pattern = elysian_config::InfillPattern::Grid;
+    settings.wall_generator = elysian_config::WallGenerator::Arachne;
     model.settings = Some(settings.clone());
     let bytes = write_model_3mf_bytes(&model).unwrap();
     {
@@ -435,8 +435,8 @@ fn write_model_roundtrips_project_settings() {
     let loaded = load_3mf_bytes(&bytes).unwrap();
     let s = loaded.settings.expect("project settings");
     assert!((s.layer_height_mm - 0.16).abs() < 1e-9);
-    assert_eq!(s.infill_pattern, bambu_config::InfillPattern::Grid);
-    assert_eq!(s.wall_generator, bambu_config::WallGenerator::Arachne);
+    assert_eq!(s.infill_pattern, elysian_config::InfillPattern::Grid);
+    assert_eq!(s.wall_generator, elysian_config::WallGenerator::Arachne);
 }
 
 fn cube_mesh_xml(id: u32, name: &str, size: f32, origin: Vec3) -> String {
@@ -539,7 +539,7 @@ fn volume_matrix_translates_part() {
     assert!((aabb.max.x - 30.0).abs() < 1e-3, "max.x={}", aabb.max.x);
     assert_eq!(
         model.objects[0].volumes[0].volume_type,
-        bambu_model::VolumeType::ModelPart
+        elysian_model::VolumeType::ModelPart
     );
 }
 
@@ -550,11 +550,11 @@ fn negative_part_is_omitted_from_merged_mesh() {
     assert_eq!(model.objects[0].volumes.len(), 2);
     assert_eq!(
         model.objects[0].volumes[0].volume_type,
-        bambu_model::VolumeType::ModelPart
+        elysian_model::VolumeType::ModelPart
     );
     assert_eq!(
         model.objects[0].volumes[1].volume_type,
-        bambu_model::VolumeType::Negative
+        elysian_model::VolumeType::Negative
     );
     let aabb = model.merged_mesh().unwrap().aabb().unwrap();
     assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
@@ -564,11 +564,11 @@ fn negative_part_is_omitted_from_merged_mesh() {
 #[test]
 fn write_model_roundtrips_negative_part() {
     let mut body = ModelVolume::model_part("body", TriangleMesh::cube(20.0), 1);
-    body.volume_type = bambu_model::VolumeType::ModelPart;
+    body.volume_type = elysian_model::VolumeType::ModelPart;
     let mut cutter = TriangleMesh::cube(10.0);
     cutter.translate(Vec3::new(5.0, 5.0, 5.0));
     let mut hole = ModelVolume::model_part("cutter", cutter, 2);
-    hole.volume_type = bambu_model::VolumeType::Negative;
+    hole.volume_type = elysian_model::VolumeType::Negative;
     let mut obj = ModelObject::new("cut cube", TriangleMesh::default());
     obj.volumes = vec![body, hole];
     obj.rebuild_printable_mesh();
@@ -597,8 +597,8 @@ fn write_model_roundtrips_negative_part() {
         .iter()
         .map(|v| v.volume_type)
         .collect();
-    assert!(types.contains(&bambu_model::VolumeType::ModelPart));
-    assert!(types.contains(&bambu_model::VolumeType::Negative));
+    assert!(types.contains(&elysian_model::VolumeType::ModelPart));
+    assert!(types.contains(&elysian_model::VolumeType::Negative));
     let aabb = loaded.merged_mesh().unwrap().aabb().unwrap();
     assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
 }
@@ -644,7 +644,7 @@ fn support_modifier_parts_load_from_settings() {
     assert_eq!(model.objects[0].volumes.len(), 2);
     assert_eq!(
         model.objects[0].volumes[1].volume_type,
-        bambu_model::VolumeType::SupportEnforcer
+        elysian_model::VolumeType::SupportEnforcer
     );
     let aabb = model.merged_mesh().unwrap().aabb().unwrap();
     assert!((aabb.size() - Vec3::splat(20.0)).length() < 1e-3);
@@ -756,7 +756,7 @@ fn parameter_modifier_config_load_and_roundtrip() {
     .unwrap();
     assert_eq!(model.objects[0].volumes.len(), 2);
     let vol = &model.objects[0].volumes[1];
-    assert_eq!(vol.volume_type, bambu_model::VolumeType::Modifier);
+    assert_eq!(vol.volume_type, elysian_model::VolumeType::Modifier);
     assert_eq!(
         vol.config.get("sparse_infill_density").map(String::as_str),
         Some("100%")
@@ -775,7 +775,7 @@ fn parameter_modifier_config_load_and_roundtrip() {
     let loaded = load_3mf_bytes(&bytes).unwrap();
     assert_eq!(
         loaded.objects[0].volumes[1].volume_type,
-        bambu_model::VolumeType::Modifier
+        elysian_model::VolumeType::Modifier
     );
     assert_eq!(
         loaded.objects[0].volumes[1]

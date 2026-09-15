@@ -9,7 +9,7 @@ use base64::Engine;
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
 
-use bambu_device::Frame;
+use elysian_device::Frame;
 
 use crate::camera::CameraError;
 use crate::cloud_api::{CameraCreds, SLICER_CLIENT_VERSION};
@@ -411,7 +411,7 @@ pub fn stream_agora_frames(
 ) -> Result<(), CameraError> {
     let join = AgoraJoin::from_creds(creds)?;
     tracing::debug!(
-        target: "bambu_protocol::cloud",
+        target: "elysian_protocol::cloud",
         region = %join.region,
         channel_len = join.channel.len(),
         token_kind = %if join.token.starts_with("006") {

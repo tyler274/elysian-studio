@@ -1,5 +1,5 @@
 [package]
-name = "bambu-model"
+name = "elysian-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ description = "Printable model graph: objects, volumes, instances, plates"
 workspace = true
 
 [dependencies]
-bambu-config.workspace = true
-bambu-geom.workspace = true
+elysian-config.workspace = true
+elysian-geom.workspace = true
 glam.workspace = true
 serde.workspace = true
