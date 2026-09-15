@@ -21,9 +21,13 @@ const PAINT_BLOCKER: [f32; 3] = [0.92, 0.22, 0.28];
 const BED: [f32; 3] = [0.16, 0.17, 0.20];
 const GRID: [f32; 3] = [0.28, 0.32, 0.38];
 const EXCLUDE: [f32; 3] = [0.765, 0.769, 0.769];
-const LEFT_ONLY: [f32; 3] = [0.20, 0.30, 0.40];
-const RIGHT_ONLY: [f32; 3] = [0.36, 0.26, 0.22];
-const LABEL: [f32; 3] = [0.78, 0.78, 0.80];
+/// Studio `hotbed.fs`: `mix(color, WHITE, 0.3333)` on the exclusive nozzle band.
+const LEFT_ONLY: [f32; 3] = studio_exclusive_tint(BED);
+const RIGHT_ONLY: [f32; 3] = studio_exclusive_tint(BED);
+/// Studio `left_extruder_only_area.svg` fill `#C0C0C0`.
+const NOZZLE_CAPTION: [f32; 3] = [0.753, 0.753, 0.753];
+/// Below the cube resting on z=0, above the PEI fill, so lines cannot pierce the solid.
+const GRID_Z: f32 = -0.02;
 const AXIS_X: [f32; 3] = [0.92, 0.25, 0.22];
 const AXIS_Y: [f32; 3] = [0.28, 0.82, 0.32];
 const AXIS_Z: [f32; 3] = [0.28, 0.48, 0.95];
@@ -50,12 +54,19 @@ const VERTEX_STRIDE: u64 = 36;
 const DEFAULT_MAX_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 const CHUNK_VERTS: usize = ((DEFAULT_MAX_BUFFER_BYTES / VERTEX_STRIDE / 3) * 3) as usize;
 const RT_TRI_LIMIT: usize = 200_000;
+/// Cache-miss retessellate cap so a huge unshaded mesh cannot stall the UI thread.
+const UI_RETESS_TRIS: usize = 16_384;
 
-/// Off-thread packs set `realistic = false`, and huge meshes omit solids from
-/// the TLAS (`RT_TRI_LIMIT`). Blit RT only when the acceleration structure
-/// actually contains the model; otherwise Fast-raster the meshlets.
-fn blit_raytraced_solids(realistic: bool, rt_ready: bool, rt_instance_count: usize) -> bool {
-    realistic && rt_ready && rt_instance_count > 1
+/// Blit the ray-traced image only for chrome-only views. Meshlets always
+/// Fast-raster so they write depth (bed grid cannot show through the cube)
+/// and a late `rt.is_ready()` cannot replace the model with an empty bed.
+fn viewport_blits_rt(
+    realistic: bool,
+    rt_ready: bool,
+    rt_instance_count: usize,
+    meshlet_verts: u32,
+) -> bool {
+    meshlet_verts == 0 && realistic && rt_ready && rt_instance_count > 1
 }
 
 fn gizmo_primitive_state() -> wgpu::PrimitiveState {
@@ -65,6 +76,15 @@ fn gizmo_primitive_state() -> wgpu::PrimitiveState {
         front_face: wgpu::FrontFace::Ccw,
         ..Default::default()
     }
+}
+
+const fn studio_exclusive_tint(bed: [f32; 3]) -> [f32; 3] {
+    const K: f32 = 1.0 / 3.0;
+    [
+        bed[0] * (1.0 - K) + K,
+        bed[1] * (1.0 - K) + K,
+        bed[2] * (1.0 - K) + K,
+    ]
 }
 
 fn msaa_state() -> wgpu::MultisampleState {
@@ -554,12 +574,41 @@ impl ViewportScene {
     }
 
     fn cached_gpu_mesh(&self) -> CachedGpuMesh {
-        let cache = self.gpu.lock().unwrap_or_else(|err| err.into_inner());
-        if let Some(cached) = cache.as_ref() {
-            return cached.clone();
+        {
+            let cache = self.gpu.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(cached) = cache.as_ref() {
+                if !self.chrome_cache_hides_solids(cached) {
+                    return cached.clone();
+                }
+            }
         }
-        drop(cache);
-        self.tessellate_chrome()
+        let packed = if self.can_pack_on_draw() {
+            self.tessellate(self.geom_key())
+        } else {
+            self.tessellate_chrome()
+        };
+        self.install_gpu(packed.clone());
+        packed
+    }
+
+    fn should_show_solids(&self) -> bool {
+        (self.toolpaths.is_empty() || self.keep_solid)
+            && self.solids.iter().any(|s| !s.mesh.indices.is_empty())
+    }
+
+    /// A chrome-only pack from an empty-solid frame must not stick after the cube returns.
+    fn chrome_cache_hides_solids(&self, cached: &CachedGpuMesh) -> bool {
+        self.should_show_solids()
+            && self.can_pack_on_draw()
+            && cached.meshlets.iter().all(|m| m.count == 0)
+    }
+
+    fn can_pack_on_draw(&self) -> bool {
+        if self.solids.iter().any(|s| s.gpu_chunks.is_some()) {
+            return true;
+        }
+        let tris: usize = self.solids.iter().map(|s| s.mesh.indices.len()).sum();
+        tris > 0 && tris <= UI_RETESS_TRIS
     }
 
     /// Bed / grid / labels only. Never shades model triangles or toolpaths.
@@ -574,7 +623,7 @@ impl ViewportScene {
             solid: solid.freeze(),
             lines: Arc::from(lines),
             gizmos: Arc::from(Vec::new()),
-            labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
+            labels: Arc::from(crate::label::plate_labels(&self.bed, NOZZLE_CAPTION)),
             meshlets: Arc::from(Vec::new()),
             bed_verts,
             overlay_start: bed_verts,
@@ -602,10 +651,12 @@ impl ViewportScene {
         if show_solids {
             for s in &self.solids {
                 if let Some(chunks) = &s.gpu_chunks {
-                    for (verts, aabb) in chunks.iter() {
-                        solid.push_arc(verts.clone(), *aabb, &mut meshlets);
+                    if !chunks.is_empty() {
+                        for (verts, aabb) in chunks.iter() {
+                            solid.push_arc(verts.clone(), *aabb, &mut meshlets);
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 let mut jobs: Vec<(u32, u32, Aabb3)> = Vec::new();
                 if s.meshlets.is_empty() {
@@ -659,7 +710,7 @@ impl ViewportScene {
             solid: solid.freeze(),
             lines: Arc::from(lines),
             gizmos: Arc::from(gizmos),
-            labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
+            labels: Arc::from(crate::label::plate_labels(&self.bed, NOZZLE_CAPTION)),
             meshlets: Arc::from(meshlets),
             bed_verts,
             overlay_start,
@@ -1564,15 +1615,17 @@ impl shader::Primitive for ScenePrimitive {
         let pane_w = clip_bounds.width.max(1);
         let pane_h = clip_bounds.height.max(1);
         let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
-        if self.realistic {
+        let meshlet_verts: u32 = self.meshlets.iter().map(|m| m.count).sum();
+        if self.realistic && meshlet_verts == 0 {
             if let Some(gpu) = rt.as_mut() {
                 gpu.build_and_trace(encoder, &self.rt_instances);
             }
         }
-        let do_rt = blit_raytraced_solids(
+        let do_rt = viewport_blits_rt(
             self.realistic,
             rt.as_ref().is_some_and(|gpu| gpu.is_ready()),
             self.rt_instances.len(),
+            meshlet_verts,
         );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1622,20 +1675,26 @@ impl shader::Primitive for ScenePrimitive {
             if let Some(gpu) = rt.as_ref() {
                 gpu.blit(&mut pass);
             }
-            if self.overlay_count > 0 {
-                pass.set_pipeline(&pipeline.pipeline);
-                pass.set_bind_group(0, &pipeline.bind_group, &[]);
-                draw_vert_span(
-                    &mut pass,
-                    &pipeline.solid_bufs,
-                    self.overlay_start,
-                    self.overlay_count,
-                );
-            }
         } else if pipeline.solid_bufs.iter().any(|b| b.count > 0) {
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
             draw_vert_span(&mut pass, &pipeline.solid_bufs, 0, self.bed_verts);
+        }
+        // Grid under the model so PEI lines cannot punch through the cube.
+        if pipeline.line_bufs.iter().any(|b| b.count > 0) {
+            pass.set_pipeline(&pipeline.line_pipeline);
+            pass.set_bind_group(0, &pipeline.bind_group, &[]);
+            for buf in &pipeline.line_bufs {
+                if buf.count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, buf.buffer.slice(..));
+                pass.draw(0..buf.count, 0..1);
+            }
+        }
+        if !do_rt && pipeline.solid_bufs.iter().any(|b| b.count > 0) {
+            pass.set_pipeline(&pipeline.pipeline);
+            pass.set_bind_group(0, &pipeline.bind_group, &[]);
             let aspect = (vp_w / vp_h.max(1.0)).max(0.1);
             let proj = self.camera.perspective(aspect);
             let planes = crate::meshlet::frustum_planes(proj * self.camera.view_matrix());
@@ -1656,17 +1715,15 @@ impl shader::Primitive for ScenePrimitive {
                 self.overlay_start,
                 self.overlay_count,
             );
-        }
-        if pipeline.line_bufs.iter().any(|b| b.count > 0) {
-            pass.set_pipeline(&pipeline.line_pipeline);
+        } else if do_rt && self.overlay_count > 0 {
+            pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
-            for buf in &pipeline.line_bufs {
-                if buf.count == 0 {
-                    continue;
-                }
-                pass.set_vertex_buffer(0, buf.buffer.slice(..));
-                pass.draw(0..buf.count, 0..1);
-            }
+            draw_vert_span(
+                &mut pass,
+                &pipeline.solid_bufs,
+                self.overlay_start,
+                self.overlay_count,
+            );
         }
         if pipeline.gizmo_count > 0 {
             pass.set_pipeline(&pipeline.gizmo_pipeline);
@@ -2207,7 +2264,7 @@ fn fill_poly(pts: &[(f32, f32)], z: f32, color: [f32; 3]) -> Vec<Vertex> {
 fn grid_vertices(bed: &BedShape) -> Vec<Vertex> {
     let (x0, y0, x1, y1) = bed.printable_aabb();
     let step = 10.0_f32;
-    let z = 0.05_f32;
+    let z = GRID_Z;
     let n = [0.0, 0.0, 1.0];
     let mut out = Vec::new();
     let mut x = (x0 / step).floor() * step;
@@ -2520,7 +2577,52 @@ mod tests {
             solids.iter().any(|v| v.color == LEFT_ONLY),
             "left-only strip should be filled"
         );
-        assert!(!crate::label::plate_labels(&bed, LABEL).is_empty());
+        assert!(
+            (LEFT_ONLY[0] - studio_exclusive_tint(BED)[0]).abs() < 1e-5,
+            "exclusive strip must match Studio mix(bed, white, 1/3)"
+        );
+        assert!(
+            LEFT_ONLY[0] > BED[0] && LEFT_ONLY[1] > BED[1],
+            "Studio exclusive strip is lighter PEI, not a dark/blue overlay"
+        );
+        assert!(!crate::label::plate_labels(&bed, NOZZLE_CAPTION).is_empty());
+        let grid = grid_vertices(&bed);
+        let left = bed.visible_only_rects().0.expect("left-only");
+        assert!(
+            grid.iter()
+                .any(|v| v.position[0] >= left.x && v.position[0] <= left.max_x()),
+            "Studio keeps the PEI grid in the exclusive strip"
+        );
+    }
+
+    #[test]
+    fn chrome_pack_does_not_stick_after_cube_returns() {
+        let mut scene = ViewportScene::with_cube("sticky".into());
+        scene.set_solids(Vec::new());
+        let chrome = scene.cached_gpu_mesh();
+        assert!(
+            chrome.meshlets.iter().all(|m| m.count == 0),
+            "empty solids pack bed chrome only"
+        );
+        scene.set_mesh(TriangleMesh::cube(20.0));
+        let packed = scene.cached_gpu_mesh();
+        let covered: u32 = packed.meshlets.iter().map(|m| m.count).sum();
+        assert!(
+            covered >= 12 * 3,
+            "cube must not stay hidden behind a chrome-only GPU pack, got {covered}"
+        );
+    }
+
+    #[test]
+    fn plate_grid_sits_under_the_default_cube() {
+        let grid_z = grid_vertices(&BedShape::square(BED_MM))
+            .first()
+            .map(|v| v.position[2])
+            .unwrap();
+        assert!(
+            grid_z < 0.0,
+            "grid z={grid_z} must sit under the cube on z=0 so PEI lines cannot show through"
+        );
     }
 
     #[test]
@@ -2625,6 +2727,18 @@ mod tests {
     }
 
     #[test]
+    fn cache_miss_keeps_small_cube() {
+        let scene = ViewportScene::with_cube("cache-miss".into());
+        scene.invalidate_gpu();
+        let mesh = scene.cached_gpu_mesh();
+        let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
+        assert!(
+            covered >= 12 * 3,
+            "invalidating the GPU cache must not drop the default cube"
+        );
+    }
+
+    #[test]
     fn gizmo_pipeline_culls_back_faces() {
         assert_eq!(
             gizmo_primitive_state().cull_mode,
@@ -2669,7 +2783,7 @@ mod tests {
             "Fast raster meshlets must survive the pack"
         );
         assert!(
-            !blit_raytraced_solids(true, true, mesh.rt_instances.len()),
+            !viewport_blits_rt(true, true, mesh.rt_instances.len(), covered),
             "off-thread packs omit the model from the TLAS; blit would show an empty bed"
         );
     }
@@ -2677,10 +2791,22 @@ mod tests {
     #[test]
     fn over_rt_limit_omits_tlas_solids() {
         assert!(RT_TRI_LIMIT < usize::MAX / 2);
-        assert!(!blit_raytraced_solids(true, true, 1));
-        assert!(blit_raytraced_solids(true, true, 2));
-        assert!(!blit_raytraced_solids(true, false, 2));
-        assert!(!blit_raytraced_solids(false, true, 2));
+        assert!(!viewport_blits_rt(true, true, 1, 0));
+        assert!(viewport_blits_rt(true, true, 2, 0));
+        assert!(!viewport_blits_rt(true, false, 2, 0));
+        assert!(!viewport_blits_rt(false, true, 2, 0));
+    }
+
+    #[test]
+    fn rt_ready_does_not_hide_raster_meshlets() {
+        assert!(
+            !viewport_blits_rt(true, true, 2, 36),
+            "meshlets must raster (and write depth) even when RT is ready"
+        );
+        assert!(
+            viewport_blits_rt(true, true, 2, 0),
+            "chrome-only views may still blit RT"
+        );
     }
 
     #[test]

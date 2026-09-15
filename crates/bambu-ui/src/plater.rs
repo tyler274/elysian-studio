@@ -300,7 +300,12 @@ impl crate::App {
                 self.drag_last_ndc = None;
                 self.drag_last_bed = None;
                 self.drag_axis = None;
-                self.needs_display_pack = true;
+                if matches!(
+                    self.scene.tool,
+                    PlaterTool::Move | PlaterTool::Rotate | PlaterTool::Scale
+                ) {
+                    self.needs_display_pack = true;
+                }
                 self.sync_gizmo();
             }
             ViewportEvent::CursorMoved {
@@ -424,10 +429,7 @@ impl crate::App {
             self.status = "no triangle under cursor".into();
             return;
         };
-        if let Some(inst) = self
-            .model_mut()
-            .and_then(|m| m.selected_instance_mut(idx))
-        {
+        if let Some(inst) = self.model_mut().and_then(|m| m.selected_instance_mut(idx)) {
             lay_instance_on_normal(&mesh, inst, n);
             self.status = "laid on face".into();
             self.sync_scene_mesh();

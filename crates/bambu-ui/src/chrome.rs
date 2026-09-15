@@ -328,10 +328,7 @@ impl crate::App {
                 .height(Fill)
                 .into()
         } else {
-            stack![viewport, overlays]
-                .width(Fill)
-                .height(Fill)
-                .into()
+            stack![viewport, overlays].width(Fill).height(Fill).into()
         }
     }
 
@@ -370,13 +367,6 @@ impl crate::App {
             .size(18)
             .color(theme::TEXT);
         let mut meta = column![row![plate_name, badge].spacing(8)];
-        if self.show_left_nozzle_only() {
-            meta = meta.push(
-                text("Left nozzle only area")
-                    .size(12)
-                    .color(theme::TEXT_MUTED),
-            );
-        }
         for toast in self.toasts.iter().rev().take(3) {
             meta = meta.push(text(toast).size(12).color(theme::TEXT));
         }
