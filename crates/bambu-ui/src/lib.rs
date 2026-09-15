@@ -276,7 +276,8 @@ pub struct App {
     dry_ams: Option<u8>,
     dry_temp: String,
     dry_hours: String,
-    rack_pending: Option<u8>,
+    dry_rotate: bool,
+    rack_pending: Option<RackPending>,
     sidebar_collapsed: bool,
     printer_open: bool,
     filament_open: bool,
@@ -395,6 +396,7 @@ pub enum Message {
     AmsDryToggle(u8),
     AmsDryTemp(String),
     AmsDryHours(String),
+    AmsDryRotate(bool),
     AmsDryStart(u8),
     AmsDryStop(u8),
     RackMove(u8),
@@ -842,6 +844,7 @@ impl App {
             dry_ams: None,
             dry_temp: "55".into(),
             dry_hours: "8".into(),
+            dry_rotate: false,
             rack_pending: None,
             sidebar_collapsed: false,
             printer_open: true,
@@ -999,6 +1002,8 @@ impl App {
                     temp: Some(32.0),
                     dry_time_min: Some(90),
                     dry_status: 2,
+                    ams_type: 3,
+                    ..Default::default()
                 },
                 AmsUnit {
                     id: 1,
@@ -1007,6 +1012,8 @@ impl App {
                     temp: Some(27.0),
                     dry_time_min: None,
                     dry_status: 0,
+                    ams_type: 3,
+                    ..Default::default()
                 },
             ],
             ..AmsState::default()
@@ -1891,6 +1898,7 @@ impl App {
             }
             Message::AmsDryTemp(s) => self.dry_temp = s,
             Message::AmsDryHours(s) => self.dry_hours = s,
+            Message::AmsDryRotate(v) => self.dry_rotate = v,
             Message::AmsDryStart(ams_id) => {
                 let filament = self
                     .ams
@@ -1906,26 +1914,29 @@ impl App {
                     filament,
                     temp,
                     hours,
-                    rotate: true,
+                    rotate: self.dry_rotate,
                 });
             }
             Message::AmsDryStop(ams_id) => {
                 return self.run_print_cmd(PrintCmd::AmsDryStop { ams_id });
             }
             Message::RackMove(action) => {
-                self.rack_pending = Some(action);
+                self.rack_pending = Some(RackPending::Move(action));
             }
             Message::RackWarnCancel => {
                 self.rack_pending = None;
             }
             Message::RackWarnConfirm => {
-                let Some(action) = self.rack_pending.take() else {
+                let Some(pending) = self.rack_pending.take() else {
                     return Task::none();
                 };
-                return self.run_print_cmd(PrintCmd::RackMove(action));
+                return self.run_print_cmd(match pending {
+                    RackPending::Move(action) => PrintCmd::RackMove(action),
+                    RackPending::ReadAll => PrintCmd::RackRead(0xff),
+                });
             }
             Message::RackReadAll => {
-                return self.run_print_cmd(PrintCmd::RackRead(0xff));
+                self.rack_pending = Some(RackPending::ReadAll);
             }
             Message::RackConfirmAll => {
                 return self.run_print_cmd(PrintCmd::RackConfirm(0xff));
@@ -2483,7 +2494,10 @@ impl App {
             return;
         };
         if self.model.is_none() {
-            self.model = Some(Arc::new(Model::from_mesh("viewport", self.scene.mesh.clone())));
+            self.model = Some(Arc::new(Model::from_mesh(
+                "viewport",
+                self.scene.mesh.clone(),
+            )));
         }
         let idx = self.scene.mesh.indices[hit];
         let [a, b, c] = self.scene.mesh.triangle(idx);
@@ -3886,6 +3900,12 @@ enum PaintKind {
     Fuzzy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RackPending {
+    Move(u8),
+    ReadAll,
+}
+
 /// 1×1 RGB PNG used as a 3MF plate thumbnail in tests.
 const TINY_PNG: &[u8] = &[
     0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
@@ -4156,11 +4176,7 @@ fn emit_block(tx: &mut iced::futures::channel::mpsc::Sender<Message>, mut msg: M
     }
 }
 
-fn emit_stage(
-    tx: &mut iced::futures::channel::mpsc::Sender<Message>,
-    gen: u64,
-    stage: LoadStage,
-) {
+fn emit_stage(tx: &mut iced::futures::channel::mpsc::Sender<Message>, gen: u64, stage: LoadStage) {
     emit_latest(
         tx,
         Message::LoadProgress {
@@ -4207,11 +4223,8 @@ fn load_model_worker(job: LoadJob, mut tx: iced::futures::channel::mpsc::Sender<
             },
         );
         model.place_on_bed_if_needed(&bed);
-        let object_aabbs: Vec<bambu_geom::Aabb3> = model
-            .objects
-            .iter()
-            .filter_map(|o| o.mesh.aabb())
-            .collect();
+        let object_aabbs: Vec<bambu_geom::Aabb3> =
+            model.objects.iter().filter_map(|o| o.mesh.aabb()).collect();
         let meshes: Vec<bambu_geom::TriangleMesh> = model
             .world_volumes_for_plate(0)
             .into_iter()
@@ -4530,6 +4543,16 @@ mod device_sync {
         assert!(app.rack_pane().is_none());
         app.machine.nozzle_rack.supported = true;
         assert!(app.rack_pane().is_some());
+        let _ = app.update(Message::RackReadAll);
+        assert_eq!(app.rack_pending, Some(RackPending::ReadAll));
+        let _ = app.update(Message::RackMove(1));
+        assert_eq!(app.rack_pending, Some(RackPending::Move(1)));
+    }
+
+    #[test]
+    fn ams_dryness_defaults_to_no_spool_rotate() {
+        let app = App::new_for_gui_test();
+        assert!(!app.dry_rotate);
     }
 
     #[test]

@@ -34,8 +34,7 @@ pub fn load_private_key(pem: &str) -> Result<RsaPrivateKey, SigningError> {
         .map_err(|err| SigningError::Rsa(err.to_string()))
 }
 
-/// MQTT `cert_id` = lowercase hex serial + issuer RFC2253, no separator.
-pub fn slicer_cert_id(cert_pem: &str) -> Result<String, SigningError> {
+fn cert_serial_and_issuer(cert_pem: &str) -> Result<(String, String), SigningError> {
     let (_, pem) = parse_x509_pem(cert_pem.as_bytes())
         .map_err(|err| SigningError::Message(format!("cert pem: {err}")))?;
     let (_, cert) = parse_x509_certificate(&pem.contents)
@@ -44,8 +43,47 @@ pub fn slicer_cert_id(cert_pem: &str) -> Result<String, SigningError> {
         acc.push_str(&format!("{b:02x}"));
         acc
     });
-    let issuer = rfc2253_name(cert.issuer());
+    Ok((serial, rfc2253_name(cert.issuer())))
+}
+
+/// MQTT `cert_id` = lowercase hex serial + issuer RFC2253, no separator.
+pub fn slicer_cert_id(cert_pem: &str) -> Result<String, SigningError> {
+    let (serial, issuer) = cert_serial_and_issuer(cert_pem)?;
     Ok(serial + &issuer)
+}
+
+/// ClusterM #47 HTTP `x-bbl-app-certification-id` = `issuer + ":" + serial.lower()`.
+pub fn http_app_certification_id(cert_pem: &str) -> Result<String, SigningError> {
+    let (serial, issuer) = cert_serial_and_issuer(cert_pem)?;
+    Ok(format!("{issuer}:{serial}"))
+}
+
+/// `x-bbl-device-security-sign` = Base64 RSA-SHA256 PKCS#1 v1.5 of utf-8 unix millis.
+pub fn http_device_security_sign(key_pem: &str, unix_ms: u64) -> Result<String, SigningError> {
+    let key = load_private_key(key_pem)?;
+    rsa_sha256_sign_b64(&key, unix_ms.to_string().as_bytes())
+}
+
+/// Plugin HTTP command-security headers when slicer cert/key are present.
+pub fn http_security_headers(
+    creds: &SlicerCredentials,
+    unix_ms: u64,
+) -> Result<Vec<(&'static str, String)>, SigningError> {
+    let cert = creds
+        .cert_pem
+        .as_deref()
+        .ok_or_else(|| SigningError::Message("no slicer_cert.pem loaded".into()))?;
+    let key = creds.key_pem.as_deref().ok_or(SigningError::MissingKey)?;
+    Ok(vec![
+        (
+            "x-bbl-app-certification-id",
+            http_app_certification_id(cert)?,
+        ),
+        (
+            "x-bbl-device-security-sign",
+            http_device_security_sign(key, unix_ms)?,
+        ),
+    ])
 }
 
 fn rfc2253_name(name: &x509_parser::x509::X509Name<'_>) -> String {
@@ -242,6 +280,24 @@ mod tests {
         assert!(id.contains("CN=bambu-studio-rs-test"), "{id}");
         assert!(id.contains("O=Test"), "{id}");
         assert!(id.contains("C=US"), "{id}");
+    }
+
+    #[test]
+    fn http_certification_id_is_issuer_colon_serial() {
+        let pem = include_str!("../tests/fixtures/test_slicer_cert.pem");
+        let mqtt = slicer_cert_id(pem).unwrap();
+        let http = http_app_certification_id(pem).unwrap();
+        assert!(http.contains(':'), "{http}");
+        let serial = "13f91456aea791109e924ace8665c02bdad93045";
+        assert!(http.ends_with(serial), "{http}");
+        assert!(http.contains("CN=bambu-studio-rs-test"), "{http}");
+        assert!(!mqtt.contains(':'), "{mqtt}");
+        assert!(mqtt.starts_with(serial), "{mqtt}");
+        let headers = http_security_headers(&test_creds(), 1_700_000_000_123).unwrap();
+        assert_eq!(headers[0].0, "x-bbl-app-certification-id");
+        assert_eq!(headers[0].1, http);
+        assert_eq!(headers[1].0, "x-bbl-device-security-sign");
+        assert!(headers[1].1.len() > 80);
     }
 
     #[test]

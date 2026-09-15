@@ -132,6 +132,9 @@ pub struct AmsTray {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AmsUnit {
     pub id: u8,
+    /// Studio `DevAmsType` from `info` bits 0..4 (1 AMS, 2 Lite, 3 AMS 2 Pro, 4 AMS HT).
+    #[serde(default)]
+    pub ams_type: u8,
     pub humidity: Option<u8>,
     pub humidity_percent: Option<u8>,
     pub temp: Option<f32>,
@@ -139,11 +142,52 @@ pub struct AmsUnit {
     pub dry_time_min: Option<u32>,
     /// Studio `DevAms::DryStatus` from `info` bits 4..8.
     pub dry_status: u8,
+    /// Studio `DevAms::DrySubStatus` from `info` bits 22..24.
+    #[serde(default)]
+    pub dry_sub_status: u8,
 }
 
 impl AmsUnit {
     pub fn is_drying(&self) -> bool {
-        self.dry_status == 2 || self.dry_time_min.is_some_and(|t| t > 0)
+        matches!(self.dry_status, 1 | 2 | 5 | 6) || self.dry_time_min.is_some_and(|t| t > 0)
+    }
+
+    pub fn supports_drying(&self) -> bool {
+        self.ams_type == 3 || self.ams_type == 4 || self.humidity_percent.is_some()
+    }
+
+    /// Studio `DevAms::GetDisplayName` (`AMS(%d)` / `AMS 2 Pro(%d)` / …).
+    pub fn display_name(&self) -> String {
+        let loc = if self.id > 127 {
+            u32::from(self.id) - 127
+        } else if (0x10..=0x1f).contains(&self.id) {
+            u32::from(self.id) - 15
+        } else {
+            u32::from(self.id) + 1
+        };
+        format!("{}({loc})", self.type_label())
+    }
+
+    pub fn type_label(&self) -> &'static str {
+        match self.ams_type {
+            2 => "AMS Lite",
+            3 => "AMS 2 Pro",
+            4 => "AMS HT",
+            _ => "AMS",
+        }
+    }
+
+    /// Studio `AMSDryCtrWin::update_img_description`.
+    pub fn dry_status_label(&self) -> &'static str {
+        match self.dry_status {
+            0 | 3 | 4 => "Idle",
+            1 => "Checking",
+            2 if self.dry_sub_status == 1 => "Drying-Heating",
+            2 if self.dry_sub_status == 2 => "Drying-Dehumidifying",
+            2 | 5 | 6 => "Drying",
+            _ if self.is_drying() => "Drying",
+            _ => "Idle",
+        }
     }
 }
 
@@ -195,26 +239,26 @@ impl NozzleRackState {
 
     pub fn status_label(&self) -> &'static str {
         match self.status {
-            0 => "idle",
-            1 => "hotend centre",
-            2 => "toolhead centre",
-            3 => "calibrate",
-            4 => "cut material",
-            5 => "unlock hotend",
-            6 => "lift rack",
-            7 => "place hotend",
-            8 => "pick hotend",
-            9 => "lock hotend",
-            _ => "unknown",
+            0 => "Idle",
+            1 => "Hotend centre",
+            2 => "Toolhead centre",
+            3 => "Calibrate",
+            4 => "Cut material",
+            5 => "Unlock hotend",
+            6 => "Lift rack",
+            7 => "Place hotend",
+            8 => "Pick hotend",
+            9 => "Lock hotend",
+            _ => "Unknown",
         }
     }
 
     pub fn position_label(&self) -> &'static str {
         match self.position {
-            1 => "A-top",
-            2 => "B-top",
-            3 => "centre",
-            _ => "unknown",
+            1 => "Row A raised",
+            2 => "Row B raised",
+            3 => "Centre",
+            _ => "Unknown",
         }
     }
 }

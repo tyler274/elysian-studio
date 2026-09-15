@@ -72,7 +72,11 @@ impl crate::App {
     pub(crate) fn ams_chips(&self) -> Element<'_, Message> {
         let mut r = row![];
         if self.settings.filament_map.is_empty() {
-            r = r.push(text("AMS map: —").size(11).color(theme::TEXT_MUTED));
+            r = r.push(
+                text("Filament mapping: —")
+                    .size(11)
+                    .color(theme::TEXT_MUTED),
+            );
         }
         for (i, mapped) in self.settings.filament_map.iter().enumerate() {
             r = r.push(
@@ -86,7 +90,7 @@ impl crate::App {
     pub(crate) fn ams_load_row(&self) -> Element<'_, Message> {
         let mut r = row![];
         if self.ams.trays.is_empty() && self.ams.vt_tray.is_none() {
-            r = r.push(text("AMS load: —").size(11).color(theme::TEXT_MUTED));
+            r = r.push(text("Load / Unload: —").size(11).color(theme::TEXT_MUTED));
         }
         let mut unloaded = Vec::new();
         for tray in &self.ams.trays {
@@ -99,18 +103,17 @@ impl crate::App {
             if !unloaded.contains(&ams_id) {
                 unloaded.push(ams_id);
                 r = r.push(
-                    quiet_btn(text(format!("Unload A{ams_id}")).size(11))
-                        .on_press(Message::AmsUnload { ams_id }),
+                    quiet_btn(text("Unload").size(11)).on_press(Message::AmsUnload { ams_id }),
                 );
             }
         }
         if let Some(vt) = &self.ams.vt_tray {
-            r = r.push(
-                quiet_btn(text("Load ext").size(11)).on_press(Message::AmsLoad {
+            r = r.push(quiet_btn(text("Load External Spool").size(11)).on_press(
+                Message::AmsLoad {
                     ams_id: vt.ams_id,
                     slot_id: 0,
-                }),
-            );
+                },
+            ));
         }
         r.spacing(4).wrap().into()
     }
@@ -335,6 +338,7 @@ impl crate::App {
                 temp: self.ams.unit_temp,
                 dry_time_min: None,
                 dry_status: 0,
+                ..Default::default()
             }]
         } else {
             self.ams.units.clone()
@@ -342,7 +346,7 @@ impl crate::App {
         let mut body = column![].spacing(10);
         if units.is_empty() && self.ams.vt_tray.is_none() {
             body = body.push(
-                text("No AMS trays in last push_status")
+                text("AMS has not been initialized. Please initialize it before use.")
                     .size(12)
                     .color(theme::TEXT_MUTED),
             );
@@ -379,7 +383,11 @@ impl crate::App {
         let mut col = column![
             row![
                 humidity_icon(unit.humidity, unit.is_drying()),
-                quiet_btn(text(summary).size(12)).on_press(Message::AmsDryToggle(unit.id)),
+                column![
+                    text(unit.display_name()).size(13),
+                    quiet_btn(text(summary).size(11)).on_press(Message::AmsDryToggle(unit.id)),
+                ]
+                .spacing(2),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -405,35 +413,62 @@ impl crate::App {
     }
 
     fn ams_dry_popup(&self, unit: &AmsUnit, filament: &str) -> Element<'_, Message> {
-        let remain = unit
-            .dry_time_min
-            .map(|m| format!("{m} min left"))
-            .unwrap_or_else(|| "not drying".into());
-        let level = unit
-            .humidity
-            .map(|h| format!("level {h}"))
-            .unwrap_or_else(|| "level —".into());
-        let pct = unit
-            .humidity_percent
-            .map(|p| format!("{p}%"))
+        let remain = unit.dry_time_min.map(|m| {
+            if m >= 60 {
+                format!("{}h {}m", m / 60, m % 60)
+            } else {
+                format!("{m} min")
+            }
+        });
+        let humidity = match (unit.humidity, unit.humidity_percent) {
+            (_, Some(p)) => format!("{p}%"),
+            (Some(h), None) => format!("level {h}"),
+            _ => "—".into(),
+        };
+        let temp = unit
+            .temp
+            .map(|t| format!("{t:.0}°C"))
             .unwrap_or_else(|| "—".into());
-        column![
-            text(format!("{level} · {pct} · {remain} · {filament}"))
+        let mut col = column![
+            text("AMS Dryness Control").size(13),
+            text(unit.dry_status_label()).size(12),
+            text(format!("Humidity  {humidity}"))
                 .size(11)
                 .color(theme::TEXT_MUTED),
-            row![
-                field("temp °C", &self.dry_temp, Message::AmsDryTemp),
-                field("hours", &self.dry_hours, Message::AmsDryHours),
-            ]
-            .spacing(6),
-            row![
-                quiet_btn(text("Start drying").size(11)).on_press(Message::AmsDryStart(unit.id)),
-                quiet_btn(text("Stop drying").size(11)).on_press(Message::AmsDryStop(unit.id)),
-            ]
-            .spacing(6),
+            text(format!("Temperature  {temp}"))
+                .size(11)
+                .color(theme::TEXT_MUTED),
+            text(format!("Left Time  {}", remain.as_deref().unwrap_or("—")))
+                .size(11)
+                .color(theme::TEXT_MUTED),
         ]
-        .spacing(6)
-        .into()
+        .spacing(6);
+        if unit.supports_drying() {
+            col = col.push(
+                column![
+                    text("Filament Drying Settings").size(12),
+                    text(format!("Filament  {filament}"))
+                        .size(11)
+                        .color(theme::TEXT_MUTED),
+                    row![
+                        field("Temperature °C", &self.dry_temp, Message::AmsDryTemp),
+                        field("Hours", &self.dry_hours, Message::AmsDryHours),
+                    ]
+                    .spacing(6),
+                    checkbox(self.dry_rotate)
+                        .label("Rotate spool when drying")
+                        .on_toggle(Message::AmsDryRotate)
+                        .style(theme::tick),
+                    row![
+                        quiet_btn(text("Start").size(11)).on_press(Message::AmsDryStart(unit.id)),
+                        quiet_btn(text("Stop").size(11)).on_press(Message::AmsDryStop(unit.id)),
+                    ]
+                    .spacing(6),
+                ]
+                .spacing(6),
+            );
+        }
+        col.into()
     }
 
     pub(crate) fn rack_pane(&self) -> Option<Element<'_, Message>> {
@@ -443,7 +478,7 @@ impl crate::App {
         let rack = &self.machine.nozzle_rack;
         let mut slots = row![].spacing(6);
         for (i, slot) in rack.toolhead.iter().enumerate() {
-            let label = if i == 0 { "L" } else { "R" };
+            let label = if i == 0 { "Toolhead L" } else { "Toolhead R" };
             slots = slots.push(nozzle_slot_card(label, slot));
         }
         for slot in &rack.rack {
@@ -451,11 +486,12 @@ impl crate::App {
         }
         let warn = if self.rack_pending.is_some() {
             column![
+                text("Warning").size(13),
                 text("The toolhead and hotend rack may move. Please keep your hands away from the chamber.")
                     .size(11)
                     .color(theme::TEXT_MUTED),
                 row![
-                    quiet_btn(text("Move").size(11)).on_press(Message::RackWarnConfirm),
+                    quiet_btn(text("OK").size(11)).on_press(Message::RackWarnConfirm),
                     quiet_btn(text("Cancel").size(11)).on_press(Message::RackWarnCancel),
                 ]
                 .spacing(6),
@@ -465,7 +501,7 @@ impl crate::App {
             column![].spacing(0)
         };
         Some(card(
-            "Hotend rack",
+            "Induction Hotend Rack",
             column![
                 text(format!(
                     "{} · {}",
@@ -476,10 +512,10 @@ impl crate::App {
                 .color(theme::TEXT_MUTED),
                 slots.wrap(),
                 row![
-                    quiet_btn(text("Read all").size(11)).on_press(Message::RackReadAll),
-                    quiet_btn(text("Home").size(11)).on_press(Message::RackMove(0)),
-                    quiet_btn(text("A-top").size(11)).on_press(Message::RackMove(1)),
-                    quiet_btn(text("B-top").size(11)).on_press(Message::RackMove(2)),
+                    quiet_btn(text("Read All").size(11)).on_press(Message::RackReadAll),
+                    quiet_btn(text("Go Home").size(11)).on_press(Message::RackMove(0)),
+                    quiet_btn(text("Row A").size(11)).on_press(Message::RackMove(1)),
+                    quiet_btn(text("Row B").size(11)).on_press(Message::RackMove(2)),
                     quiet_btn(text("Confirm").size(11)).on_press(Message::RackConfirmAll),
                 ]
                 .spacing(6)
@@ -712,7 +748,7 @@ fn humidity_icon<'a>(level: Option<u8>, drying: bool) -> Element<'a, Message> {
     let mut col = column![bars].spacing(2);
     if drying {
         col = col.push(
-            text("DRY")
+            text("Drying")
                 .size(9)
                 .color(Color::from_rgb8(0xE6, 0x7E, 0x22)),
         );
@@ -735,13 +771,13 @@ pub(crate) fn ams_unit_summary(unit: &AmsUnit) -> String {
         .unwrap_or_else(|| "—".into());
     let dry = if unit.is_drying() {
         match unit.dry_time_min {
-            Some(m) => format!(" drying {m}m"),
-            None => " drying".into(),
+            Some(m) => format!(" · {} · {m}m left", unit.dry_status_label()),
+            None => format!(" · {}", unit.dry_status_label()),
         }
     } else {
-        String::new()
+        format!(" · {}", unit.dry_status_label())
     };
-    format!("{rh} {pct} {temp}{dry}")
+    format!("{} · {rh} {pct} {temp}{dry}", unit.display_name())
 }
 
 pub(crate) fn drying_preset(filament: &str) -> (u16, u16) {
@@ -761,8 +797,10 @@ fn nozzle_slot_card<'a>(label: &str, slot: &NozzleSlot) -> Element<'a, Message> 
     } else {
         format!("{:.1} mm", slot.diameter)
     };
-    let kind = if slot.nozzle_type.is_empty() {
-        String::from("—")
+    let kind = if slot.empty {
+        String::from("Empty")
+    } else if slot.nozzle_type.is_empty() {
+        String::from("Unknown")
     } else {
         slot.nozzle_type.clone()
     };
@@ -787,14 +825,20 @@ fn tray_card(tray: &AmsTray, active: bool) -> Element<'_, Message> {
         .map(|r| format!("{r}%"))
         .unwrap_or_else(|| "—".into());
     let kind = if tray.filament_type.is_empty() {
-        "empty"
+        "Empty"
     } else {
         tray.filament_type.as_str()
     };
     let label = if tray.ams_id == 254 {
-        "Ext".to_string()
+        "External Spool".to_string()
     } else {
-        format!("A{} T{}", tray.ams_id, tray.id)
+        match tray.id {
+            0 => "A".into(),
+            1 => "B".into(),
+            2 => "C".into(),
+            3 => "D".into(),
+            n => format!("T{n}"),
+        }
     };
     let border = if active {
         theme::PREPARE
@@ -960,8 +1004,8 @@ pub(crate) async fn run_cmd(
             PrintCmd::AmsDry { ams_id, hours, .. } => format!("ams dry A{ams_id} {hours}h sent"),
             PrintCmd::AmsDryStop { ams_id } => format!("ams dry stop A{ams_id} sent"),
             PrintCmd::RackMove(0) => "rack home sent".into(),
-            PrintCmd::RackMove(1) => "rack A-top sent".into(),
-            PrintCmd::RackMove(2) => "rack B-top sent".into(),
+            PrintCmd::RackMove(1) => "rack Row A sent".into(),
+            PrintCmd::RackMove(2) => "rack Row B sent".into(),
             PrintCmd::RackMove(action) => format!("rack move {action} sent"),
             PrintCmd::RackRead(_) => "rack read sent".into(),
             PrintCmd::RackConfirm(_) => "rack confirm sent".into(),
@@ -1352,6 +1396,8 @@ mod tests {
             temp: Some(32.5),
             dry_time_min: Some(90),
             dry_status: 2,
+            ams_type: 3,
+            ..Default::default()
         };
         let b = AmsUnit {
             id: 1,
@@ -1360,15 +1406,20 @@ mod tests {
             temp: Some(27.0),
             dry_time_min: None,
             dry_status: 0,
+            ams_type: 3,
+            ..Default::default()
         };
         let sa = ams_unit_summary(&a);
         let sb = ams_unit_summary(&b);
+        assert!(sa.contains("AMS 2 Pro(1)"));
         assert!(sa.contains("RH2"));
         assert!(sa.contains("32°C") || sa.contains("33°C"));
-        assert!(sa.contains("drying"));
+        assert!(sa.contains("Drying"));
+        assert!(sb.contains("AMS 2 Pro(2)"));
         assert!(sb.contains("RH4"));
         assert!(sb.contains("27°C"));
-        assert!(!sb.contains("drying"));
+        assert!(sb.contains("Idle"));
+        assert!(!sb.contains("Drying"));
         assert_ne!(sa, sb);
     }
 

@@ -81,13 +81,13 @@ pub use inventory::{
 };
 pub use mqtt::{
     ams_change_filament, ams_filament_drying, app_cert_install, auto_stop_ams_dry, chamber_light,
-    gcode_line, get_version, hms_ignore, hms_resume, hms_stop, holder_nozzle_refresh,
-    next_sequence_id, nozzle_holder_ctrl, nozzle_info_confirm, parse_ams, parse_hms_items,
-    parse_nozzle_rack, parse_ota_version, parse_printer_cert, parse_push_status, pause,
-    print_speed, project_file, project_file_cloud, project_file_cloud_opts, project_file_with_ams,
-    project_file_with_ams_opts, pushall, report_topic, request_topic, resume, set_bed_temp,
-    set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts, AMS_DRY_MODE_OFF,
-    AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT, LAN_MQTT_USER,
+    chamber_light2, gcode_line, get_version, hms_ignore, hms_resume, hms_stop,
+    holder_nozzle_refresh, mqtt_report_rejected, next_sequence_id, nozzle_holder_ctrl,
+    nozzle_info_confirm, parse_ams, parse_hms_items, parse_nozzle_rack, parse_ota_version,
+    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_cloud,
+    project_file_cloud_opts, project_file_with_ams, project_file_with_ams_opts, pushall,
+    report_topic, request_topic, resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects,
+    stop, ProjectFileOpts, AMS_DRY_MODE_OFF, AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use oauth::{
     login_with_ticket, oauth_callback_url, oauth_login, open_default_browser, persist_login,
@@ -252,6 +252,17 @@ impl LanBackend {
     }
 
     async fn command(&self, payload: String) -> Result<(), DeviceError> {
+        self.commands([payload]).await
+    }
+
+    async fn commands(
+        &self,
+        payloads: impl IntoIterator<Item = String>,
+    ) -> Result<(), DeviceError> {
+        let payloads: Vec<String> = payloads.into_iter().collect();
+        if payloads.is_empty() {
+            return Ok(());
+        }
         let (state, _) = lan_mqtt::fetch_status(
             &self.host,
             &self.access_code,
@@ -261,19 +272,22 @@ impl LanBackend {
         .await
         .map_err(Self::map_err)?;
         let device_cert = self.device_cert_pem();
-        let report = self
-            .publish(
-                &payload,
-                device_cert.as_deref(),
-                !state.developer_mode,
-                Duration::from_secs(5),
-            )
-            .await?;
-        if let Some(body) = report {
-            if body.contains("print_error") || body.contains("\"result\":\"fail\"") {
-                return Err(DeviceError::Message(format!(
-                    "printer rejected command: {body}"
-                )));
+        let last = payloads.len() - 1;
+        for (i, payload) in payloads.iter().enumerate() {
+            let wait = if i == last {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(200)
+            };
+            let report = self
+                .publish(payload, device_cert.as_deref(), !state.developer_mode, wait)
+                .await?;
+            if let Some(body) = report {
+                if mqtt_report_rejected(&body) {
+                    return Err(DeviceError::Message(format!(
+                        "printer rejected command: {body}"
+                    )));
+                }
             }
         }
         Ok(())
@@ -342,7 +356,7 @@ impl PrinterBackend for LanBackend {
             )
             .await?;
         if let Some(body) = report {
-            if body.contains("print_error") || body.contains("\"result\":\"fail\"") {
+            if mqtt_report_rejected(&body) {
                 return Err(DeviceError::Message(format!(
                     "printer rejected print: {body}"
                 )));
@@ -383,7 +397,12 @@ impl PrinterBackend for LanBackend {
     }
 
     async fn set_chamber_light(&self, on: bool) -> Result<(), DeviceError> {
-        self.command(chamber_light(next_sequence_id(), on)).await
+        // Studio `DevLamp::CtrlSetChamberLight` publishes both top bars.
+        self.commands([
+            chamber_light(next_sequence_id(), on),
+            chamber_light2(next_sequence_id(), on),
+        ])
+        .await
     }
 
     async fn set_bed_temp(&self, temp_c: u16) -> Result<(), DeviceError> {

@@ -30,6 +30,31 @@ pub fn report_topic(serial: &str) -> String {
     format!("device/{serial}/report")
 }
 
+/// True when a MQTT report is an actual command failure.
+///
+/// `push_status` always includes `"print_error": 0`; treating the key as a
+/// rejection made every LAN print command fail after publish.
+pub fn mqtt_report_rejected(body: &str) -> bool {
+    if body.contains("\"result\":\"fail\"") {
+        return true;
+    }
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let print = v.get("print").unwrap_or(&v);
+    if print.get("result").and_then(Value::as_str) == Some("fail") {
+        return true;
+    }
+    match print.get("print_error").or_else(|| v.get("print_error")) {
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0) != 0,
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            !t.is_empty() && t != "0" && t.parse::<u64>().ok().is_none_or(|n| n != 0)
+        }
+        _ => false,
+    }
+}
+
 pub fn request_topic(serial: &str) -> String {
     format!("device/{serial}/request")
 }
@@ -124,18 +149,28 @@ pub fn print_speed(sequence_id: u64, level: u8) -> String {
     print_command(sequence_id, "print_speed", &level.to_string())
 }
 
-/// C++ `DevLamp::command_set_chamber_light`.
+/// C++ `DevLamp::command_set_chamber_light` (`led_node` = `chamber_light`).
 pub fn chamber_light(sequence_id: u64, on: bool) -> String {
+    chamber_light_node(sequence_id, "chamber_light", on)
+}
+
+/// C++ `DevLamp::command_set_chamber_light2` (second top bar on H2/H2C).
+pub fn chamber_light2(sequence_id: u64, on: bool) -> String {
+    chamber_light_node(sequence_id, "chamber_light2", on)
+}
+
+/// Studio `DevLamp::command_set_chamber_light*` (`loop_times` 1, `interval_time` 1000).
+fn chamber_light_node(sequence_id: u64, node: &str, on: bool) -> String {
     serde_json::json!({
         "system": {
             "command": "ledctrl",
-            "led_node": "chamber_light",
+            "led_node": node,
             "sequence_id": sequence_id.to_string(),
             "led_mode": if on { "on" } else { "off" },
             "led_on_time": 500,
             "led_off_time": 500,
-            "loop_times": 0,
-            "interval_time": 0
+            "loop_times": 1,
+            "interval_time": 1000
         }
     })
     .to_string()
@@ -662,11 +697,13 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
         let info = textish(unit, "info").unwrap_or_default();
         units.push(AmsUnit {
             id: ams_id,
+            ams_type: flag_bits_hex(&info, 0, 4),
             humidity,
             humidity_percent: optional_u8(unit, "humidity_raw"),
             temp,
             dry_time_min: optional_u32(unit, "dry_time"),
             dry_status: flag_bits_hex(&info, 4, 4),
+            dry_sub_status: flag_bits_hex(&info, 22, 2),
         });
         let Some(tray_list) = unit.get("tray").and_then(Value::as_array) else {
             continue;
@@ -725,11 +762,13 @@ fn chamber_light_from_report(lights: Option<&Value>) -> bool {
         return false;
     };
     arr.iter().any(|item| {
-        item.get("node").and_then(Value::as_str) == Some("chamber_light")
-            && item
-                .get("mode")
-                .and_then(Value::as_str)
-                .is_some_and(|m| m.eq_ignore_ascii_case("on"))
+        matches!(
+            item.get("node").and_then(Value::as_str),
+            Some("chamber_light" | "chamber_light2")
+        ) && item
+            .get("mode")
+            .and_then(Value::as_str)
+            .is_some_and(|m| m.eq_ignore_ascii_case("on"))
     })
 }
 
@@ -959,6 +998,22 @@ mod tests {
         assert_eq!(light["system"]["command"], "ledctrl");
         assert_eq!(light["system"]["led_node"], "chamber_light");
         assert_eq!(light["system"]["led_mode"], "on");
+        assert_eq!(light["system"]["loop_times"], 1);
+        assert_eq!(light["system"]["interval_time"], 1000);
+        let light2: Value = serde_json::from_str(&chamber_light2(20004, false)).unwrap();
+        assert_eq!(light2["system"]["led_node"], "chamber_light2");
+        assert_eq!(light2["system"]["led_mode"], "off");
+    }
+
+    #[test]
+    fn lights_report_second_bar_counts_as_on() {
+        let json = r#"{
+            "print": {
+                "command": "push_status",
+                "lights_report": [{"node": "chamber_light2", "mode": "on"}]
+            }
+        }"#;
+        assert!(parse_push_status(json).unwrap().chamber_light_on);
     }
 
     #[test]
@@ -1135,8 +1190,12 @@ mod tests {
         assert!((ams.units[0].temp.unwrap() - 32.5).abs() < 0.01);
         assert_eq!(ams.units[0].dry_time_min, Some(90));
         assert_eq!(ams.units[0].dry_status, 2);
+        assert_eq!(ams.units[0].ams_type, 3);
+        assert_eq!(ams.units[0].display_name(), "AMS 2 Pro(1)");
         assert!(ams.units[0].is_drying());
         assert_eq!(ams.units[1].id, 1);
+        assert_eq!(ams.units[1].ams_type, 3);
+        assert_eq!(ams.units[1].display_name(), "AMS 2 Pro(2)");
         assert_eq!(ams.units[1].humidity, Some(4));
         assert_eq!(ams.units[1].humidity_percent, Some(55));
         assert!((ams.units[1].temp.unwrap() - 27.0).abs() < 0.01);
@@ -1198,8 +1257,8 @@ mod tests {
         assert!(st.nozzle_rack.supported);
         assert_eq!(st.nozzle_rack.status, 0);
         assert_eq!(st.nozzle_rack.position, 1);
-        assert_eq!(st.nozzle_rack.status_label(), "idle");
-        assert_eq!(st.nozzle_rack.position_label(), "A-top");
+        assert_eq!(st.nozzle_rack.status_label(), "Idle");
+        assert_eq!(st.nozzle_rack.position_label(), "Row A raised");
         assert_eq!(st.nozzle_rack.toolhead.len(), 2);
         assert_eq!(st.nozzle_rack.rack.len(), 6);
         assert_eq!(st.nozzle_rack.rack[0].id, 0);
@@ -1234,5 +1293,20 @@ mod tests {
         let confirm: Value = serde_json::from_str(&nozzle_info_confirm(14, 0xff)).unwrap();
         assert_eq!(confirm["print"]["command"], "nozzle_info_confirm");
         assert_eq!(confirm["print"]["id"], 255);
+    }
+
+    #[test]
+    fn mqtt_report_zero_print_error_is_not_rejection() {
+        let push = include_str!("../tests/fixtures/push_status_full.json");
+        assert!(!mqtt_report_rejected(push));
+        assert!(mqtt_report_rejected(
+            r#"{"print":{"command":"nozzle_holder_ctrl","result":"fail"}}"#
+        ));
+        assert!(mqtt_report_rejected(
+            r#"{"print":{"print_error": 83951622}}"#
+        ));
+        assert!(!mqtt_report_rejected(
+            r#"{"print":{"print_error": 0,"result":"success"}}"#
+        ));
     }
 }

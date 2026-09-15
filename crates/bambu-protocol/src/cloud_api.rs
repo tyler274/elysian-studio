@@ -8,7 +8,9 @@ use std::sync::OnceLock;
 use serde_json::{json, Value};
 use thiserror::Error;
 
+use crate::credentials::{default_config_dir, load_from_dir, SlicerCredentials};
 use crate::https::{self, HttpsError};
+use crate::signing::http_security_headers;
 
 pub const API_HOST_US: &str = "api.bambulab.com";
 pub const API_HOST_CN: &str = "api.bambulab.cn";
@@ -698,6 +700,15 @@ impl CloudApi {
         for (k, v) in slicer_http_headers(&slicer_device_id()) {
             h.push((k, v));
         }
+        if let Some(creds) = loaded_slicer_creds() {
+            let unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            if let Ok(extra) = http_security_headers(creds, unix_ms) {
+                h.extend(extra);
+            }
+        }
         h
     }
 
@@ -1257,9 +1268,17 @@ pub fn slicer_os_version() -> String {
         .unwrap_or_else(|| "6.1.0".into())
 }
 
+fn loaded_slicer_creds() -> Option<&'static SlicerCredentials> {
+    static CREDS: OnceLock<SlicerCredentials> = OnceLock::new();
+    let creds = CREDS.get_or_init(|| load_from_dir(default_config_dir()).unwrap_or_default());
+    creds.has_cert_and_key().then_some(creds)
+}
+
 /// Studio `GUI_App::get_extra_header` plus plugin `User-Agent` / agent version.
 /// Do not send `x-bbl-be: go` — that is not a Studio extra header and iot-service
 /// `/ttcode` returns code 8 when the camera mint is routed to the Go backend.
+/// Do not send empty `X-BBL-Executable-info: {}` — the plugin omits it or sends
+/// a real blob; `{}` has been observed to 403 `/ttcode` (iot-service code 8).
 pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
     let id = if device_id.is_empty() {
         "bambu-studio-rs"
@@ -1280,7 +1299,6 @@ pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
         ("X-BBL-Device-ID", id.into()),
         ("X-BBL-Agent-Version", SLICER_AGENT_VERSION.into()),
         ("X-BBL-Agent-OS-Type", "linux".into()),
-        ("X-BBL-Executable-info", "{}".into()),
     ]
 }
 
@@ -1747,9 +1765,9 @@ mod tests {
         assert!(get
             .iter()
             .any(|(k, v)| *k == "X-BBL-Language" && v == "en-US"));
-        assert!(get
+        assert!(!get
             .iter()
-            .any(|(k, v)| *k == "X-BBL-Executable-info" && v == "{}"));
+            .any(|(k, _)| k.eq_ignore_ascii_case("x-bbl-executable-info")));
         assert!(!get.iter().any(|(k, _)| k.eq_ignore_ascii_case("x-bbl-be")));
         assert!(!get
             .iter()

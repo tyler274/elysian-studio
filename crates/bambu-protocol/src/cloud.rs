@@ -12,10 +12,10 @@ use crate::cloud_api::{md5_hex, CloudApi};
 use crate::credentials::{default_config_dir, CredentialError};
 use crate::lan_mqtt::{self, BrokerAuth};
 use crate::mqtt::{
-    ams_change_filament, ams_filament_drying, chamber_light, hms_ignore, hms_resume, hms_stop,
-    next_sequence_id, pause, print_speed, project_file_cloud_opts, resume, set_bed_temp, set_fan,
-    set_nozzle_temp, skip_objects, stop, ProjectFileOpts, AMS_DRY_MODE_OFF, AMS_DRY_MODE_ON_TIME,
-    LAN_MQTT_PORT,
+    ams_change_filament, ams_filament_drying, chamber_light, chamber_light2, hms_ignore,
+    hms_resume, hms_stop, next_sequence_id, pause, print_speed, project_file_cloud_opts, resume,
+    set_bed_temp, set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts, AMS_DRY_MODE_OFF,
+    AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT,
 };
 use crate::pack::{pack_gcode_3mf, sanitize_remote_name};
 
@@ -360,6 +360,8 @@ impl PrinterBackend for CloudBackend {
 
     async fn set_chamber_light(&self, on: bool) -> Result<(), DeviceError> {
         self.publish_cmd(&chamber_light(next_sequence_id(), on))
+            .await?;
+        self.publish_cmd(&chamber_light2(next_sequence_id(), on))
             .await
     }
 
