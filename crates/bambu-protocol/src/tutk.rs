@@ -120,7 +120,11 @@ pub fn is_avc_sample(payload: &[u8]) -> bool {
 
 fn ttcode_error(err: &impl std::fmt::Display) -> String {
     let text = err.to_string();
-    if text.contains("HTTP 403") || text.to_ascii_lowercase().contains("forbidden") {
+    if crate::cloud_api::cloud_error_is_rate_limited(&text) {
+        format!(
+            "ttcode: {text} Studio/Handy mint the same endpoint; Cloudflare 1015 is IP rate-limit, not a printer setting."
+        )
+    } else if text.contains("HTTP 403") || text.to_ascii_lowercase().contains("forbidden") {
         format!(
             "ttcode: {text}. Cloud Agora mint is POST /ttcode (Handy works off Wi‑Fi). 403 is the token, serial, or user-id header, not a printer LAN toggle."
         )
@@ -167,6 +171,14 @@ pub fn stream_ttcode_frames(
     if creds.device.is_empty() {
         creds.device = serial.to_string();
     }
+    tracing::debug!(
+        target: "bambu_protocol::cloud",
+        proto = ?creds.proto,
+        device = %crate::cloud_api::redact_id(&creds.device),
+        has_channel = !creds.channel.is_empty(),
+        has_token = !creds.token.is_empty(),
+        "minted camera session"
+    );
     match creds.proto {
         CameraProto::Agora => crate::agora::stream_agora_frames(&creds, on_frame),
         CameraProto::Tutk => {
@@ -355,6 +367,16 @@ mod tests {
         assert!(msg.contains("user-id"));
         assert!(!msg.contains("LAN Only"));
         assert!(!msg.contains("HTTP 405"));
+    }
+
+    #[test]
+    fn ttcode_429_is_cloudflare_not_printer() {
+        let msg = ttcode_error(
+            &"cloud: cloud HTTP 429 (Cloudflare rate limit 1015). Wait a minute before Play; extra /ttcode retries make this worse.",
+        );
+        assert!(msg.contains("1015"));
+        assert!(msg.contains("IP rate-limit"));
+        assert!(!msg.contains("LAN Only"));
     }
 
     #[test]

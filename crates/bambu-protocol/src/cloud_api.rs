@@ -703,14 +703,39 @@ impl CloudApi {
         let payload = body.map(serde_json::to_vec).transpose()?;
         let owned = self.json_headers(json_content_type);
         let headers: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let uid = self.auth_user_id();
+        tracing::debug!(
+            target: "bambu_protocol::cloud",
+            method,
+            host = self.host(),
+            path,
+            body_bytes = payload.as_ref().map(Vec::len).unwrap_or(0),
+            user_id_len = uid.len(),
+            user_id_u_prefix = uid.starts_with("u_"),
+            token_len = self.access_token.len(),
+            token_jwt_dots = self.access_token.bytes().filter(|&b| b == b'.').count(),
+            "cloud HTTPS request"
+        );
         let resp = https::request(method, self.host(), path, &headers, payload.as_deref())?;
-        if resp.status < 200 || resp.status >= 300 {
-            return Err(CloudApiError::Message(cloud_http_error(
-                resp.status,
-                &resp.body_text(),
-            )));
-        }
+        let retry_after = resp
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("retry-after"))
+            .map(|(_, v)| v.as_str());
         let text = resp.body_text();
+        tracing::debug!(
+            target: "bambu_protocol::cloud",
+            method,
+            path,
+            status = resp.status,
+            retry_after,
+            body_len = text.len(),
+            body_keys = %json_field_names(&text),
+            "cloud HTTPS response"
+        );
+        if resp.status < 200 || resp.status >= 300 {
+            return Err(CloudApiError::Message(cloud_http_error(resp.status, &text)));
+        }
         if text.trim().is_empty() {
             return Ok(json!({}));
         }
@@ -752,19 +777,32 @@ impl CloudApi {
                     .filter(|s| !s.is_empty())
             });
         let fw = owned.as_deref();
-        let mut creds = if let Some(ver) = fw {
-            self.get_camera_url(&camera_url_key(&serial, ver, &["agora"], None))
-                .or_else(|_| {
-                    self.get_camera_url(&camera_url_key(&serial, ver, &["tutk", "agora"], None))
-                })
-                .or_else(|_| self.get_camera_url(&camera_url_key(&serial, ver, &["tutk"], None)))
-                .or_else(|_| self.get_camera_url(&serial))
+        tracing::debug!(
+            target: "bambu_protocol::cloud",
+            requested = %redact_id(&serial),
+            firmware = fw.unwrap_or(""),
+            "mint camera creds"
+        );
+        let attempts: Vec<(&[&str], Option<&str>)> = if let Some(ver) = fw {
+            vec![
+                (&["agora"], Some(ver)),
+                (&["tutk", "agora"], Some(ver)),
+            ]
         } else {
-            self.ttcode_with(&serial, None, &["agora"])
-                .or_else(|_| self.get_camera_url(&serial))
-        }?;
-        creds.device = serial;
-        Ok(creds)
+            vec![(&["agora"], None), (&["tutk", "agora"], None)]
+        };
+        let mut last = None;
+        for (protocols, ver) in attempts {
+            match self.ttcode_with(&serial, ver, protocols) {
+                Ok(mut creds) => {
+                    creds.device = serial;
+                    return Ok(creds);
+                }
+                Err(err) if is_cloud_rate_limited(&err) => return Err(err),
+                Err(err) => last = Some(err),
+            }
+        }
+        Err(last.unwrap_or_else(|| CloudApiError::Message("ttcode failed".into())))
     }
 
     /// Studio `NetworkAgent::get_camera_url`: `dev|fw|proto[|channel]`.
@@ -780,23 +818,31 @@ impl CloudApi {
         );
         match first {
             Ok(creds) => Ok(creds),
+            Err(err) if is_cloud_rate_limited(&err) => Err(err),
             Err(err) if is_cloud_forbidden(&err) => {
                 let agora_only = protocols.len() != 1 || protocols.first() != Some(&"agora");
                 if agora_only {
-                    if let Ok(creds) = self.ttcode_post(
+                    match self.ttcode_post(
                         &parsed.dev_id,
                         parsed.firmware.as_deref(),
                         &["agora"],
                         parsed.channel.as_deref(),
                     ) {
-                        return Ok(creds);
+                        Ok(creds) => return Ok(creds),
+                        Err(err) if is_cloud_rate_limited(&err) => return Err(err),
+                        Err(_) => {}
                     }
                 }
                 if parsed.firmware.is_some() || !protocols.is_empty() {
-                    if let Ok(creds) =
-                        self.ttcode_post(&parsed.dev_id, None, &[], parsed.channel.as_deref())
-                    {
-                        return Ok(creds);
+                    match self.ttcode_post(
+                        &parsed.dev_id,
+                        None,
+                        &[],
+                        parsed.channel.as_deref(),
+                    ) {
+                        Ok(creds) => return Ok(creds),
+                        Err(err) if is_cloud_rate_limited(&err) => return Err(err),
+                        Err(_) => {}
                     }
                 }
                 Err(err)
@@ -825,10 +871,28 @@ impl CloudApi {
         if let Some(ch) = channel.filter(|c| !c.is_empty()) {
             body["channel"] = json!(ch);
         }
+        tracing::debug!(
+            target: "bambu_protocol::cloud",
+            dev = %redact_id(dev_id),
+            firmware = firmware.unwrap_or(""),
+            protocols = ?protocols,
+            channel_set = channel.map(|c| !c.is_empty()).unwrap_or(false),
+            "POST ttcode"
+        );
         let v = self.send_json("POST", ttcode_path(), Some(&body))?;
-        parse_camera_creds(&v).ok_or_else(|| {
+        let creds = parse_camera_creds(&v).ok_or_else(|| {
             CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
-        })
+        })?;
+        tracing::debug!(
+            target: "bambu_protocol::cloud",
+            proto = ?creds.proto,
+            has_channel = !creds.channel.is_empty(),
+            has_token = !creds.token.is_empty(),
+            has_ttcode = !creds.uid.is_empty(),
+            token_prefix = %agora_token_kind(&creds.token),
+            "ttcode parsed"
+        );
+        Ok(creds)
     }
 
     pub fn request_upload(
@@ -1087,6 +1151,44 @@ pub fn is_cloud_forbidden(err: &CloudApiError) -> bool {
     t.contains("403") || t.contains("forbidden")
 }
 
+pub fn is_cloud_rate_limited(err: &CloudApiError) -> bool {
+    cloud_error_is_rate_limited(&err.to_string())
+}
+
+pub fn cloud_error_is_rate_limited(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.contains("http 429") || t.contains("1015") || t.contains("rate limit")
+}
+
+pub(crate) fn redact_id(id: &str) -> String {
+    let id = id.trim();
+    if id.len() <= 4 {
+        format!("len={}", id.len())
+    } else {
+        format!("{}…(len={})", &id[..4], id.len())
+    }
+}
+
+fn json_field_names(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| v.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()))
+        .map(|keys| keys.join(","))
+        .unwrap_or_default()
+}
+
+fn agora_token_kind(token: &str) -> &'static str {
+    if token.starts_with("006") {
+        "006"
+    } else if token.starts_with("007") {
+        "007"
+    } else if token.is_empty() {
+        "empty"
+    } else {
+        "other"
+    }
+}
+
 pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
     let id = if device_id.is_empty() {
         "bambu-studio-rs"
@@ -1186,6 +1288,11 @@ pub fn ttcode_should_retry_get(err: &CloudApiError) -> bool {
 }
 
 pub fn cloud_http_error(status: u16, body: &str) -> String {
+    if status == 429 || body.contains("1015") {
+        return format!(
+            "cloud HTTP {status} (Cloudflare rate limit 1015). Wait a minute before Play; extra /ttcode retries make this worse."
+        );
+    }
     let hint = json_error_hint(body);
     if !hint.is_empty() {
         return format!("cloud HTTP {status}: {hint}");
@@ -1589,5 +1696,30 @@ mod tests {
         let msg = cloud_http_error(405, "Method Not Allowed");
         assert!(msg.contains("405"));
         assert!(msg.contains("Method Not Allowed"));
+    }
+
+    #[test]
+    fn cloud_http_error_names_cloudflare_1015() {
+        let msg = cloud_http_error(429, "error code: 1015");
+        assert!(msg.contains("429"));
+        assert!(msg.contains("rate limit"));
+        assert!(msg.contains("1015"));
+        assert!(cloud_error_is_rate_limited(&msg));
+        let err = CloudApiError::Message(msg);
+        assert!(is_cloud_rate_limited(&err));
+        let forbidden = CloudApiError::Message(cloud_http_error(
+            403,
+            r#"{"code":8,"error":"The specified resource is forbidden."}"#,
+        ));
+        assert!(!is_cloud_rate_limited(&forbidden));
+        assert!(!cloud_error_is_rate_limited(&forbidden.to_string()));
+    }
+
+    #[test]
+    fn redact_id_keeps_prefix_not_full_serial() {
+        let shown = redact_id("31B800000000001");
+        assert!(shown.starts_with("31B8"));
+        assert!(shown.contains("len=15"));
+        assert!(!shown.contains("00000000001"));
     }
 }

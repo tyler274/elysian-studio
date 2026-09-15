@@ -66,11 +66,18 @@ pub fn run() -> iced::Result {
     reexec_with_vulkan_if_needed();
 
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
+        .with_env_filter({
+            let mut filter = tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("bambu_ui=info".parse().unwrap())
-                .add_directive("bambu_gpu=info".parse().unwrap()),
-        )
+                .add_directive("bambu_gpu=info".parse().unwrap());
+            #[cfg(debug_assertions)]
+            {
+                filter = filter
+                    .add_directive("bambu_protocol=debug".parse().unwrap())
+                    .add_directive("bambu_ui=debug".parse().unwrap());
+            }
+            filter
+        })
         .init();
 
     force_vulkan_env();

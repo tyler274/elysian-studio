@@ -410,6 +410,20 @@ pub fn stream_agora_frames(
     on_frame: impl FnMut(Frame) -> bool,
 ) -> Result<(), CameraError> {
     let join = AgoraJoin::from_creds(creds)?;
+    tracing::debug!(
+        target: "bambu_protocol::cloud",
+        region = %join.region,
+        channel_len = join.channel.len(),
+        token_kind = %if join.token.starts_with("006") {
+            "006"
+        } else if join.token.starts_with("007") {
+            "007"
+        } else {
+            "other"
+        },
+        encrypt = join.encryption_enabled(),
+        "agora join"
+    );
     let session = RtcSession::prepare(&join)?;
     if crate::agora_ap::is_agora_token(&join.token) {
         return crate::agora_ap::stream_vos_frames(&join, &session, on_frame);

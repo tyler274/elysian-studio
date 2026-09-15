@@ -8,9 +8,9 @@ use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
 use bambu_device::{AmsTray, AmsUnit, NozzleSlot, PrinterBackend};
 use bambu_protocol::{
-    capture_chamber, default_config_dir, describe_hms, jpeg_to_frame, load_cached_catalog,
-    load_cloud_session, save_cloud_session, stream_rtsps_frames, stream_ttcode_frames,
-    ChamberCapture, CloudApi, CloudBackend, JpegStream,
+    capture_chamber, cloud_error_is_rate_limited, default_config_dir, describe_hms, jpeg_to_frame,
+    load_cached_catalog, load_cloud_session, save_cloud_session, stream_rtsps_frames,
+    stream_ttcode_frames, ChamberCapture, CloudApi, CloudBackend, JpegStream,
 };
 
 use crate::theme;
@@ -1002,7 +1002,17 @@ fn emit_latest(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Mess
 
 fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Message>) {
     loop {
-        if lan_ready(&job.host, &job.code) {
+        let lan = lan_ready(&job.host, &job.code);
+        let cloud = !job.token.is_empty() && !job.serial.is_empty();
+        tracing::debug!(
+            target: "bambu_ui::camera",
+            lan,
+            cloud,
+            serial_len = job.serial.len(),
+            user_id_len = job.user_id.len(),
+            "camera worker tick"
+        );
+        if lan {
             match JpegStream::connect(&job.host, &job.code) {
                 Ok(mut stream) => loop {
                     match stream.next_jpeg() {
@@ -1033,24 +1043,46 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
                         Err(_) => break,
                     }
                 },
-                Err(_) => match stream_rtsps_frames(&job.host, &job.code, |frame| {
-                    let bytes = frame.rgba.len();
-                    emit_latest(
-                        &mut tx,
-                        Message::ChamberShot(Ok(ChamberResult::from_frame(bytes, frame))),
-                    )
-                }) {
-                    Ok(()) => return,
-                    Err(_) => {}
-                },
+                Err(err) => {
+                    tracing::debug!(
+                        target: "bambu_ui::camera",
+                        error = %err,
+                        "LAN JPEG :6000 failed"
+                    );
+                    match stream_rtsps_frames(&job.host, &job.code, |frame| {
+                        let bytes = frame.rgba.len();
+                        emit_latest(
+                            &mut tx,
+                            Message::ChamberShot(Ok(ChamberResult::from_frame(bytes, frame))),
+                        )
+                    }) {
+                        Ok(()) => return,
+                        Err(err) => {
+                            tracing::debug!(
+                                target: "bambu_ui::camera",
+                                error = %err,
+                                "LAN RTSPS :322 failed"
+                            );
+                        }
+                    }
+                }
             }
         }
-        if !job.token.is_empty() && !job.serial.is_empty() {
+        if cloud {
             match cloud_tutk_loop(&job, &mut tx) {
                 WorkerCtrl::Stop => return,
                 WorkerCtrl::Retry => {}
+                WorkerCtrl::Wait(delay) => {
+                    tracing::debug!(
+                        target: "bambu_ui::camera",
+                        secs = delay.as_secs(),
+                        "cloud camera backoff"
+                    );
+                    std::thread::sleep(delay);
+                    continue;
+                }
             }
-        } else if lan_ready(&job.host, &job.code) {
+        } else if lan {
             if !emit_latest(
                 &mut tx,
                 Message::ChamberShot(Err("LAN JPEG :6000 and RTSPS :322 both failed".into())),
@@ -1065,12 +1097,27 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
 enum WorkerCtrl {
     Stop,
     Retry,
+    Wait(std::time::Duration),
+}
+
+fn camera_error_backoff(err: &str) -> std::time::Duration {
+    if cloud_error_is_rate_limited(err) {
+        std::time::Duration::from_secs(60)
+    } else {
+        std::time::Duration::from_secs(2)
+    }
 }
 
 fn cloud_tutk_loop(
     job: &CameraJob,
     tx: &mut iced::futures::channel::mpsc::Sender<Message>,
 ) -> WorkerCtrl {
+    tracing::debug!(
+        target: "bambu_ui::camera",
+        serial_len = job.serial.len(),
+        region = %job.region,
+        "cloud ttcode mint"
+    );
     let mut api = CloudApi::new(&job.region, &job.token, &job.refresh).with_user_id(&job.user_id);
     let result = stream_ttcode_frames(&mut api, &job.serial, &job.code, |frame| {
         let bytes = frame.rgba.len();
@@ -1083,10 +1130,21 @@ fn cloud_tutk_loop(
     match result {
         Ok(()) => WorkerCtrl::Retry,
         Err(err) => {
-            if !emit_latest(tx, Message::ChamberShot(Err(err.to_string()))) {
+            let text = err.to_string();
+            tracing::debug!(
+                target: "bambu_ui::camera",
+                error = %text,
+                rate_limited = cloud_error_is_rate_limited(&text),
+                "cloud camera failed"
+            );
+            if !emit_latest(tx, Message::ChamberShot(Err(text.clone()))) {
                 return WorkerCtrl::Stop;
             }
-            WorkerCtrl::Retry
+            if cloud_error_is_rate_limited(&text) {
+                WorkerCtrl::Wait(camera_error_backoff(&text))
+            } else {
+                WorkerCtrl::Retry
+            }
         }
     }
 }
@@ -1147,6 +1205,15 @@ mod tests {
         assert!(lan_ready("192.168.1.9", "12345678"));
         assert!(!lan_ready("", "12345678"));
         assert!(!lan_ready("192.168.1.9", ""));
+    }
+
+    #[test]
+    fn camera_backoff_is_long_on_cloudflare_1015() {
+        assert_eq!(
+            camera_error_backoff("ttcode: cloud HTTP 429: error code: 1015").as_secs(),
+            60
+        );
+        assert_eq!(camera_error_backoff("LAN JPEG :6000 failed").as_secs(), 2);
     }
 
     #[test]

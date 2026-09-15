@@ -496,10 +496,15 @@ enum DeviceCommand {
 
 fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("bambu_cli=info".parse().unwrap()),
-        )
+        .with_env_filter({
+            let mut filter = tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("bambu_cli=info".parse().unwrap());
+            #[cfg(debug_assertions)]
+            {
+                filter = filter.add_directive("bambu_protocol=debug".parse().unwrap());
+            }
+            filter
+        })
         .init();
 
     if let Err(err) = run() {

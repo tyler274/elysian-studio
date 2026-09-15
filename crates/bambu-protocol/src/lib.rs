@@ -52,8 +52,8 @@ pub use cloud::{
     save_cloud_session, store_login_tokens, CloudBackend, CloudSession,
 };
 pub use cloud_api::{
-    api_host, bind_path, camera_serial_from_bind, camera_url_key, cloud_http_error, http_user_id,
-    iot_user_id, jwt_iot_user_id, jwt_user_id, login_body, md5_hex, parse_bind_devices,
+    api_host, bind_path, camera_serial_from_bind, camera_url_key, cloud_error_is_rate_limited,
+    cloud_http_error, http_user_id, iot_user_id, jwt_iot_user_id, jwt_user_id, login_body, md5_hex, parse_bind_devices,
     parse_camera_creds, parse_camera_url_key, parse_login, parse_profile, parse_upload_ticket,
     profile_path, refresh_body, slicer_device_id, slicer_http_headers, ticket_body, ticket_path,
     ttcode_after_post, ttcode_get_path, ttcode_path, ttcode_post_body, ttcode_should_retry_get,
