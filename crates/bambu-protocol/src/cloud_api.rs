@@ -2,6 +2,9 @@
 //!
 //! Fixture-tested JSON only in `cargo test --offline`. Live calls stay in CLI/UI.
 
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
 use serde_json::{json, Value};
 use thiserror::Error;
 
@@ -28,6 +31,7 @@ pub struct CloudDevice {
     pub name: String,
     pub online: bool,
     pub dev_name: String,
+    pub access_code: String,
 }
 
 impl CloudDevice {
@@ -52,13 +56,14 @@ pub struct UploadTicket {
     pub extra_headers: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CameraProto {
+    #[default]
     Tutk,
     Agora,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CameraCreds {
     pub proto: CameraProto,
     pub uid: String,
@@ -68,18 +73,41 @@ pub struct CameraCreds {
     pub channel: String,
     pub app_id: String,
     pub token: String,
+    pub stream_key: String,
+    pub stream_salt: String,
+    pub user: String,
+    pub device: String,
 }
 
 impl CameraCreds {
     pub fn bambu_url(&self) -> String {
         match self.proto {
-            CameraProto::Agora if !self.channel.is_empty() => crate::camera::agora_url(
-                &self.channel,
-                &self.region,
-                &self.token,
-                &self.authkey,
-                &self.app_id,
-            ),
+            CameraProto::Agora if !self.channel.is_empty() => {
+                let mut url = crate::camera::agora_url(
+                    &self.channel,
+                    &self.region,
+                    &self.token,
+                    &self.authkey,
+                    &self.app_id,
+                );
+                if !self.user.is_empty() {
+                    url.push_str("&user=");
+                    url.push_str(&crate::oauth::percent_encode_query(&self.user));
+                }
+                if !self.stream_key.is_empty() {
+                    url.push_str("&streamKey=");
+                    url.push_str(&crate::oauth::percent_encode_query(&self.stream_key));
+                }
+                if !self.stream_salt.is_empty() {
+                    url.push_str("&streamSalt=");
+                    url.push_str(&crate::oauth::percent_encode_query(&self.stream_salt));
+                }
+                if !self.device.is_empty() {
+                    url.push_str("&device=");
+                    url.push_str(&crate::oauth::percent_encode_query(&self.device));
+                }
+                url
+            }
             _ => crate::camera::tutk_url(&self.uid, &self.authkey, &self.passwd, &self.region),
         }
     }
@@ -165,10 +193,26 @@ pub fn refresh_body(refresh_token: &str) -> Value {
     json!({ "refreshToken": refresh_token })
 }
 
-/// HTTP `user-id` is the numeric uid (MQTT uses `u_{uid}`).
+/// Numeric uid (MQTT topics use `u_{uid}`).
 pub fn http_user_id(user_id: &str) -> String {
     let id = user_id.trim();
     id.strip_prefix("u_").unwrap_or(id).to_string()
+}
+
+/// iot-service `user-id` header: bambulab-cloud / Handy send `u_{uid}`.
+pub fn iot_user_id(user_id: &str) -> String {
+    let id = user_id.trim();
+    if id.is_empty() {
+        return String::new();
+    }
+    if id.starts_with("u_") {
+        return id.to_string();
+    }
+    let numeric = http_user_id(id);
+    if !numeric.is_empty() && numeric.bytes().all(|b| b.is_ascii_digit()) {
+        return format!("u_{numeric}");
+    }
+    id.to_string()
 }
 
 pub fn upload_ticket_body(filename: &str, size: usize, md5_hex: &str) -> Value {
@@ -203,6 +247,21 @@ pub fn parse_bind_devices(v: &Value) -> Vec<CloudDevice> {
     out
 }
 
+/// If `requested` is missing from `/bind`, use the first online bound printer.
+/// Stale `cloud_serial` (e.g. an old P1) otherwise 403s ttcode against the H2 that is actually bound.
+pub fn camera_serial_from_bind(requested: &str, devices: &[CloudDevice]) -> String {
+    let requested = requested.trim();
+    if devices.iter().any(|d| d.dev_id == requested) {
+        return requested.to_string();
+    }
+    devices
+        .iter()
+        .find(|d| d.online && !d.dev_id.is_empty())
+        .or_else(|| devices.iter().find(|d| !d.dev_id.is_empty()))
+        .map(|d| d.dev_id.clone())
+        .unwrap_or_else(|| requested.to_string())
+}
+
 fn parse_device(v: &Value) -> Option<CloudDevice> {
     let dev_id = string_field(v, &["dev_id", "devId", "device_id"])?;
     if dev_id.is_empty() {
@@ -220,11 +279,14 @@ fn parse_device(v: &Value) -> Option<CloudDevice> {
                 .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
         })
         .unwrap_or(false);
+    let access_code = string_field(v, &["dev_access_code", "access_code", "user_access_code"])
+        .unwrap_or_default();
     Some(CloudDevice {
         dev_id,
         name,
         online,
         dev_name,
+        access_code,
     })
 }
 
@@ -235,8 +297,16 @@ pub fn parse_camera_creds(v: &Value) -> Option<CameraCreds> {
     let passwd = string_field(data, &["passwd", "password"]).unwrap_or_default();
     let region = string_field(data, &["region"]).unwrap_or_default();
     let channel = string_field(data, &["channel_name", "channel"]).unwrap_or_default();
-    let app_id = string_field(data, &["app_id", "appId"]).unwrap_or_default();
-    let token = string_field(data, &["token", "stream_key"]).unwrap_or_default();
+    let app_id = string_field(data, &["app_id", "appId", "license"]).unwrap_or_default();
+    let token = string_field(data, &["token"]).unwrap_or_default();
+    let stream_key = string_field(data, &["stream_key", "streamKey"]).unwrap_or_default();
+    let stream_salt = string_field(data, &["stream_salt", "streamSalt"]).unwrap_or_default();
+    let user = string_field(data, &["user", "local_uid"]).unwrap_or_default();
+    let token = if token.is_empty() {
+        stream_key.clone()
+    } else {
+        token
+    };
     let kind = string_field(data, &["type", "proto"]).unwrap_or_default();
     let proto = if kind.eq_ignore_ascii_case("agora") || !channel.is_empty() {
         CameraProto::Agora
@@ -255,6 +325,10 @@ pub fn parse_camera_creds(v: &Value) -> Option<CameraCreds> {
         channel,
         app_id,
         token,
+        stream_key,
+        stream_salt,
+        user,
+        device: String::new(),
     })
 }
 
@@ -580,12 +654,12 @@ impl CloudApi {
         self
     }
 
-    /// Numeric uid from the session, or JWT `username` for iot-service `user-id`.
+    /// iot-service `user-id`: JWT `username`, else `u_{uid}`.
     pub fn auth_user_id(&self) -> String {
         if let Some(id) = jwt_iot_user_id(&self.access_token) {
-            return id;
+            return iot_user_id(&id);
         }
-        http_user_id(&self.user_id)
+        iot_user_id(&self.user_id)
     }
 
     fn host(&self) -> &'static str {
@@ -603,6 +677,9 @@ impl CloudApi {
         let uid = self.auth_user_id();
         if !uid.is_empty() {
             h.push(("user-id", uid));
+        }
+        for (k, v) in slicer_http_headers(&slicer_device_id()) {
+            h.push((k, v));
         }
         h
     }
@@ -646,7 +723,86 @@ impl CloudApi {
     }
 
     pub fn ttcode(&self, dev_id: &str) -> Result<CameraCreds, CloudApiError> {
-        self.ttcode_with(dev_id, None, &["tutk", "agora"])
+        self.mint_camera_creds(dev_id)
+    }
+
+    /// Resolve `/bind` serial, then POST ttcode (Studio `dev|fw|proto`).
+    pub fn mint_camera_creds(&self, serial: &str) -> Result<CameraCreds, CloudApiError> {
+        self.mint_camera_creds_with(serial, None)
+    }
+
+    /// `firmware` is MQTT `ota` / Studio `dev_ver` (e.g. `01.02.00.00`).
+    pub fn mint_camera_creds_with(
+        &self,
+        serial: &str,
+        firmware: Option<&str>,
+    ) -> Result<CameraCreds, CloudApiError> {
+        let serial = match self.list_devices() {
+            Ok(devs) => camera_serial_from_bind(serial, &devs),
+            Err(_) => serial.trim().to_string(),
+        };
+        let owned = firmware
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                std::env::var("BAMBU_DEV_VER")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            });
+        let fw = owned.as_deref();
+        let mut creds = if let Some(ver) = fw {
+            self.get_camera_url(&camera_url_key(&serial, ver, &["agora"], None))
+                .or_else(|_| {
+                    self.get_camera_url(&camera_url_key(&serial, ver, &["tutk", "agora"], None))
+                })
+                .or_else(|_| self.get_camera_url(&camera_url_key(&serial, ver, &["tutk"], None)))
+                .or_else(|_| self.get_camera_url(&serial))
+        } else {
+            self.ttcode_with(&serial, None, &["agora"])
+                .or_else(|_| self.get_camera_url(&serial))
+        }?;
+        creds.device = serial;
+        Ok(creds)
+    }
+
+    /// Studio `NetworkAgent::get_camera_url`: `dev|fw|proto[|channel]`.
+    /// H2 cloud mint is Agora-only; a 403 on `tutk,agora` retries `"agora"` then bare `dev_id`.
+    pub fn get_camera_url(&self, key: &str) -> Result<CameraCreds, CloudApiError> {
+        let parsed = parse_camera_url_key(key);
+        let protocols: Vec<&str> = parsed.protocols.iter().map(String::as_str).collect();
+        let first = self.ttcode_post(
+            &parsed.dev_id,
+            parsed.firmware.as_deref(),
+            &protocols,
+            parsed.channel.as_deref(),
+        );
+        match first {
+            Ok(creds) => Ok(creds),
+            Err(err) if is_cloud_forbidden(&err) => {
+                let agora_only = protocols.len() != 1 || protocols.first() != Some(&"agora");
+                if agora_only {
+                    if let Ok(creds) = self.ttcode_post(
+                        &parsed.dev_id,
+                        parsed.firmware.as_deref(),
+                        &["agora"],
+                        parsed.channel.as_deref(),
+                    ) {
+                        return Ok(creds);
+                    }
+                }
+                if parsed.firmware.is_some() || !protocols.is_empty() {
+                    if let Ok(creds) =
+                        self.ttcode_post(&parsed.dev_id, None, &[], parsed.channel.as_deref())
+                    {
+                        return Ok(creds);
+                    }
+                }
+                Err(err)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn ttcode_with(
@@ -655,16 +811,24 @@ impl CloudApi {
         firmware: Option<&str>,
         protocols: &[&str],
     ) -> Result<CameraCreds, CloudApiError> {
-        let body = ttcode_post_body(dev_id, firmware, protocols);
-        let v = match self.send_json("POST", ttcode_path(), Some(&body)) {
-            Ok(v) => v,
-            Err(err) if ttcode_should_retry_get(&err) => {
-                self.send_json_typed("GET", &ttcode_get_path(dev_id), None, false)?
-            }
-            Err(err) => return Err(err),
-        };
-        parse_camera_creds(&v)
-            .ok_or_else(|| CloudApiError::Message("ttcode response missing uid/authkey".into()))
+        self.ttcode_post(dev_id, firmware, protocols, None)
+    }
+
+    fn ttcode_post(
+        &self,
+        dev_id: &str,
+        firmware: Option<&str>,
+        protocols: &[&str],
+        channel: Option<&str>,
+    ) -> Result<CameraCreds, CloudApiError> {
+        let mut body = ttcode_post_body(dev_id, firmware, protocols);
+        if let Some(ch) = channel.filter(|c| !c.is_empty()) {
+            body["channel"] = json!(ch);
+        }
+        let v = self.send_json("POST", ttcode_path(), Some(&body))?;
+        parse_camera_creds(&v).ok_or_else(|| {
+            CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
+        })
     }
 
     pub fn request_upload(
@@ -873,6 +1037,140 @@ pub fn ttcode_post_body(dev_id: &str, firmware: Option<&str>, protocols: &[&str]
     Value::Object(body)
 }
 
+/// Studio `X-BBL-Client-Version` / `cli_ver` (installed Bambu Studio).
+pub const SLICER_CLIENT_VERSION: &str = "02.08.02.61";
+/// Plugin `User-Agent: bambu_network_agent/…` / `X-BBL-Agent-Version`.
+pub const SLICER_AGENT_VERSION: &str = "02.08.02.54";
+
+/// Studio `X-BBL-Device-ID` is `slicer_uuid` from BambuStudio.conf, not the printer serial.
+pub fn slicer_device_id() -> String {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        if let Ok(id) = std::env::var("BAMBU_SLICER_UUID") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return id.to_string();
+            }
+        }
+        read_studio_slicer_uuid().unwrap_or_else(|| "bambu-studio-rs".into())
+    })
+    .clone()
+}
+
+fn read_studio_slicer_uuid() -> Option<String> {
+    let mut paths = Vec::new();
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        paths.push(PathBuf::from(xdg).join("BambuStudio/BambuStudio.conf"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        paths.push(PathBuf::from(home).join(".config/BambuStudio/BambuStudio.conf"));
+    }
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(id) = v.get("slicer_uuid").and_then(Value::as_str) {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn is_cloud_forbidden(err: &CloudApiError) -> bool {
+    let t = err.to_string().to_ascii_lowercase();
+    t.contains("403") || t.contains("forbidden")
+}
+
+pub fn slicer_http_headers(device_id: &str) -> Vec<(&'static str, String)> {
+    let id = if device_id.is_empty() {
+        "bambu-studio-rs"
+    } else {
+        device_id
+    };
+    vec![
+        (
+            "User-Agent",
+            format!("bambu_network_agent/{SLICER_AGENT_VERSION}"),
+        ),
+        ("X-BBL-Client-Type", "slicer".into()),
+        ("X-BBL-Client-Name", "BambuStudio".into()),
+        ("X-BBL-Client-Version", SLICER_CLIENT_VERSION.into()),
+        ("X-BBL-Client-ID", id.into()),
+        ("X-BBL-OS-Type", "linux".into()),
+        ("X-BBL-Language", "en".into()),
+        ("X-BBL-Device-ID", id.into()),
+        ("X-BBL-Agent-Version", SLICER_AGENT_VERSION.into()),
+        ("X-BBL-Agent-OS-Type", "linux".into()),
+        ("x-bbl-be", "go".into()),
+        ("x-bbl-client-country", "US".into()),
+    ]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraUrlKey {
+    pub dev_id: String,
+    pub firmware: Option<String>,
+    pub protocols: Vec<String>,
+    pub channel: Option<String>,
+}
+
+/// Build Studio `dev|fw|"agora"` / `dev|fw|"tutk","agora"|channel`.
+pub fn camera_url_key(
+    dev_id: &str,
+    firmware: &str,
+    protocols: &[&str],
+    channel: Option<&str>,
+) -> String {
+    let quoted = protocols
+        .iter()
+        .map(|p| format!("\"{p}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut key = format!("{dev_id}|{firmware}|{quoted}");
+    if let Some(ch) = channel.filter(|c| !c.is_empty()) {
+        key.push('|');
+        key.push_str(ch);
+    }
+    key
+}
+
+/// Parse Studio `get_camera_url` / refresh `dev|fw|proto[|channel]`.
+pub fn parse_camera_url_key(raw: &str) -> CameraUrlKey {
+    let mut parts = raw.split('|');
+    let dev_id = parts.next().unwrap_or("").trim().to_string();
+    let firmware = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let proto_raw = parts.next().unwrap_or("").trim();
+    let mut protocols: Vec<String> = proto_raw
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if protocols.is_empty() {
+        protocols.extend(["tutk".into(), "agora".into()]);
+    }
+    let channel = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    CameraUrlKey {
+        dev_id,
+        firmware,
+        protocols,
+        channel,
+    }
+}
+
 pub fn ttcode_get_path(dev_id: &str) -> String {
     format!(
         "{}?dev_id={}",
@@ -881,9 +1179,10 @@ pub fn ttcode_get_path(dev_id: &str) -> String {
     )
 }
 
+/// GET `/ttcode` is not a Studio method (the public API is POST-only).
 pub fn ttcode_should_retry_get(err: &CloudApiError) -> bool {
-    let text = err.to_string();
-    text.contains("HTTP 403") || text.contains("HTTP 404") || text.contains("HTTP 405")
+    let _ = err;
+    false
 }
 
 pub fn cloud_http_error(status: u16, body: &str) -> String {
@@ -903,17 +1202,9 @@ pub fn cloud_http_error(status: u16, body: &str) -> String {
     }
 }
 
-/// Resolve ttcode JSON after POST, falling back to GET on 403/404/405.
-pub fn ttcode_after_post(
-    post: Result<Value, CloudApiError>,
-    get: impl FnOnce() -> Result<Value, CloudApiError>,
-) -> Result<CameraCreds, CloudApiError> {
-    let v = match post {
-        Ok(v) => v,
-        Err(err) if ttcode_should_retry_get(&err) => get()?,
-        Err(err) => return Err(err),
-    };
-    parse_camera_creds(&v)
+/// Resolve ttcode JSON after POST. GET is not a valid fallback (405).
+pub fn ttcode_after_post(post: Result<Value, CloudApiError>) -> Result<CameraCreds, CloudApiError> {
+    parse_camera_creds(&post?)
         .ok_or_else(|| CloudApiError::Message("ttcode response missing uid/authkey".into()))
 }
 
@@ -946,7 +1237,31 @@ mod tests {
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].dev_id, "01P00AFAKE00001");
         assert!(devices[0].online);
+        assert!(devices[0].access_code.is_empty());
         assert!(devices[0].label().contains("Workbench"));
+    }
+
+    #[test]
+    fn bind_parses_dev_access_code() {
+        let v = serde_json::json!({
+            "devices": [{
+                "dev_id": "01H2C0000000001",
+                "name": "H2C",
+                "dev_product_name": "H2C",
+                "online": true,
+                "dev_access_code": "abcd1234"
+            }]
+        });
+        let devices = parse_bind_devices(&v);
+        assert_eq!(devices[0].access_code, "abcd1234");
+        assert_eq!(
+            camera_serial_from_bind("01P00AFAKE00001", &devices),
+            "01H2C0000000001"
+        );
+        assert_eq!(
+            camera_serial_from_bind("01H2C0000000001", &devices),
+            "01H2C0000000001"
+        );
     }
 
     #[test]
@@ -1098,10 +1413,12 @@ mod tests {
         let token = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
         assert_eq!(jwt_user_id(&token).as_deref(), Some("012345678"));
         assert_eq!(http_user_id("u_4242"), "4242");
+        assert_eq!(iot_user_id("4242"), "u_4242");
+        assert_eq!(iot_user_id("u_4242"), "u_4242");
         let api = CloudApi::new("us", token, String::new());
-        assert_eq!(api.auth_user_id(), "012345678");
+        assert_eq!(api.auth_user_id(), "u_012345678");
         let api = CloudApi::new("us", "tok", String::new()).with_user_id("u_99");
-        assert_eq!(api.auth_user_id(), "99");
+        assert_eq!(api.auth_user_id(), "u_99");
     }
 
     #[test]
@@ -1122,6 +1439,11 @@ mod tests {
             r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
         );
         assert!(hint.contains("forbidden"));
+        let err = CloudApiError::Message(cloud_http_error(
+            403,
+            r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
+        ));
+        assert!(is_cloud_forbidden(&err));
     }
 
     #[test]
@@ -1156,7 +1478,10 @@ mod tests {
                 "region": "us",
                 "token": "tok",
                 "authkey": "ak",
-                "app_id": "app"
+                "app_id": "app",
+                "stream_key": "k",
+                "stream_salt": "s",
+                "user": "42"
             }
         });
         let creds = parse_camera_creds(&v).unwrap();
@@ -1164,9 +1489,36 @@ mod tests {
         let url = creds.bambu_url();
         assert!(url.starts_with("bambu:///agora?channel=devchan"));
         assert!(url.contains("token=tok"));
+        assert!(url.contains("streamKey=k"));
+        assert!(url.contains("streamSalt=s"));
+        assert!(url.contains("user=42"));
+        let mut with_dev = creds.clone();
+        with_dev.device = "01P00A000000001".into();
+        assert!(with_dev.bambu_url().contains("&device=01P00A000000001"));
         assert!(creds
             .bambu_url_for_device("01P00A000000001")
             .contains("&device=01P00A000000001"));
+    }
+
+    #[test]
+    fn camera_url_key_roundtrip_studio_quotes() {
+        let key = camera_url_key("01H2C", "01.00", &["tutk", "agora"], Some("ch"));
+        let parsed = parse_camera_url_key(&key);
+        assert_eq!(parsed.dev_id, "01H2C");
+        assert_eq!(parsed.firmware.as_deref(), Some("01.00"));
+        assert_eq!(parsed.protocols, vec!["tutk", "agora"]);
+        assert_eq!(parsed.channel.as_deref(), Some("ch"));
+        let body = ttcode_post_body(
+            &parsed.dev_id,
+            parsed.firmware.as_deref(),
+            &parsed
+                .protocols
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(body["dev_id"], "01H2C");
+        assert_eq!(body["protocols"][1], "agora");
     }
 
     #[test]
@@ -1187,18 +1539,27 @@ mod tests {
         let path = ttcode_get_path("01P 1");
         assert!(path.starts_with("/v1/iot-service/api/user/ttcode?dev_id="));
         assert!(path.contains("01P"));
-        let api = CloudApi::new("us", "tok", String::new());
+        let api = CloudApi::new("us", "tok", String::new()).with_user_id("4242");
         let get = api.json_headers(false);
         assert!(!get.iter().any(|(k, _)| *k == "Content-Type"));
         assert!(get.iter().any(|(k, _)| *k == "Authorization"));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "user-id" && v == "u_4242"));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "X-BBL-Client-Type" && v == "slicer"));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "X-BBL-Client-Name" && v == "BambuStudio"));
+        assert!(get.iter().any(|(k, v)| *k == "User-Agent"
+            && v.starts_with("bambu_network_agent/")));
         let post = api.json_headers(true);
         assert!(post.iter().any(|(k, _)| *k == "Content-Type"));
     }
 
     #[test]
-    fn ttcode_post_405_then_get_200_parses_tutk_url() {
-        let err = CloudApiError::Message(cloud_http_error(405, "Method Not Allowed"));
-        assert!(ttcode_should_retry_get(&err));
+    fn ttcode_post_success_parses_tutk_url() {
         let get = serde_json::json!({
             "message": "success",
             "ttcode": "01234567890ABCDEF012",
@@ -1207,15 +1568,20 @@ mod tests {
             "region": "us",
             "type": "tutk"
         });
-        let creds = ttcode_after_post(Err(err), || Ok(get)).unwrap();
+        let creds = ttcode_after_post(Ok(get)).unwrap();
         assert_eq!(creds.proto, CameraProto::Tutk);
         assert!(creds
             .bambu_url()
             .starts_with("bambu:///tutk?uid=01234567890ABCDEF012"));
-        let forbidden = CloudApiError::Message(cloud_http_error(403, ""));
-        assert!(ttcode_should_retry_get(&forbidden));
-        let missing = CloudApiError::Message(cloud_http_error(404, "not found"));
-        assert!(ttcode_should_retry_get(&missing));
+        let forbidden = CloudApiError::Message(cloud_http_error(
+            403,
+            r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
+        ));
+        assert!(!ttcode_should_retry_get(&forbidden));
+        assert!(forbidden.to_string().contains("forbidden"));
+        let method = CloudApiError::Message(cloud_http_error(405, ""));
+        assert!(!ttcode_should_retry_get(&method));
+        assert!(ttcode_after_post(Err(method)).is_err());
     }
 
     #[test]

@@ -74,7 +74,7 @@ fn tcp_connect(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, Ca
     Ok(TcpStream::connect_timeout(&addr, timeout)?)
 }
 
-fn tls_connect(
+pub(crate) fn tls_connect(
     host: &str,
     port: u16,
 ) -> Result<StreamOwned<ClientConnection, TcpStream>, CameraError> {
@@ -205,59 +205,50 @@ pub struct RtspsSession {
 
 /// OPTIONS then DESCRIBE on one TLS connection (live view handshake without PEMs).
 pub fn describe_rtsps(host: &str, access_code: &str) -> Result<RtspsSession, CameraError> {
-    if access_code.is_empty() {
-        return Err(CameraError::Message("LAN access code is empty".into()));
-    }
-    let mut tls = tls_connect(host, LAN_RTSPS_PORT)?;
-    let options = format!(
-        "OPTIONS rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
-    );
-    tls.write_all(options.as_bytes())?;
-    tls.flush()?;
-    let mut buf = [0u8; 4096];
-    let n = tls.read(&mut buf)?;
-    if n == 0 {
-        return Err(CameraError::Message("empty RTSPS OPTIONS response".into()));
-    }
-    let describe = format!(
-        "DESCRIBE rtsp://{host}:{LAN_RTSPS_PORT}/streaming/live/1 RTSP/1.0\r\nCSeq: 2\r\nAccept: application/sdp\r\nUser-Agent: bambu-studio-rs\r\n\r\n"
-    );
-    tls.write_all(describe.as_bytes())?;
-    tls.flush()?;
-    let mut sdp_buf = [0u8; 8192];
-    let m = tls.read(&mut sdp_buf).unwrap_or(0);
-    let mut sdp = String::from_utf8_lossy(&buf[..n]).to_string();
-    if m > 0 {
-        sdp.push('\n');
-        sdp.push_str(&String::from_utf8_lossy(&sdp_buf[..m]));
-    }
-    if sdp.trim().is_empty() {
-        return Err(CameraError::Message("empty RTSPS DESCRIBE response".into()));
-    }
-    Ok(RtspsSession {
-        url: rtsps_url(host, access_code),
-        sdp,
-    })
+    crate::rtsps::describe(host, access_code)
+}
+
+/// One RGBA frame from X1/H2 RTSPS `:322` (H.264 interleaved RTP).
+pub fn snapshot_rtsps_frame(host: &str, access_code: &str) -> Result<Frame, CameraError> {
+    let mut frame = None;
+    crate::rtsps::stream_frames(host, access_code, |next| {
+        frame = Some(next);
+        false
+    })?;
+    frame.ok_or_else(|| CameraError::Message("RTSPS produced no H.264 frame".into()))
+}
+
+/// Live H.264 frames from RTSPS `:322`. `on_frame` returning `false` stops the session.
+pub fn stream_rtsps_frames(
+    host: &str,
+    access_code: &str,
+    on_frame: impl FnMut(Frame) -> bool,
+) -> Result<(), CameraError> {
+    crate::rtsps::stream_frames(host, access_code, on_frame)
 }
 
 #[derive(Debug)]
 pub enum ChamberCapture {
     Jpeg(Vec<u8>),
+    Frame(Frame),
     Rtsps { url: String, options: String },
 }
 
-/// P1/A1 JPEG :6000, then X1/H2 RTSPS :322 OPTIONS+DESCRIBE.
+/// P1/A1 JPEG :6000, then X1/H2 RTSPS :322 H.264.
 pub fn capture_chamber(host: &str, access_code: &str) -> Result<ChamberCapture, CameraError> {
     match snapshot_jpeg(host, access_code) {
         Ok(jpeg) => Ok(ChamberCapture::Jpeg(jpeg)),
-        Err(jpeg_err) => match describe_rtsps(host, access_code) {
-            Ok(live) => Ok(ChamberCapture::Rtsps {
-                url: live.url,
-                options: live.sdp,
-            }),
-            Err(rtsps_err) => Err(CameraError::Message(format!(
-                "JPEG :{LAN_CAMERA_PORT}: {jpeg_err}; RTSPS :{LAN_RTSPS_PORT}: {rtsps_err}"
-            ))),
+        Err(jpeg_err) => match snapshot_rtsps_frame(host, access_code) {
+            Ok(frame) => Ok(ChamberCapture::Frame(frame)),
+            Err(rtsps_err) => match describe_rtsps(host, access_code) {
+                Ok(live) => Ok(ChamberCapture::Rtsps {
+                    url: format!("RTSPS :{LAN_RTSPS_PORT} on {host}"),
+                    options: format!("{rtsps_err}; {}", live.sdp.lines().next().unwrap_or("sdp")),
+                }),
+                Err(_) => Err(CameraError::Message(format!(
+                    "JPEG :{LAN_CAMERA_PORT}: {jpeg_err}; RTSPS :{LAN_RTSPS_PORT}: {rtsps_err}"
+                ))),
+            },
         },
     }
 }

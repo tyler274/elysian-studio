@@ -1,16 +1,14 @@
 //! Cloud liveview after `POST /v1/iot-service/api/user/ttcode`.
 //!
-//! Safe-Rust stand-in for Studio `BambuTunnelTutk` / `BambuTunnelAgora` (never
-//! loads `libBambuSource` or `libbambu_networking`): URL grammar, TUTK region /
-//! IOTC masters, AV `FRAMEINFO` + JPEG demux, then Kalay directory lookup
-//! (`IOTC_Connect_ByUIDEx`). When lookup yields a LAN IPv4 and a LAN access
-//! code is present, frames use JPEG :6000. Agora tokens are parsed; X1/H2 cloud
-//! RTC is not this JPEG path (use LAN RTSPS :322).
+//! TUTK JPEG and Agora minting live here. Agora frames go through `agora` /
+//! `agora_ap` (no `libBambuSource` / `libbambu_networking`).
 
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::camera::{CameraError, JpegStream};
+use bambu_device::Frame;
+
+use crate::camera::{jpeg_to_frame, CameraError, JpegStream};
 use crate::cloud_api::{CameraCreds, CameraProto, CloudApi};
 use crate::oauth::percent_encode_query;
 
@@ -120,6 +118,17 @@ pub fn is_avc_sample(payload: &[u8]) -> bool {
             .is_some_and(|&b| b == 0x00 || b == 0x65 || b == 0x67)
 }
 
+fn ttcode_error(err: &impl std::fmt::Display) -> String {
+    let text = err.to_string();
+    if text.contains("HTTP 403") || text.to_ascii_lowercase().contains("forbidden") {
+        format!(
+            "ttcode: {text}. Cloud Agora mint is POST /ttcode (Handy works off Wi‑Fi). 403 is the token, serial, or user-id header, not a printer LAN toggle."
+        )
+    } else {
+        format!("ttcode: {text}")
+    }
+}
+
 /// `POST .../ttcode` then TUTK MJPEG (or Agora error). Token refresh on 401.
 /// When IOTC reports a reachable IPv4 and `lan_code` is set, frames come from
 /// the existing JPEG :6000 client (same as LAN Play).
@@ -135,9 +144,38 @@ pub fn stream_ttcode_jpegs(
         ));
     }
     let creds = api
-        .with_retry(|api| api.ttcode(serial))
-        .map_err(|err| CameraError::Message(format!("ttcode: {err}")))?;
+        .with_retry(|api| api.mint_camera_creds(serial))
+        .map_err(|err| CameraError::Message(ttcode_error(&err)))?;
     for_each_jpeg(&creds, lan_code, on_jpeg)
+}
+
+/// Mint `get_camera_url` then yield RGBA frames (Agora encoded observer or TUTK JPEG).
+pub fn stream_ttcode_frames(
+    api: &mut CloudApi,
+    serial: &str,
+    lan_code: &str,
+    mut on_frame: impl FnMut(Frame) -> bool,
+) -> Result<(), CameraError> {
+    if serial.is_empty() {
+        return Err(CameraError::Message(
+            "cloud camera needs a device serial".into(),
+        ));
+    }
+    let mut creds = api
+        .with_retry(|api| api.mint_camera_creds(serial))
+        .map_err(|err| CameraError::Message(ttcode_error(&err)))?;
+    if creds.device.is_empty() {
+        creds.device = serial.to_string();
+    }
+    match creds.proto {
+        CameraProto::Agora => crate::agora::stream_agora_frames(&creds, on_frame),
+        CameraProto::Tutk => {
+            tutk_recv_jpegs(&creds, lan_code, &mut |jpeg| match jpeg_to_frame(jpeg) {
+                Ok(frame) => on_frame(frame),
+                Err(_) => true,
+            })
+        }
+    }
 }
 
 /// Open a `bambu:///tutk` or `bambu:///agora` session and yield JPEG payloads.
@@ -147,9 +185,7 @@ pub fn for_each_jpeg(
     mut on_jpeg: impl FnMut(&[u8]) -> bool,
 ) -> Result<(), CameraError> {
     match creds.proto {
-        CameraProto::Agora => Err(CameraError::Message(
-            "Agora liveview (X1/H2 cloud RTC). On the same Wi‑Fi use RTSPS :322; this pass demuxes TUTK MJPEG only.".into(),
-        )),
+        CameraProto::Agora => crate::agora::stream_agora_frames(creds, |_| true),
         CameraProto::Tutk => tutk_recv_jpegs(creds, lan_code, &mut on_jpeg),
     }
 }
@@ -313,6 +349,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ttcode_403_is_auth_not_lan_toggle() {
+        let msg = ttcode_error(&"cloud: cloud HTTP 403: The specified resource is forbidden.");
+        assert!(msg.contains("403"));
+        assert!(msg.contains("user-id"));
+        assert!(!msg.contains("LAN Only"));
+        assert!(!msg.contains("HTTP 405"));
+    }
+
+    #[test]
     fn region_cn_uses_kalay_cn_masters() {
         assert_eq!(tutk_region("CN"), TutkRegion::Cn);
         assert!(iotc_masters("cn")
@@ -364,9 +409,7 @@ mod tests {
             authkey: "k".into(),
             passwd: "p".into(),
             region: "us".into(),
-            channel: String::new(),
-            app_id: String::new(),
-            token: String::new(),
+            ..CameraCreds::default()
         };
         let err = for_each_jpeg(&creds, "", |_| true).unwrap_err();
         assert!(err.to_string().contains("uid"));
@@ -376,17 +419,23 @@ mod tests {
     fn agora_is_not_jpeg_tutk() {
         let creds = CameraCreds {
             proto: CameraProto::Agora,
-            uid: String::new(),
             authkey: "ak".into(),
-            passwd: String::new(),
             region: "us".into(),
             channel: "ch".into(),
             app_id: "app".into(),
             token: "tok".into(),
+            ..CameraCreds::default()
         };
         let err = for_each_jpeg(&creds, "", |_| true).unwrap_err();
-        assert!(err.to_string().contains("Agora"));
-        assert!(err.to_string().contains("RTSPS"));
+        assert!(err.to_string().contains("agora rtc"));
+        assert!(err.to_string().contains("joinChannelEx"));
+        let err = crate::agora::RtcSession::prepare(
+            &crate::agora::AgoraJoin::from_creds(&creds).unwrap(),
+        )
+        .unwrap()
+        .engine_steps();
+        assert!(err.contains(&"joinChannelEx"));
+        assert!(err.contains(&"registerVideoEncodedFrameObserver"));
     }
 
     #[test]

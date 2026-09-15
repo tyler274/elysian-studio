@@ -8,8 +8,8 @@ use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
 use bambu_device::{AmsTray, AmsUnit, NozzleSlot, PrinterBackend};
 use bambu_protocol::{
-    capture_chamber, default_config_dir, describe_hms, describe_rtsps, jpeg_to_frame,
-    load_cached_catalog, load_cloud_session, save_cloud_session, stream_ttcode_jpegs,
+    capture_chamber, default_config_dir, describe_hms, jpeg_to_frame, load_cached_catalog,
+    load_cloud_session, save_cloud_session, stream_rtsps_frames, stream_ttcode_frames,
     ChamberCapture, CloudApi, CloudBackend, JpegStream,
 };
 
@@ -56,7 +56,7 @@ pub(crate) const CAMERA_CLOUD_DISCOVER: &str =
 pub(crate) const CAMERA_CLOUD_NEED_LAN: &str =
     "Need printer IP + LAN access code (same Wi‑Fi) or a cloud serial for TUTK/Agora liveview.";
 pub(crate) const CAMERA_CLOUD_TUTK: &str =
-    "connecting TUTK/Agora (LAN JPEG :6000 if the printer is on this Wi‑Fi)…";
+    "connecting camera (LAN JPEG :6000 / RTSPS :322, else cloud TUTK/Agora)…";
 
 pub(crate) fn lan_ready(host: &str, code: &str) -> bool {
     !host.is_empty() && !code.is_empty()
@@ -159,7 +159,7 @@ impl crate::App {
                 .color(theme::TEXT_MUTED)
                 .into()
         } else {
-            text("P1/A1 JPEG :6000 on LAN, or cloud TUTK (ttcode + IOTC). X1/H2 Agora uses LAN RTSPS :322.")
+            text("P1/A1 JPEG :6000 on LAN, or cloud TUTK. X1/H2: LAN RTSPS :322, else cloud Agora RTC.")
                 .size(12)
                 .color(theme::TEXT_MUTED)
                 .into()
@@ -974,6 +974,10 @@ pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, 
             let frame = jpeg_to_frame(&jpeg).map_err(|err| err.to_string())?;
             Ok(ChamberResult::from_frame(jpeg.len(), frame))
         }
+        Ok(ChamberCapture::Frame(frame)) => {
+            let bytes = frame.rgba.len();
+            Ok(ChamberResult::from_frame(bytes, frame))
+        }
         Ok(ChamberCapture::Rtsps { url, options }) => {
             let first = options.lines().next().unwrap_or("RTSPS");
             Ok(ChamberResult::Rtsps {
@@ -1029,7 +1033,16 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
                         Err(_) => break,
                     }
                 },
-                Err(_) => {}
+                Err(_) => match stream_rtsps_frames(&job.host, &job.code, |frame| {
+                    let bytes = frame.rgba.len();
+                    emit_latest(
+                        &mut tx,
+                        Message::ChamberShot(Ok(ChamberResult::from_frame(bytes, frame))),
+                    )
+                }) {
+                    Ok(()) => return,
+                    Err(_) => {}
+                },
             }
         }
         if !job.token.is_empty() && !job.serial.is_empty() {
@@ -1038,26 +1051,11 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
                 WorkerCtrl::Retry => {}
             }
         } else if lan_ready(&job.host, &job.code) {
-            match describe_rtsps(&job.host, &job.code) {
-                Ok(live) => {
-                    let first = live.sdp.lines().next().unwrap_or("RTSPS");
-                    if !emit_latest(
-                        &mut tx,
-                        Message::ChamberShot(Ok(ChamberResult::Rtsps {
-                            detail: format!(
-                                "RTSPS :322 (no H.264 this pass) {} · {first}",
-                                live.url
-                            ),
-                        })),
-                    ) {
-                        return;
-                    }
-                }
-                Err(err) => {
-                    if !emit_latest(&mut tx, Message::ChamberShot(Err(err.to_string()))) {
-                        return;
-                    }
-                }
+            if !emit_latest(
+                &mut tx,
+                Message::ChamberShot(Err("LAN JPEG :6000 and RTSPS :322 both failed".into())),
+            ) {
+                return;
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1074,18 +1072,13 @@ fn cloud_tutk_loop(
     tx: &mut iced::futures::channel::mpsc::Sender<Message>,
 ) -> WorkerCtrl {
     let mut api = CloudApi::new(&job.region, &job.token, &job.refresh).with_user_id(&job.user_id);
-    let result = stream_ttcode_jpegs(
-        &mut api,
-        &job.serial,
-        &job.code,
-        |jpeg| match jpeg_to_frame(jpeg) {
-            Ok(frame) => emit_latest(
-                tx,
-                Message::ChamberShot(Ok(ChamberResult::from_frame(jpeg.len(), frame))),
-            ),
-            Err(err) => emit_latest(tx, Message::ChamberShot(Err(err.to_string()))),
-        },
-    );
+    let result = stream_ttcode_frames(&mut api, &job.serial, &job.code, |frame| {
+        let bytes = frame.rgba.len();
+        emit_latest(
+            tx,
+            Message::ChamberShot(Ok(ChamberResult::from_frame(bytes, frame))),
+        )
+    });
     persist_refreshed_cloud(&api, job);
     match result {
         Ok(()) => WorkerCtrl::Retry,

@@ -39,7 +39,8 @@ use bambu_io::{load_mesh, load_model, write_model_3mf};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
     describe_hms, load_cached_catalog, load_cloud_session, load_inventory, load_lan_codes,
-    refresh_catalog, save_cloud_session, save_inventory, CloudApi, CloudBackend, CloudDevice,
+    refresh_catalog, save_cloud_session, save_inventory, save_lan_codes, CloudApi, CloudBackend,
+    CloudDevice,
     FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
@@ -937,17 +938,50 @@ impl App {
         self.status = imported.status;
     }
 
+    fn persist_bind_lan_codes(devices: &[CloudDevice]) {
+        let dir = bambu_protocol::default_config_dir();
+        let mut codes = load_lan_codes(&dir);
+        let mut changed = false;
+        for device in devices {
+            if device.access_code.is_empty() {
+                continue;
+            }
+            if codes.get(&device.dev_id) != Some(&device.access_code) {
+                codes.insert(device.dev_id.clone(), device.access_code.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            let _ = save_lan_codes(&dir, &codes);
+        }
+    }
+
     fn apply_device(&mut self, serial: &str) {
         if serial.is_empty() {
             return;
         }
         self.serial = serial.to_string();
         self.selected_device = Some(serial.to_string());
-        if let Some(p) = self.imported_printers.iter().find(|p| p.serial == serial) {
-            self.access_code = p.access_code.clone();
-        } else if let Some(code) = load_lan_codes(bambu_protocol::default_config_dir()).get(serial)
+        if let Some(p) = self
+            .imported_printers
+            .iter()
+            .find(|p| p.serial == serial && !p.access_code.is_empty())
         {
-            self.access_code = code.clone();
+            self.access_code = p.access_code.clone();
+        }
+        if self.access_code.is_empty() {
+            if let Some(dev) = self
+                .cloud_devices
+                .iter()
+                .find(|d| d.dev_id == serial && !d.access_code.is_empty())
+            {
+                self.access_code = dev.access_code.clone();
+            }
+        }
+        if self.access_code.is_empty() {
+            if let Some(code) = load_lan_codes(bambu_protocol::default_config_dir()).get(serial) {
+                self.access_code = code.clone();
+            }
         }
         if let Ok(mut session) = load_cloud_session(bambu_protocol::default_config_dir()) {
             session.serial = serial.to_string();
@@ -1258,6 +1292,11 @@ impl App {
             }
             Message::DevicesLoaded(Ok(devices)) => {
                 self.cloud_devices = devices;
+                Self::persist_bind_lan_codes(&self.cloud_devices);
+                if self.access_code.is_empty() && !self.serial.is_empty() {
+                    let serial = self.serial.clone();
+                    self.apply_device(&serial);
+                }
                 self.status = format!("{} cloud device(s)", self.cloud_devices.len());
             }
             Message::DevicesLoaded(Err(err)) => {
@@ -3348,9 +3387,11 @@ impl App {
                 } else {
                     self.cloud_user.clone()
                 };
-                let id = bambu_protocol::http_user_id(&id);
+                let id = bambu_protocol::iot_user_id(&id);
                 if id.is_empty() {
-                    bambu_protocol::jwt_user_id(&session.access_token).unwrap_or_default()
+                    bambu_protocol::iot_user_id(
+                        &bambu_protocol::jwt_user_id(&session.access_token).unwrap_or_default(),
+                    )
                 } else {
                     id
                 }
@@ -3362,7 +3403,7 @@ impl App {
         self.camera_live = true;
         if self.chamber_handle.is_none() {
             self.camera_note = if monitor::lan_ready(&self.host, &self.access_code) {
-                "connecting JPEG :6000…".into()
+                "connecting camera (JPEG :6000 / RTSPS :322)…".into()
             } else {
                 monitor::CAMERA_CLOUD_TUTK.into()
             };
@@ -4018,6 +4059,22 @@ mod device_sync {
         let _ = app.update(Message::CameraLan(Ok(vec![])));
         assert!(!app.camera_live);
         assert_eq!(app.camera_note, monitor::CAMERA_CLOUD_NEED_LAN);
+    }
+
+    #[test]
+    fn pick_device_uses_bind_access_code() {
+        let mut app = App::new_for_gui_test();
+        app.cloud_devices.push(CloudDevice {
+            dev_id: "01H2C0000000001".into(),
+            name: "H2C".into(),
+            online: true,
+            dev_name: "H2C".into(),
+            access_code: "abcd1234".into(),
+        });
+        let label = app.cloud_devices[0].label();
+        let _ = app.update(Message::PickDevice(label));
+        assert_eq!(app.serial, "01H2C0000000001");
+        assert_eq!(app.access_code, "abcd1234");
     }
 
     #[test]

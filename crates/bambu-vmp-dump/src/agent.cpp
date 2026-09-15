@@ -77,6 +77,9 @@ extern "C" int vmp_init_agent(void *handle, const char *config_dir, const char *
     using SetHeaders = int (*)(void *, std::map<std::string, std::string>);
     using IsLogin = bool (*)(void *);
     using SetHttpErr = int (*)(void *, std::function<void(unsigned, std::string)>);
+    using GetUid = std::string (*)(void *);
+    using GetCam = int (*)(void *, std::string, std::function<void(std::string)>);
+    using GetPrint = int (*)(void *, unsigned int *, std::string *);
 
     auto create = reinterpret_cast<Create>(dlsym(handle, "bambu_network_create_agent"));
     auto set_dir = reinterpret_cast<SetDir>(dlsym(handle, "bambu_network_set_config_dir"));
@@ -94,6 +97,9 @@ extern "C" int vmp_init_agent(void *handle, const char *config_dir, const char *
     auto is_login = reinterpret_cast<IsLogin>(dlsym(handle, "bambu_network_is_user_login"));
     auto set_http_err =
         reinterpret_cast<SetHttpErr>(dlsym(handle, "bambu_network_set_on_http_error_fn"));
+    auto get_uid = reinterpret_cast<GetUid>(dlsym(handle, "bambu_network_get_user_id"));
+    auto get_cam = reinterpret_cast<GetCam>(dlsym(handle, "bambu_network_get_camera_url"));
+    auto get_print = reinterpret_cast<GetPrint>(dlsym(handle, "bambu_network_get_user_print_info"));
     if (!create) {
         return -2;
     }
@@ -130,6 +136,7 @@ extern "C" int vmp_init_agent(void *handle, const char *config_dir, const char *
             std::map<std::string, std::string> headers;
             headers.emplace("X-BBL-Client-Type", "slicer");
             headers.emplace("X-BBL-Client-Name", "BambuStudio");
+            headers.emplace("X-BBL-Client-Version", "02.08.02.61");
             headers.emplace("X-BBL-OS-Type", "linux");
             headers.emplace("X-BBL-Language", "en");
             log_rc("set_extra_http_header", set_headers(agent, headers));
@@ -165,17 +172,97 @@ extern "C" int vmp_init_agent(void *handle, const char *config_dir, const char *
     }
 
     const int wait = wait_secs();
-    std::fprintf(stderr, "pumping main queue for %ds\n", wait);
-    std::this_thread::sleep_for(std::chrono::seconds(wait));
+    std::fprintf(stderr, "pumping main queue for %ds then camera mint\n", wait);
+    if (wait > 2) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    } else {
+        std::this_thread::sleep_for(std::chrono::seconds(wait));
+    }
     if (update_cert) {
         log_rc("update_cert_again", update_cert(agent));
+    }
+    if (get_uid) {
+        try {
+            std::string uid = get_uid(agent);
+            int prefix_u = uid.rfind("u_", 0) == 0 ? 1 : 0;
+            std::fprintf(stderr, "user_id_len=%zu prefix_u=%d digits=%d\n", uid.size(), prefix_u,
+                         uid.find_first_not_of("0123456789") == std::string::npos ? 1 : 0);
+        } catch (...) {
+            std::fprintf(stderr, "get_user_id threw\n");
+        }
+    }
+    if (is_login) {
+        std::fprintf(stderr, "is_user_login=%d\n", is_login(agent) ? 1 : 0);
+    }
+    if (get_print) {
+        unsigned http = 0;
+        std::string body;
+        int rc = get_print(agent, &http, &body);
+        int devices = 0;
+        for (size_t i = 0; (i = body.find("\"dev_id\"", i)) != std::string::npos; i++) {
+            devices++;
+        }
+        std::fprintf(stderr, "get_user_print_info rc=%d http=%u body_len=%zu dev_id_fields=%d\n", rc,
+                     http, body.size(), devices);
+    }
+    std::atomic<bool> camera_done{false};
+    if (get_cam) {
+        const char *key = std::getenv("BAMBU_VMP_CAMERA_KEY");
+        if (key && key[0] != '\0') {
+            int pipes = 0;
+            bool agora = std::string(key).find("agora") != std::string::npos;
+            bool tutk = std::string(key).find("tutk") != std::string::npos;
+            for (const char *p = key; *p; ++p) {
+                if (*p == '|') {
+                    pipes++;
+                }
+            }
+            std::fprintf(stderr, "get_camera_url pipes=%d agora=%d tutk=%d\n", pipes, agora ? 1 : 0,
+                         tutk ? 1 : 0);
+            try {
+                int rc = get_cam(agent, std::string(key), [&](std::string url) {
+                    const char *scheme = "other";
+                    if (url.empty()) {
+                        scheme = "empty";
+                    } else if (url.rfind("bambu:///agora", 0) == 0) {
+                        scheme = "agora";
+                    } else if (url.rfind("bambu:///tutk", 0) == 0) {
+                        scheme = "tutk";
+                    } else if (url.rfind("bambu:///local", 0) == 0) {
+                        scheme = "local";
+                    } else if (url.find("fail") != std::string::npos || url.find('[') != std::string::npos) {
+                        scheme = "error";
+                    }
+                    int code = 0;
+                    auto lb = url.rfind('[');
+                    auto rb = url.rfind(']');
+                    if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+                        code = std::atoi(url.substr(lb + 1, rb - lb - 1).c_str());
+                    }
+                    std::fprintf(stderr,
+                                 "camera_url scheme=%s len=%zu bracket_code=%d has_channel=%d "
+                                 "has_token=%d has_uid=%d\n",
+                                 scheme, url.size(), code,
+                                 url.find("channel=") != std::string::npos ? 1 : 0,
+                                 url.find("token=") != std::string::npos ? 1 : 0,
+                                 url.find("uid=") != std::string::npos ? 1 : 0);
+                    camera_done.store(true, std::memory_order_relaxed);
+                });
+                log_rc("get_camera_url", rc);
+            } catch (...) {
+                std::fprintf(stderr, "get_camera_url threw\n");
+            }
+            for (int i = 0; i < 250 && !camera_done.load(std::memory_order_relaxed); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (!camera_done.load(std::memory_order_relaxed)) {
+                std::fprintf(stderr, "camera_url callback timeout\n");
+            }
+        }
     }
     run_pump.store(false, std::memory_order_relaxed);
     pump_thread.join();
     pump_once();
     std::fprintf(stderr, "main-queue posts=%d\n", g_posted.load());
-    if (is_login) {
-        std::fprintf(stderr, "is_user_login=%d\n", is_login(agent) ? 1 : 0);
-    }
     return 0;
 }

@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod agora;
+mod agora_ap;
 mod camera;
 mod cloud;
 mod cloud_api;
@@ -18,6 +20,7 @@ mod lan_mqtt;
 mod mqtt;
 mod oauth;
 mod pack;
+mod rtsps;
 mod signing;
 mod spools;
 mod ssdp;
@@ -30,22 +33,33 @@ use std::time::Duration;
 use bambu_device::{AmsState, DeviceError, Frame, MachineState, PrintJob, PrinterBackend};
 use thiserror::Error;
 
+pub use agora::{
+    agora_ap_hosts, agora_area_code, agora_rdt_hello, app_id_from_token, encryption_config,
+    encryption_salt, on_encoded_video_frame, on_encoded_video_image_received, parse_agora_url,
+    stream_agora_frames, AgoraJoin, ChannelMediaOptions, EncodedVideoFrameInfo, EncryptionConfig,
+    RtcConnection, RtcEngineConfig, RtcSession, AREA_CODE_AS, AREA_CODE_CN, AREA_CODE_EU,
+    AREA_CODE_GLOB, AREA_CODE_NA, CLIENT_ROLE_AUDIENCE, CLIENT_ROLE_BROADCASTER,
+    ENCRYPTION_AES_128_GCM2, VIDEO_CODEC_H264, VIDEO_FRAME_TYPE_DELTA_FRAME,
+};
 pub use camera::{
     agora_url, auth_packet, capture_chamber, describe_rtsps, jpeg_payload_len, jpeg_to_frame,
-    probe_rtsps, read_jpeg_frame, rtsps_url, snapshot_jpeg, tutk_url, ChamberCapture, JpegStream,
-    RtspsSession, LAN_CAMERA_PORT, LAN_RTSPS_PORT,
+    probe_rtsps, read_jpeg_frame, rtsps_url, snapshot_jpeg, snapshot_rtsps_frame,
+    stream_rtsps_frames, tutk_url, ChamberCapture, JpegStream, RtspsSession, LAN_CAMERA_PORT,
+    LAN_RTSPS_PORT,
 };
 pub use cloud::{
     cloud_mqtt_host, cloud_mqtt_user, load_cloud_session, load_cloud_session_default,
     save_cloud_session, store_login_tokens, CloudBackend, CloudSession,
 };
 pub use cloud_api::{
-    api_host, bind_path, cloud_http_error, http_user_id, jwt_iot_user_id, jwt_user_id, login_body,
-    md5_hex, parse_bind_devices, parse_camera_creds, parse_login, parse_profile,
-    parse_upload_ticket, profile_path, refresh_body, ticket_body, ticket_path, ttcode_after_post,
-    ttcode_get_path, ttcode_path, ttcode_post_body, ttcode_should_retry_get, upload_ticket_body,
-    CameraCreds, CameraProto, CloudApi, CloudApiError, CloudDevice, CloudProfile, LoginResult,
-    UploadTicket,
+    api_host, bind_path, camera_serial_from_bind, camera_url_key, cloud_http_error, http_user_id,
+    iot_user_id, jwt_iot_user_id, jwt_user_id, login_body, md5_hex, parse_bind_devices,
+    parse_camera_creds, parse_camera_url_key, parse_login, parse_profile, parse_upload_ticket,
+    profile_path, refresh_body, slicer_device_id, slicer_http_headers, ticket_body, ticket_path,
+    ttcode_after_post, ttcode_get_path, ttcode_path, ttcode_post_body, ttcode_should_retry_get,
+    upload_ticket_body, CameraCreds, CameraProto, CameraUrlKey, CloudApi, CloudApiError,
+    CloudDevice, CloudProfile, LoginResult, UploadTicket, SLICER_AGENT_VERSION,
+    SLICER_CLIENT_VERSION,
 };
 pub use credentials::{
     candidate_import_dirs, default_config_dir, import_from_known_locations, load_device_cert,
@@ -95,8 +109,8 @@ pub use studio_import::{
 pub use tls::{peek_peer_cn, peek_peer_leaf, TlsError};
 pub use tutk::{
     for_each_jpeg as for_each_tutk_jpeg, iotc_masters, is_avc_sample, jpeg_from_av_sample,
-    stream_ttcode_jpegs, tutk_region, AvFrameInfo, IotcPeer, TutkRegion, CODEC_H264, CODEC_HEVC,
-    CODEC_MJPEG,
+    stream_ttcode_frames, stream_ttcode_jpegs, tutk_region, AvFrameInfo, IotcPeer, TutkRegion,
+    CODEC_H264, CODEC_HEVC, CODEC_MJPEG,
 };
 
 #[derive(Debug, Error)]

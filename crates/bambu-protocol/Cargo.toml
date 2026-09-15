@@ -13,6 +13,7 @@ workspace = true
 bambu-device.workspace = true
 base64.workspace = true
 jpeg-decoder.workspace = true
+openh264.workspace = true
 rand.workspace = true
 rsa.workspace = true
 rumqttc.workspace = true
@@ -21,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hkdf = "0.12"
 thiserror.workspace = true
 tokio.workspace = true
