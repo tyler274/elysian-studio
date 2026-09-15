@@ -34,7 +34,8 @@ Vulkan compute when an adapter is present and fall back to CPU otherwise
 
 ## Build
 
-Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`). Check out the
+Requires current **stable** Rust (`rust-toolchain.toml` tracks `stable`) and **Git LFS**
+(`git lfs install` before clone or pull; test `.3mf` fixtures are LFS objects). Check out the
 mimalloc rewrite and Wild linker as siblings (`../mimalloc`, `../wild`) and build Wild
 once (`cargo build --release -p wild-linker` in `../wild`). `cargo` links with Wild via
 `.cargo/config.toml`; `bambu-cli` / `bambu-ui` allocate with `mimalloc-core`.

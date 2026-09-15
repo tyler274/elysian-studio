@@ -206,6 +206,7 @@
             packages = [
               rust
               pkgs.cargo-deny
+              pkgs.git-lfs
               pkgs.pkg-config
               pkgs.wild
             ]
