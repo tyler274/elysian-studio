@@ -1,6 +1,7 @@
 //! Core 3MF `3dmodel.model` XML → [`ParsedModel`].
 
 use std::collections::BTreeMap;
+use std::io::BufRead;
 
 use bambu_model::{Model, TrianglePaint};
 use glam::{Mat4, Vec3};
@@ -9,7 +10,8 @@ use quick_xml::Reader;
 
 use super::flatten::flatten_files;
 use super::xml::{
-    attr, attr_f32, attr_path, attr_u32, normalize_model_path, parse_transform, unit_factor,
+    attr, attr_f32, attr_path, attr_raw, attr_u32, normalize_model_path, parse_transform,
+    unit_factor,
 };
 use super::zip::MODEL_PATH;
 use crate::IoError;
@@ -35,20 +37,27 @@ pub(super) struct ParsedModel {
     pub current_id: Option<u32>,
 }
 
-pub(super) fn model_from_package(
-    main_xml: &str,
-    extras: &[(String, String)],
+pub(super) fn model_from_parsed(
+    root: ParsedModel,
+    extras: Vec<(String, ParsedModel)>,
 ) -> Result<Model, IoError> {
     let mut files = BTreeMap::new();
-    files.insert(MODEL_PATH.to_string(), parse_xml(main_xml)?);
-    for (path, xml) in extras {
-        files.insert(normalize_model_path(path), parse_xml(xml)?);
+    files.insert(MODEL_PATH.to_string(), root);
+    for (path, parsed) in extras {
+        files.insert(normalize_model_path(&path), parsed);
     }
     flatten_files(&files, MODEL_PATH)
 }
 
-fn parse_xml(xml: &str) -> Result<ParsedModel, IoError> {
-    let mut reader = Reader::from_str(xml);
+pub(super) fn parse_xml_bytes(bytes: &[u8]) -> Result<ParsedModel, IoError> {
+    parse_reader(Reader::from_reader(std::io::Cursor::new(bytes)))
+}
+
+pub(super) fn parse_xml_reader<R: BufRead>(reader: R) -> Result<ParsedModel, IoError> {
+    parse_reader(Reader::from_reader(reader))
+}
+
+fn parse_reader<R: BufRead>(mut reader: Reader<R>) -> Result<ParsedModel, IoError> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut parsed = ParsedModel {
@@ -107,17 +116,19 @@ fn parse_xml(xml: &str) -> Result<ParsedModel, IoError> {
                             IoError::Message("3MF triangle object missing".into())
                         })?;
                         rec.triangles.push(tri);
-                        rec.triangle_support.push(TrianglePaint::from_hex(
-                            attr(&e, b"paint_supports").as_deref().unwrap_or(""),
-                        ));
-                        rec.triangle_seam.push(TrianglePaint::from_hex(
-                            attr(&e, b"paint_seam").as_deref().unwrap_or(""),
-                        ));
-                        rec.triangle_fuzzy_skin.push(TrianglePaint::from_hex(
-                            attr(&e, b"paint_fuzzy_skin").as_deref().unwrap_or(""),
-                        ));
-                        rec.triangle_color
-                            .push(attr(&e, b"paint_color").unwrap_or_default());
+                        let i = rec.triangles.len() - 1;
+                        set_paint(
+                            &mut rec.triangle_support,
+                            i,
+                            attr_paint(&e, b"paint_supports"),
+                        );
+                        set_paint(&mut rec.triangle_seam, i, attr_paint(&e, b"paint_seam"));
+                        set_paint(
+                            &mut rec.triangle_fuzzy_skin,
+                            i,
+                            attr_paint(&e, b"paint_fuzzy_skin"),
+                        );
+                        set_color(&mut rec.triangle_color, i, attr_color(&e, b"paint_color"));
                     }
                     b"component" => {
                         let id = parsed.current_id.ok_or_else(|| {
@@ -161,4 +172,38 @@ fn parse_xml(xml: &str) -> Result<ParsedModel, IoError> {
     }
 
     Ok(parsed)
+}
+
+fn attr_paint(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> TrianglePaint {
+    attr_raw(e, key)
+        .and_then(|v| {
+            std::str::from_utf8(v.as_ref())
+                .ok()
+                .map(TrianglePaint::from_hex)
+        })
+        .unwrap_or(TrianglePaint::None)
+}
+
+fn attr_color(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> String {
+    attr(e, key).unwrap_or_default()
+}
+
+fn set_paint(vec: &mut Vec<TrianglePaint>, index: usize, paint: TrianglePaint) {
+    if paint == TrianglePaint::None && vec.is_empty() {
+        return;
+    }
+    if vec.len() <= index {
+        vec.resize(index + 1, TrianglePaint::None);
+    }
+    vec[index] = paint;
+}
+
+fn set_color(vec: &mut Vec<String>, index: usize, color: String) {
+    if color.is_empty() && vec.is_empty() {
+        return;
+    }
+    if vec.len() <= index {
+        vec.resize(index + 1, String::new());
+    }
+    vec[index] = color;
 }

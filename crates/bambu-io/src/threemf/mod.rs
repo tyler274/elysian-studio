@@ -17,40 +17,39 @@ mod zip;
 #[cfg(test)]
 mod tests;
 
+use std::io::Cursor;
 use std::path::Path;
+use std::time::Instant;
 
 use bambu_geom::TriangleMesh;
 use bambu_model::Model;
 
 use crate::IoError;
 
-use self::parse::model_from_package;
 use self::write::model_xml_from_model;
-use self::zip::{read_package, write_package};
 
 #[cfg(test)]
 pub(crate) use xml::CORE_NS;
 #[cfg(test)]
 pub(crate) use zip::{MODEL_PATH, MODEL_SETTINGS_PATH, PROJECT_SETTINGS_PATH};
 
+pub use zip::{read_3mf_thumbnail, read_3mf_thumbnail_bytes, LoadTimings};
+
 pub fn load_3mf(path: impl AsRef<Path>) -> Result<Model, IoError> {
-    let bytes = std::fs::read(path.as_ref())?;
-    load_3mf_bytes(&bytes)
+    load_3mf_timed(path).map(|(model, _)| model)
+}
+
+/// Timed 3MF open used by `bambu-cli open-timing`. Opens the zip from a file
+/// handle (no extra full-file copy).
+pub fn load_3mf_timed(path: impl AsRef<Path>) -> Result<(Model, LoadTimings), IoError> {
+    let t = Instant::now();
+    let file = std::fs::File::open(path.as_ref())?;
+    let open_ms = t.elapsed().as_millis();
+    zip::load_package_seek(file, open_ms)
 }
 
 pub fn load_3mf_bytes(bytes: &[u8]) -> Result<Model, IoError> {
-    let pack = read_package(bytes)?;
-    let mut model = model_from_package(&pack.model_xml, &pack.extra_models)?;
-    if let Some(settings_xml) = pack.settings_xml {
-        crate::bbs::apply(&mut model, &settings_xml)?;
-    }
-    if let Some(project_json) = pack.project_json {
-        model.settings = Some(
-            bambu_config::settings_from_json(&project_json)
-                .map_err(|err| IoError::Message(err.to_string()))?,
-        );
-    }
-    Ok(model)
+    zip::load_package_seek(Cursor::new(bytes), 0).map(|(model, _)| model)
 }
 
 /// Pack a single mesh as a Bambu 3MF (geometry + one plate).
@@ -65,6 +64,13 @@ pub fn write_3mf(path: impl AsRef<Path>, name: &str, mesh: &TriangleMesh) -> Res
 
 /// Pack a [`Model`] with `Metadata/model_settings.config` so plates round-trip.
 pub fn write_model_3mf_bytes(model: &Model) -> Result<Vec<u8>, IoError> {
+    write_model_3mf_bytes_with_thumbnail(model, None)
+}
+
+pub fn write_model_3mf_bytes_with_thumbnail(
+    model: &Model,
+    thumbnail_png: Option<&[u8]>,
+) -> Result<Vec<u8>, IoError> {
     let exported = model_xml_from_model(model)?;
     let settings = crate::bbs::write(model, &exported.object_ids, &exported.volume_ids);
     let project = if let Some(slice) = &model.settings {
@@ -75,7 +81,7 @@ pub fn write_model_3mf_bytes(model: &Model) -> Result<Vec<u8>, IoError> {
     } else {
         None
     };
-    write_package(&exported.xml, &settings, project.as_deref())
+    zip::write_package_with_thumbnail(&exported.xml, &settings, project.as_deref(), thumbnail_png)
 }
 
 pub fn write_model_3mf(path: impl AsRef<Path>, model: &Model) -> Result<(), IoError> {

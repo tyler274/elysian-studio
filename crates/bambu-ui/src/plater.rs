@@ -90,6 +90,10 @@ impl crate::App {
             chip("Rotate", PlaterTool::Rotate),
             chip("Scale", PlaterTool::Scale),
             chip("Lay on face", PlaterTool::LayOnFace),
+            checkbox(self.show_axes)
+                .label("Axes")
+                .on_toggle(Message::ShowAxes)
+                .style(theme::tick),
             quiet("Arrange", Message::Arrange),
             quiet("Orient", Message::AutoOrient),
             quiet("Mirror X", Message::Mirror(0)),
@@ -253,7 +257,10 @@ impl crate::App {
             ViewportEvent::Orbit { dx, dy } => self.scene.camera.orbit(dx, dy),
             ViewportEvent::Pan { world_x, world_y } => self.scene.camera.pan_xy(world_x, world_y),
             ViewportEvent::PanScreen { dx, dy } => self.scene.camera.pan_screen(dx, dy),
-            ViewportEvent::Zoom(delta) => self.scene.camera.zoom(delta),
+            ViewportEvent::Zoom(delta) => {
+                self.scene.camera.zoom(delta);
+                self.sync_gizmo();
+            }
             ViewportEvent::Click {
                 ndc_x,
                 ndc_y,
@@ -280,6 +287,7 @@ impl crate::App {
                     let (origin, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
                     gizmo.pick_axis(origin, dir)
                 });
+                self.sync_gizmo();
             }
             ViewportEvent::Drag {
                 ndc_x,
@@ -290,6 +298,21 @@ impl crate::App {
                 self.drag_last_ndc = None;
                 self.drag_last_bed = None;
                 self.drag_axis = None;
+                self.sync_gizmo();
+            }
+            ViewportEvent::CursorMoved {
+                ndc_x,
+                ndc_y,
+                aspect,
+                viewport_h,
+            } => {
+                self.scene.viewport_height = viewport_h.max(1.0);
+                self.gizmo_hover = self.cursor_near_selection(ndc_x, ndc_y, aspect);
+                self.sync_gizmo();
+            }
+            ViewportEvent::CursorLeft => {
+                self.gizmo_hover = false;
+                self.sync_gizmo();
             }
         }
     }

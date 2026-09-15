@@ -332,6 +332,30 @@ fn gui_chrome_device_home_filament_goldens() {
 }
 
 #[test]
+fn gui_chrome_paint_overlay_and_recents_goldens() {
+    let mut app = App::new_for_gui_test();
+    app.seed_support_paint_cube();
+    assert_eq!(app.paint_overlay_count(), 0);
+    drive(&mut app, [Message::PaintSupport]);
+    assert!(app.paint_overlay_count() >= 2);
+    let (snap, png) = capture(&app, "prepare_paint_support");
+    assert_json("prepare_paint_support", &snap);
+    let _ = maybe_png("prepare_paint_support", &png);
+
+    let dir = std::env::temp_dir().join("bambu-ui-recent-golden");
+    fs::create_dir_all(&dir).expect("temp recents dir");
+    let path = dir.join("preview_cube.3mf");
+    App::write_recent_preview_3mf(&path).expect("preview 3mf");
+    let mut app = App::new_for_gui_test();
+    app.seed_home_recents(path);
+    drive(&mut app, [Message::Workspace(Workspace::Home)]);
+    let (snap, png) = capture(&app, "home_recents");
+    assert_json("home_recents", &snap);
+    let _ = maybe_png("home_recents", &png);
+    assert_eq!(snap.workspace, "home");
+}
+
+#[test]
 fn file_menu_overlays_without_stretching_header() {
     let mut app = App::new_for_gui_test();
     let Some(closed) = app.screenshot_rgba() else {

@@ -829,3 +829,39 @@ fn object_process_keys_apply_to_volumes() {
         Some("0")
     );
 }
+
+/// 1×1 RGB PNG used as a 3MF plate thumbnail.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[test]
+fn thumbnail_from_plate_png_without_geometry() {
+    let model = Model::from_mesh("cube", TriangleMesh::cube(20.0));
+    let bytes = super::write_model_3mf_bytes_with_thumbnail(&model, Some(TINY_PNG)).unwrap();
+    let thumb = super::read_3mf_thumbnail_bytes(&bytes)
+        .unwrap()
+        .expect("plate_1.png");
+    assert_eq!(thumb, TINY_PNG);
+    let loaded = load_3mf_bytes(&bytes).unwrap();
+    assert_eq!(loaded.objects[0].volumes[0].mesh.indices.len(), 12);
+}
+
+#[test]
+fn support_paint_blocker_roundtrip_stays_blocker() {
+    let mut xml = cube_xml("millimeter", "");
+    xml = xml.replacen(
+        r#"<triangle v1="0" v2="1" v3="2"/>"#,
+        r#"<triangle v1="0" v2="1" v3="2" paint_supports="8"/>"#,
+        1,
+    );
+    let model = load_3mf_bytes(&pack_xml(&xml)).unwrap();
+    assert_eq!(
+        model.objects[0].volumes[0].triangle_support[0],
+        TrianglePaint::Blocker
+    );
+}

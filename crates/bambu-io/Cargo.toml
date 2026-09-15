@@ -15,6 +15,7 @@ bambu-config.workspace = true
 glam.workspace = true
 bambu-model.workspace = true
 quick-xml.workspace = true
+rayon.workspace = true
 stl_io.workspace = true
 thiserror.workspace = true
 zip.workspace = true

@@ -2,9 +2,9 @@
 //! Calibration / Filament Manager · Slice plate / Print plate.
 
 use iced::widget::{
-    button, column, container, row, shader, slider, stack, text, vertical_slider, Space,
+    button, column, container, image, row, shader, slider, stack, text, vertical_slider, Space,
 };
-use iced::{Alignment, Element, Fill, Padding};
+use iced::{Alignment, ContentFit, Element, Fill, Padding};
 
 use crate::theme;
 use crate::{Message, ProcessTab, Workspace};
@@ -252,8 +252,22 @@ impl crate::App {
                     .and_then(|n| n.to_str())
                     .unwrap_or("model")
                     .to_string();
+                let body: Element<'_, Message> = if let Some(handle) = self.recent_thumb(path) {
+                    row![
+                        image(handle)
+                            .width(72)
+                            .height(72)
+                            .content_fit(ContentFit::Contain),
+                        text(label).size(theme::BODY_SIZE),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .into()
+                } else {
+                    text(label).size(theme::BODY_SIZE).into()
+                };
                 recents = recents.push(
-                    button(text(label).size(theme::BODY_SIZE))
+                    button(body)
                         .padding([4, 10])
                         .style(|_, status| theme::quiet(status))
                         .on_press(Message::OpenRecent(path.clone())),

@@ -6,6 +6,8 @@ use bambu_geom::TriangleMesh;
 use bambu_model::{Instance, Model, ModelObject, ModelVolume, PartPlate, TrianglePaint};
 use glam::Mat4;
 
+use rayon::prelude::*;
+
 use super::parse::{ObjectRec, ParsedModel};
 use super::xml::normalize_model_path;
 use crate::IoError;
@@ -118,11 +120,20 @@ fn flatten_object(
     }
     let obj = object_rec(files, file, id)?;
     if !obj.triangles.is_empty() {
-        let vertices = obj
-            .vertices
-            .iter()
-            .map(|p| xf.transform_point3(*p))
-            .collect();
+        let identity = xf.abs_diff_eq(Mat4::IDENTITY, 1e-6);
+        let vertices = if identity {
+            obj.vertices.clone()
+        } else if obj.vertices.len() > 4096 {
+            obj.vertices
+                .par_iter()
+                .map(|p| xf.transform_point3(*p))
+                .collect()
+        } else {
+            obj.vertices
+                .iter()
+                .map(|p| xf.transform_point3(*p))
+                .collect()
+        };
         out.push(LeafMesh {
             part_id: id,
             name: obj.name.clone(),
@@ -130,10 +141,10 @@ fn flatten_object(
                 vertices,
                 indices: obj.triangles.clone(),
             },
-            triangle_support: obj.triangle_support.clone(),
-            triangle_seam: obj.triangle_seam.clone(),
-            triangle_fuzzy_skin: obj.triangle_fuzzy_skin.clone(),
-            triangle_color: obj.triangle_color.clone(),
+            triangle_support: clone_paint(&obj.triangle_support),
+            triangle_seam: clone_paint(&obj.triangle_seam),
+            triangle_fuzzy_skin: clone_paint(&obj.triangle_fuzzy_skin),
+            triangle_color: clone_colors(&obj.triangle_color),
         });
     }
     let components = obj.components.clone();
@@ -153,4 +164,20 @@ fn flatten_object(
         flatten_object(files, &next_file, child, xf * child_xf, depth + 1, out)?;
     }
     Ok(())
+}
+
+fn clone_paint(src: &[TrianglePaint]) -> Vec<TrianglePaint> {
+    if src.iter().any(|p| *p != TrianglePaint::None) {
+        src.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+fn clone_colors(src: &[String]) -> Vec<String> {
+    if src.iter().any(|s| !s.is_empty()) {
+        src.to_vec()
+    } else {
+        Vec::new()
+    }
 }

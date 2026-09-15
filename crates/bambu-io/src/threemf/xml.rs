@@ -1,5 +1,7 @@
 //! Shared 3MF XML helpers (attributes, units, 4×3 transforms).
 
+use std::borrow::Cow;
+
 use glam::{Mat4, Vec4};
 
 pub(crate) const CORE_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
@@ -33,11 +35,15 @@ pub(super) fn unit_factor(unit: &str) -> f32 {
     }
 }
 
+pub(super) fn attr_raw<'a>(
+    e: &'a quick_xml::events::BytesStart<'a>,
+    key: &[u8],
+) -> Option<Cow<'a, [u8]>> {
+    e.try_get_attribute(key).ok().flatten().map(|a| a.value)
+}
+
 pub(super) fn attr<'a>(e: &'a quick_xml::events::BytesStart<'a>, key: &[u8]) -> Option<String> {
-    e.try_get_attribute(key)
-        .ok()
-        .flatten()
-        .and_then(|a| String::from_utf8(a.value.into_owned()).ok())
+    attr_raw(e, key).and_then(|v| String::from_utf8(v.into_owned()).ok())
 }
 
 /// Match `p:path` or an unprefixed `path` on production-extension components.
@@ -60,11 +66,15 @@ pub(super) fn normalize_model_path(path: &str) -> String {
 }
 
 pub(super) fn attr_f32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> f32 {
-    attr(e, key).and_then(|s| s.parse().ok()).unwrap_or(0.0)
+    attr_raw(e, key)
+        .and_then(|v| std::str::from_utf8(v.as_ref()).ok()?.parse().ok())
+        .unwrap_or(0.0)
 }
 
 pub(super) fn attr_u32(e: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> u32 {
-    attr(e, key).and_then(|s| s.parse().ok()).unwrap_or(0)
+    attr_raw(e, key)
+        .and_then(|v| std::str::from_utf8(v.as_ref()).ok()?.parse().ok())
+        .unwrap_or(0)
 }
 
 pub(super) fn xml_escape(s: &str) -> String {

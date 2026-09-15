@@ -11,9 +11,9 @@ use bambu_config::{
 use bambu_device::{PrintJob, PrinterBackend};
 use bambu_gcode::write_gcode;
 use bambu_gpu::{
-    slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,
+    clusterize, slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,
 };
-use bambu_io::load_model;
+use bambu_io::{load_3mf_timed, load_model};
 use bambu_protocol::{
     default_config_dir, describe_hms, import_studio, install_app_cert, load_cached_catalog,
     load_cloud_session, load_from_dir, refresh_catalog, save_cloud_session, send_gcode_line,
@@ -163,6 +163,11 @@ enum Commands {
         /// 1-based plate for multi-plate Bambu 3MF (default 1).
         #[arg(long, default_value_t = 1)]
         plate: u32,
+    },
+    /// Time 3MF open (read / inflate / parse / flatten). Skips if the file is missing.
+    OpenTiming {
+        /// Path to a 3MF (default: tests/belle/belle_zzz.3mf).
+        input: Option<PathBuf>,
     },
     /// Option B slicer credentials (extract / import / status).
     Keys {
@@ -652,6 +657,34 @@ fn run() -> Result<(), CliError> {
             std::fs::write(&output, gcode)?;
             tracing::info!("wrote {}", output.display());
         }
+        Commands::OpenTiming { input } => {
+            let path = input.unwrap_or_else(default_open_timing_path);
+            if !path.is_file() {
+                println!("skip: {} is missing (CI-safe)", path.display());
+                return Ok(());
+            }
+            let (model, t) = load_3mf_timed(&path)?;
+            let t_mesh = std::time::Instant::now();
+            let mut meshlets = 0usize;
+            for obj in &model.objects {
+                for vol in &obj.volumes {
+                    meshlets += clusterize(&vol.mesh).len();
+                }
+            }
+            let meshlet_ms = t_mesh.elapsed().as_millis();
+            println!("file          {}", path.display());
+            println!("open          {} ms", t.open_ms);
+            println!(
+                "inflate       {} ms ({} extra .model)",
+                t.inflate_ms, t.extra_models
+            );
+            println!("parse         {} ms", t.parse_ms);
+            println!("flatten       {} ms", t.flatten_ms);
+            println!("settings      {} ms", t.settings_ms);
+            println!("meshlets      {meshlet_ms} ms ({meshlets} clusters)");
+            println!("triangles     {}", t.triangles);
+            println!("total load    {} ms", t.total_ms());
+        }
         Commands::Keys { command } => match command {
             KeysCommand::Extract {
                 plugin,
@@ -1107,6 +1140,20 @@ fn run() -> Result<(), CliError> {
         },
     }
     Ok(())
+}
+
+fn default_open_timing_path() -> PathBuf {
+    let rel = PathBuf::from("tests/belle/belle_zzz.3mf");
+    let mut candidates = vec![rel.clone()];
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(&rel));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(&rel),
+    );
+    candidates.into_iter().find(|p| p.is_file()).unwrap_or(rel)
 }
 
 pub fn slice_file(

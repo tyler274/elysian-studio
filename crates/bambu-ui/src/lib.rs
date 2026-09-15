@@ -17,8 +17,10 @@ pub use snapshot::{
 };
 
 use bambu_alloc as _;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 use bambu_config::{
     apply_sku_with_generic_base, clone_filament_as_user, delete_user_filament, list_bbl_profiles,
@@ -31,11 +33,14 @@ use bambu_config::{
 use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
-    force_vulkan_env, paint_overlay_color, probe_vulkan, slice_volumes_with_gpu_or_cpu,
-    slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole, PlaterTool, ToolpathBuffer,
-    ViewportEvent, ViewportScene,
+    clusterize, force_vulkan_env, paint_overlay_color, probe_vulkan, screen_axis_len,
+    slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole,
+    Meshlet, PlaterTool, ToolpathBuffer, ViewportEvent, ViewportScene,
 };
-use bambu_io::{load_mesh, load_model, write_model_3mf};
+use bambu_io::{
+    load_mesh, load_model, read_3mf_thumbnail, write_model_3mf,
+    write_model_3mf_bytes_with_thumbnail,
+};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
     camera_serial_from_bind, describe_hms, load_cached_catalog, load_cloud_session, load_inventory,
@@ -181,6 +186,9 @@ pub struct App {
     paint_kind: Option<PaintKind>,
     paint_blocker: bool,
     brush_mm: f32,
+    show_axes: bool,
+    gizmo_hover: bool,
+    meshlet_gen: u64,
     mqtt_status: String,
     process_profiles: Vec<BblProfileEntry>,
     filament_profiles: Vec<BblProfileEntry>,
@@ -256,6 +264,7 @@ pub struct App {
     slice_all: bool,
     print_export: bool,
     recent_models: Vec<PathBuf>,
+    recent_thumbs: HashMap<(PathBuf, u64), iced::widget::image::Handle>,
     project_file: Option<PathBuf>,
     dry_ams: Option<u8>,
     dry_temp: String,
@@ -324,6 +333,11 @@ pub enum Message {
     PaintClear,
     PaintBlocker(bool),
     BrushRadius(f32),
+    ShowAxes(bool),
+    MeshletsReady {
+        gen: u64,
+        meshlets: Vec<Vec<Meshlet>>,
+    },
     PreviewMove(u32),
     EnableSupport(bool),
     RefreshStatus,
@@ -355,8 +369,13 @@ pub enum Message {
     SendBed,
     SendNozzle,
     SendFan,
-    AmsLoad { ams_id: u8, slot_id: u8 },
-    AmsUnload { ams_id: u8 },
+    AmsLoad {
+        ams_id: u8,
+        slot_id: u8,
+    },
+    AmsUnload {
+        ams_id: u8,
+    },
     AmsDryToggle(u8),
     AmsDryTemp(String),
     AmsDryHours(String),
@@ -378,8 +397,14 @@ pub enum Message {
     AddFilamentSlot,
     RemoveFilamentSlot,
     SelectFilamentSlot(usize),
-    FilamentSlotPreset { slot: usize, label: String },
-    FilamentSlotColour { slot: usize, colour: String },
+    FilamentSlotPreset {
+        slot: usize,
+        label: String,
+    },
+    FilamentSlotColour {
+        slot: usize,
+        colour: String,
+    },
     CycleFilamentColour(usize),
     UserPresetName(String),
     SaveUserPreset,
@@ -395,7 +420,10 @@ pub enum Message {
     SyncAms,
     FilamentPage(FilamentPage),
     FilamentMapMode(FilamentMapMode),
-    AssignSlotExtruder { slot: usize, extruder: i32 },
+    AssignSlotExtruder {
+        slot: usize,
+        extruder: i32,
+    },
     ParamSoluble(bool),
     ParamSupport(bool),
     ParamPaEnable(bool),
@@ -453,7 +481,10 @@ pub enum Message {
     Rotate90,
     CoordSpace(CoordSpace),
     UniformScale(bool),
-    XformDraft { field: XformField, text: String },
+    XformDraft {
+        field: XformField,
+        text: String,
+    },
     XformCommit(XformField),
     DropToBed,
     ResetRotation,
@@ -602,6 +633,7 @@ struct LoadedModel {
     path: PathBuf,
     model: Model,
     apply_settings: bool,
+    load_ms: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -688,6 +720,9 @@ impl App {
             paint_kind: None,
             paint_blocker: false,
             brush_mm: 2.0,
+            show_axes: true,
+            gizmo_hover: false,
+            meshlet_gen: 0,
             mqtt_status: String::new(),
             process_profiles: list_bbl_profiles(BblProfileKind::Process),
             filament_profiles: list_instantiated_bbl_profiles(BblProfileKind::Filament),
@@ -763,6 +798,7 @@ impl App {
             slice_all: false,
             print_export: false,
             recent_models: Vec::new(),
+            recent_thumbs: HashMap::new(),
             project_file: None,
             dry_ams: None,
             dry_temp: "55".into(),
@@ -784,6 +820,8 @@ impl App {
         }
         app.init_filament_slots();
         app.sync_keep_solid();
+        app.scene.viewport_height = WINDOW_SIZE.height;
+        app.load_ui_prefs();
         app.sync_gizmo();
         app.fill_xform_edits();
         app.load_account_from_disk();
@@ -818,8 +856,52 @@ impl App {
         app.file_menu_open = false;
         app.dry_ams = None;
         app.rack_pending = None;
+        app.show_axes = true;
+        app.gizmo_hover = false;
+        app.sync_gizmo();
         app.sync_filament_map();
         app
+    }
+
+    pub fn paint_overlay_count(&self) -> usize {
+        self.scene.paint_overlay.len()
+    }
+
+    pub fn gizmo_visible(&self) -> bool {
+        self.scene.gizmo.is_some()
+    }
+
+    pub fn show_axes(&self) -> bool {
+        self.show_axes
+    }
+
+    /// Cube with support-paint blockers for overlay goldens / unit tests.
+    pub fn seed_support_paint_cube(&mut self) {
+        let mut model = Model::from_mesh("paint", bambu_geom::TriangleMesh::cube(20.0));
+        model.place_on_bed_if_needed(&self.scene.bed);
+        if let Some(vol) = model.objects.get_mut(0).and_then(|o| o.volumes.get_mut(0)) {
+            let n = vol.mesh.indices.len();
+            vol.triangle_support = vec![TrianglePaint::None; n];
+            vol.triangle_support[0] = TrianglePaint::Blocker;
+            vol.triangle_support[1] = TrianglePaint::Blocker;
+        }
+        self.model = Some(model);
+        self.selected_object = 0;
+        self.paint_kind = None;
+        self.sync_scene_mesh();
+    }
+
+    pub fn seed_home_recents(&mut self, path: PathBuf) {
+        self.recent_models = vec![path];
+        self.refresh_recent_thumbs();
+    }
+
+    /// Tiny 3MF with `Metadata/plate_1.png` for Home recents goldens.
+    pub fn write_recent_preview_3mf(path: &std::path::Path) -> Result<(), String> {
+        let model = Model::from_mesh("preview_cube", bambu_geom::TriangleMesh::cube(20.0));
+        let bytes = write_model_3mf_bytes_with_thumbnail(&model, Some(TINY_PNG))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(path, bytes).map_err(|e| e.to_string())
     }
 
     /// Deterministic Device StatusPanel for headless goldens (no live MQTT).
@@ -1149,7 +1231,7 @@ impl App {
             Message::ModelLoaded(result) => {
                 self.busy = false;
                 match result {
-                    Ok(loaded) => self.apply_loaded_model(*loaded),
+                    Ok(loaded) => return self.apply_loaded_model(*loaded),
                     Err(err) => self.status = format!("open failed: {err}"),
                 }
             }
@@ -1632,26 +1714,40 @@ impl App {
                 self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint support".into();
+                self.refresh_paint_overlay();
             }
             Message::PaintSeam => {
                 self.paint_kind = Some(PaintKind::Seam);
                 self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint seam".into();
+                self.refresh_paint_overlay();
             }
             Message::PaintFuzzy => {
                 self.paint_kind = Some(PaintKind::Fuzzy);
                 self.scene.tool = PlaterTool::Orbit;
                 self.scene.keep_solid = true;
                 self.status = "click a triangle to paint fuzzy".into();
+                self.refresh_paint_overlay();
             }
             Message::PaintClear => {
                 self.paint_kind = None;
                 self.scene.keep_solid = false;
                 self.status = "paint mode off".into();
+                self.refresh_paint_overlay();
             }
             Message::PaintBlocker(v) => self.paint_blocker = v,
             Message::BrushRadius(v) => self.brush_mm = v.clamp(0.5, 12.0),
+            Message::ShowAxes(v) => {
+                self.show_axes = v;
+                self.save_ui_prefs();
+                self.sync_gizmo();
+            }
+            Message::MeshletsReady { gen, meshlets } => {
+                if gen == self.meshlet_gen {
+                    self.scene.apply_meshlets(meshlets);
+                }
+            }
             Message::PreviewMove(i) => {
                 self.scene.preview_vertices = i;
                 self.scene.preview_layer =
@@ -2058,7 +2154,11 @@ impl App {
             Message::SpoolMeasureGross(s) => self.draft_measure = s,
             Message::ApplySpoolUse => self.apply_spool_use(),
             Message::ApplySpoolMeasure => self.apply_spool_measure(),
-            Message::PlaterTool(tool) => self.apply_plater_tool(tool),
+            Message::PlaterTool(tool) => {
+                self.apply_plater_tool(tool);
+                self.refresh_paint_overlay();
+                self.sync_gizmo();
+            }
             Message::Arrange => self.arrange_plate(),
             Message::AutoOrient => self.auto_orient_selected(),
             Message::Mirror(axis) => self.mirror_selected(axis),
@@ -2334,7 +2434,7 @@ impl App {
             return;
         };
         let (origin, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
-        let Some(hit) = self.scene.mesh.pick_triangle(origin, dir) else {
+        let Some(hit) = self.scene.pick_triangle(origin, dir) else {
             self.status = "no triangle under cursor".into();
             return;
         };
@@ -2345,7 +2445,7 @@ impl App {
         let [a, b, c] = self.scene.mesh.triangle(idx);
         let centroid = (a + b + c) / 3.0;
         let tris = if self.brush_mm > 0.51 {
-            let mut near = self.scene.mesh.triangles_near(centroid, self.brush_mm);
+            let mut near = self.scene.triangles_near(centroid, self.brush_mm);
             if !near.contains(&hit) {
                 near.push(hit);
             }
@@ -2557,6 +2657,7 @@ impl App {
         self.recent_models.insert(0, path);
         self.recent_models.truncate(8);
         self.save_recents();
+        self.refresh_recent_thumbs();
     }
 
     fn recents_path() -> PathBuf {
@@ -2569,6 +2670,59 @@ impl App {
         };
         if let Ok(paths) = serde_json::from_slice::<Vec<PathBuf>>(&bytes) {
             self.recent_models = paths.into_iter().filter(|p| p.exists()).take(8).collect();
+        }
+        self.refresh_recent_thumbs();
+    }
+
+    fn refresh_recent_thumbs(&mut self) {
+        let mut keep = HashMap::new();
+        for path in &self.recent_models {
+            let mtime = file_mtime(path);
+            let key = (path.clone(), mtime);
+            if let Some(handle) = self.recent_thumbs.remove(&key) {
+                keep.insert(key, handle);
+                continue;
+            }
+            if !is_project_3mf(path) {
+                continue;
+            }
+            if let Ok(Some(png)) = read_3mf_thumbnail(path) {
+                if let Some(handle) = png_to_handle(&png) {
+                    keep.insert(key, handle);
+                }
+            }
+        }
+        self.recent_thumbs = keep;
+    }
+
+    fn recent_thumb(&self, path: &PathBuf) -> Option<iced::widget::image::Handle> {
+        let mtime = file_mtime(path);
+        self.recent_thumbs.get(&(path.clone(), mtime)).cloned()
+    }
+
+    fn ui_prefs_path() -> PathBuf {
+        bambu_protocol::default_config_dir().join("ui_prefs.json")
+    }
+
+    fn load_ui_prefs(&mut self) {
+        let Ok(bytes) = std::fs::read(Self::ui_prefs_path()) else {
+            return;
+        };
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if let Some(show) = v.get("show_axes").and_then(|x| x.as_bool()) {
+                self.show_axes = show;
+            }
+        }
+    }
+
+    fn save_ui_prefs(&self) {
+        let path = Self::ui_prefs_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let json = serde_json::json!({ "show_axes": self.show_axes });
+        if let Ok(bytes) = serde_json::to_vec_pretty(&json) {
+            let _ = std::fs::write(path, bytes);
         }
     }
 
@@ -2640,7 +2794,7 @@ impl App {
         )
     }
 
-    fn apply_loaded_model(&mut self, mut loaded: LoadedModel) {
+    fn apply_loaded_model(&mut self, mut loaded: LoadedModel) -> Task<Message> {
         self.remember_recent(loaded.path.clone());
         if self.workspace == Workspace::Home {
             self.workspace = Workspace::Prepare;
@@ -2665,9 +2819,10 @@ impl App {
         self.selected_object = 0;
         self.selected_volume = 0;
         self.sync_scene_mesh();
+        let secs = loaded.load_ms as f64 / 1000.0;
         self.status = if loaded.apply_settings {
             format!(
-                "loaded {} ({} triangles, {} plates)",
+                "loaded {} in {secs:.2}s ({} triangles, {} plates)",
                 loaded.label,
                 tris,
                 self.model
@@ -2682,6 +2837,19 @@ impl App {
             )
         };
         self.sync_keep_solid();
+        self.meshlet_gen = self.meshlet_gen.wrapping_add(1);
+        let gen = self.meshlet_gen;
+        let meshes: Vec<bambu_geom::TriangleMesh> =
+            self.scene.solids.iter().map(|s| s.mesh.clone()).collect();
+        offload(
+            move || {
+                meshes
+                    .iter()
+                    .map(|mesh| clusterize(mesh))
+                    .collect::<Vec<Vec<Meshlet>>>()
+            },
+            move |meshlets| Message::MeshletsReady { gen, meshlets },
+        )
     }
 
     fn rewrite_filament_dir() -> PathBuf {
@@ -3303,21 +3471,70 @@ impl App {
     }
 
     fn sync_gizmo(&mut self) {
-        self.scene.gizmo = self.model.as_ref().and_then(|model| {
-            let obj = model.objects.get(self.selected_object)?;
-            let mesh = obj.printable_mesh();
-            let inst = obj.instances.first().copied().unwrap_or_default();
-            let aabb = inst.apply_to_mesh(&mesh).aabb()?;
-            Some(AxisGizmo {
-                origin: (aabb.min + aabb.max) * 0.5,
-                half: (aabb.max - aabb.min) * 0.5,
+        if !self.show_axes {
+            self.scene.gizmo = None;
+            return;
+        }
+        let dragging = self.drag_axis.is_some();
+        let show = self.scene.tool.needs_gizmo() || dragging || self.gizmo_hover;
+        self.scene.gizmo = if show {
+            self.selected_aabb().map(|(origin, half)| AxisGizmo {
+                origin,
+                half,
+                axis_len: screen_axis_len(self.scene.camera.distance, self.scene.viewport_height),
             })
-        });
+        } else {
+            None
+        };
+    }
+
+    fn selected_aabb(&self) -> Option<(glam::Vec3, glam::Vec3)> {
+        let model = self.model.as_ref()?;
+        let obj = model.objects.get(self.selected_object)?;
+        let mesh = obj.printable_mesh();
+        let inst = obj.instances.first().copied().unwrap_or_default();
+        let aabb = inst.apply_to_mesh(&mesh).aabb()?;
+        Some(((aabb.min + aabb.max) * 0.5, (aabb.max - aabb.min) * 0.5))
+    }
+
+    fn cursor_near_selection(&self, ndc_x: f32, ndc_y: f32, aspect: f32) -> bool {
+        let Some((origin, half)) = self.selected_aabb() else {
+            return false;
+        };
+        let pad = half.max_element().max(8.0) * 0.25 + 8.0;
+        let aabb = bambu_geom::Aabb3 {
+            min: origin - half - glam::Vec3::splat(pad),
+            max: origin + half + glam::Vec3::splat(pad),
+        };
+        let (ray_o, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
+        let inv = glam::Vec3::new(
+            if dir.x.abs() > 1e-8 {
+                1.0 / dir.x
+            } else {
+                f32::INFINITY
+            },
+            if dir.y.abs() > 1e-8 {
+                1.0 / dir.y
+            } else {
+                f32::INFINITY
+            },
+            if dir.z.abs() > 1e-8 {
+                1.0 / dir.z
+            } else {
+                f32::INFINITY
+            },
+        );
+        aabb.intersects_ray(ray_o, inv)
     }
 
     fn refresh_paint_overlay(&mut self) {
         self.sync_keep_solid();
         let mut overlay = Vec::new();
+        let Some(kind) = self.paint_kind else {
+            self.scene.paint_overlay = overlay;
+            self.sync_keep_solid();
+            return;
+        };
         let Some(model) = &self.model else {
             self.scene.paint_overlay = overlay;
             return;
@@ -3326,20 +3543,19 @@ impl App {
         for obj in &model.objects {
             for vol in &obj.volumes {
                 let n = vol.mesh.indices.len();
-                for field in [
-                    &vol.triangle_support,
-                    &vol.triangle_seam,
-                    &vol.triangle_fuzzy_skin,
-                ] {
-                    for (i, paint) in field.iter().enumerate() {
-                        let color = match paint {
-                            TrianglePaint::Enforcer => Some(paint_overlay_color(true)),
-                            TrianglePaint::Blocker => Some(paint_overlay_color(false)),
-                            TrianglePaint::None => None,
-                        };
-                        if let Some(c) = color {
-                            overlay.push((offset + i, c));
-                        }
+                let field = match kind {
+                    PaintKind::Support => vol.triangle_support.as_slice(),
+                    PaintKind::Seam => vol.triangle_seam.as_slice(),
+                    PaintKind::Fuzzy => vol.triangle_fuzzy_skin.as_slice(),
+                };
+                for (i, paint) in field.iter().enumerate() {
+                    let color = match paint {
+                        TrianglePaint::Enforcer => Some(paint_overlay_color(true)),
+                        TrianglePaint::Blocker => Some(paint_overlay_color(false)),
+                        TrianglePaint::None => None,
+                    };
+                    if let Some(c) = color {
+                        overlay.push((offset + i, c));
                     }
                 }
                 offset += n;
@@ -3583,6 +3799,15 @@ enum PaintKind {
     Fuzzy,
 }
 
+/// 1×1 RGB PNG used as a 3MF plate thumbnail in tests.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+    0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+    0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
 #[derive(Debug, Clone)]
 enum PrintCmd {
     Pause,
@@ -3808,6 +4033,7 @@ where
 }
 
 fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel>, String> {
+    let t0 = std::time::Instant::now();
     let label = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -3826,7 +4052,22 @@ fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel
         path,
         model,
         apply_settings,
+        load_ms: t0.elapsed().as_millis(),
     }))
+}
+
+fn file_mtime(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn png_to_handle(bytes: &[u8]) -> Option<iced::widget::image::Handle> {
+    let (w, h, rgba) = crate::decode_png(bytes).ok()?;
+    Some(iced::widget::image::Handle::from_rgba(w, h, rgba))
 }
 
 fn is_project_3mf(path: &std::path::Path) -> bool {
@@ -4369,5 +4610,57 @@ mod device_sync {
         assert_eq!(app.ams_filament_temps(0, 1), (219, 210));
         app.machine.nozzle_temp_c = 0.0;
         assert_eq!(app.ams_filament_temps(0, 1), (210, 210));
+    }
+
+    #[test]
+    fn support_paint_overlay_hidden_until_tool() {
+        let mut app = App::new_for_gui_test();
+        app.seed_support_paint_cube();
+        assert_eq!(
+            app.paint_overlay_count(),
+            0,
+            "default Prepare is plastic only"
+        );
+        let _ = app.update(Message::PaintSupport);
+        assert!(
+            app.paint_overlay_count() >= 2,
+            "support paint tool should show imported blockers"
+        );
+        let _ = app.update(Message::PaintSeam);
+        assert_eq!(
+            app.paint_overlay_count(),
+            0,
+            "seam tool must not show support blockers"
+        );
+        let _ = app.update(Message::PaintClear);
+        assert_eq!(app.paint_overlay_count(), 0);
+    }
+
+    #[test]
+    fn axes_toggle_and_transform_tool_show_gizmo() {
+        let mut app = App::new_for_gui_test();
+        assert!(app.show_axes());
+        assert!(!app.gizmo_visible(), "Orbit hides axes until hover");
+        let _ = app.update(Message::PlaterTool(PlaterTool::Move));
+        assert!(
+            app.gizmo_visible(),
+            "Move always shows axes when toggle is on"
+        );
+        let _ = app.update(Message::ShowAxes(false));
+        assert!(!app.show_axes());
+        assert!(!app.gizmo_visible());
+        let _ = app.update(Message::ShowAxes(true));
+        assert!(app.gizmo_visible());
+        let _ = app.update(Message::PlaterTool(PlaterTool::Orbit));
+        assert!(!app.gizmo_visible());
+        let _ = app.update(Message::Viewport(ViewportEvent::CursorMoved {
+            ndc_x: 0.0,
+            ndc_y: 0.0,
+            aspect: 1.5,
+            viewport_h: 800.0,
+        }));
+        // NDC origin may or may not hit the cube depending on camera; hover uses AABB ray.
+        let _ = app.update(Message::Viewport(ViewportEvent::CursorLeft));
+        assert!(!app.gizmo_visible());
     }
 }

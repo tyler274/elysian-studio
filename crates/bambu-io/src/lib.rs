@@ -14,7 +14,9 @@ use stl_io::{IndexedMesh, Normal, Triangle, Vertex};
 use thiserror::Error;
 
 pub use threemf::{
-    load_3mf, load_3mf_bytes, write_3mf, write_3mf_bytes, write_model_3mf, write_model_3mf_bytes,
+    load_3mf, load_3mf_bytes, load_3mf_timed, read_3mf_thumbnail, read_3mf_thumbnail_bytes,
+    write_3mf, write_3mf_bytes, write_model_3mf, write_model_3mf_bytes,
+    write_model_3mf_bytes_with_thumbnail, LoadTimings,
 };
 
 #[derive(Debug, Error)]

@@ -3,13 +3,14 @@
 pub use crate::camera::{CameraView, OrbitCamera};
 
 use bambu_config::{BedRect, BedShape};
-use bambu_geom::{Aabb3, TriangleMesh};
+use bambu_geom::{Aabb3, Bvh, TriangleMesh};
 use bambu_preview::{ExtrusionRole, ToolpathBuffer};
 use glam::{Mat4, Vec3};
 use iced::mouse;
 use iced::wgpu;
 use iced::widget::shader::{self, Viewport};
 use iced::{Event, Rectangle};
+use rayon::prelude::*;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -72,13 +73,21 @@ impl PlaterTool {
     fn is_transform_drag(self) -> bool {
         matches!(self, Self::Move | Self::Rotate | Self::Scale)
     }
+
+    pub fn needs_gizmo(self) -> bool {
+        matches!(
+            self,
+            Self::Move | Self::Rotate | Self::Scale | Self::LayOnFace
+        )
+    }
 }
 
-/// Selection AABB used to size the XYZ arrows so they stay outside the mesh.
+/// Selection AABB used as the XYZ origin. Shaft length is screen-constant.
 #[derive(Debug, Clone, Copy)]
 pub struct AxisGizmo {
     pub origin: Vec3,
     pub half: Vec3,
+    pub axis_len: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,12 +122,12 @@ impl AxisGizmo {
         );
         let mut best = f32::MAX;
         let mut hit = None;
-        for (axis, unit, half) in [
-            (GizmoAxis::X, Vec3::X, self.half.x),
-            (GizmoAxis::Y, Vec3::Y, self.half.y),
-            (GizmoAxis::Z, Vec3::Z, self.half.z),
+        for (axis, unit) in [
+            (GizmoAxis::X, Vec3::X),
+            (GizmoAxis::Y, Vec3::Y),
+            (GizmoAxis::Z, Vec3::Z),
         ] {
-            let len = axis_len(half);
+            let len = self.axis_len;
             let radius = (len * 0.08).clamp(2.0, 10.0);
             let tip = self.origin + unit * len;
             let aabb = Aabb3 {
@@ -146,8 +155,14 @@ pub struct SceneSolid {
 
 impl SceneSolid {
     pub fn from_mesh(mesh: TriangleMesh) -> Self {
-        let meshlets = crate::meshlet::clusterize(&mesh);
-        Self { mesh, meshlets }
+        Self {
+            mesh,
+            meshlets: Vec::new(),
+        }
+    }
+
+    pub fn clusterize(&mut self) {
+        self.meshlets = crate::meshlet::clusterize(&self.mesh);
     }
 }
 
@@ -172,6 +187,8 @@ pub struct ViewportScene {
     pub solids: Vec<SceneSolid>,
     /// Hardware `ray_query` shading when the iced device has RT.
     pub realistic: bool,
+    pub viewport_height: f32,
+    pick_bvh: Option<Bvh>,
     gpu: Mutex<Option<CachedGpuMesh>>,
 }
 
@@ -230,8 +247,14 @@ impl ViewportScene {
             paint_overlay: Vec::new(),
             tool: PlaterTool::Orbit,
             gizmo: None,
-            solids: vec![SceneSolid::from_mesh(TriangleMesh::cube(20.0))],
+            solids: {
+                let mut solid = SceneSolid::from_mesh(TriangleMesh::cube(20.0));
+                solid.clusterize();
+                vec![solid]
+            },
             realistic: true,
+            viewport_height: 800.0,
+            pick_bvh: None,
             gpu: Mutex::new(None),
         }
     }
@@ -255,6 +278,7 @@ impl ViewportScene {
         self.preview_layer = 0;
         self.preview_vertices = 0;
         self.paint_overlay.clear();
+        self.pick_bvh = None;
     }
 
     /// Replace plate volumes without merging them into one GPU mesh.
@@ -268,6 +292,39 @@ impl ViewportScene {
         self.preview_layer = 0;
         self.preview_vertices = 0;
         self.paint_overlay.clear();
+        self.pick_bvh = None;
+    }
+
+    pub fn apply_meshlets(&mut self, meshlets: Vec<Vec<crate::meshlet::Meshlet>>) {
+        for (solid, lets) in self.solids.iter_mut().zip(meshlets) {
+            solid.meshlets = lets;
+        }
+    }
+
+    pub fn pick_triangle(&mut self, origin: Vec3, dir: Vec3) -> Option<usize> {
+        if self.mesh.indices.len() <= 8 {
+            return self.mesh.pick_triangle_linear(origin, dir);
+        }
+        if self.pick_bvh.is_none() {
+            self.pick_bvh = Some(Bvh::build(&self.mesh));
+        }
+        self.pick_bvh
+            .as_ref()
+            .expect("bvh")
+            .pick_triangle(&self.mesh, origin, dir)
+    }
+
+    pub fn triangles_near(&mut self, point: Vec3, radius: f32) -> Vec<usize> {
+        if self.mesh.indices.len() <= 8 {
+            return self.mesh.triangles_near_linear(point, radius);
+        }
+        if self.pick_bvh.is_none() {
+            self.pick_bvh = Some(Bvh::build(&self.mesh));
+        }
+        self.pick_bvh
+            .as_ref()
+            .expect("bvh")
+            .triangles_near(&self.mesh, point, radius)
     }
 
     pub fn preview_z(&self) -> f32 {
@@ -320,6 +377,7 @@ impl ViewportScene {
                 1u8.hash(&mut hasher);
                 hash_vec3(&mut hasher, g.origin);
                 hash_vec3(&mut hasher, g.half);
+                g.axis_len.to_bits().hash(&mut hasher);
             }
             None => 0u8.hash(&mut hasher),
         }
@@ -355,29 +413,52 @@ impl ViewportScene {
         let mut meshlets = Vec::new();
         let show_solids = self.toolpaths.is_empty() || self.keep_solid;
         if show_solids {
-            for s in &self.solids {
+            let mut jobs: Vec<(usize, u32, u32, Aabb3)> = Vec::new();
+            for (si, s) in self.solids.iter().enumerate() {
                 if s.meshlets.is_empty() {
                     let aabb = s.mesh.aabb().unwrap_or(Aabb3::empty());
                     let n = s.mesh.indices.len() as u32;
                     let mut tri = 0u32;
                     while tri < n {
                         let batch = ((CHUNK_VERTS / 3) as u32).min(n - tri);
-                        let verts = mesh_vertices_range(&s.mesh, tri, batch, PLASTIC, usize::MAX);
-                        solid.push_span(verts, aabb, &mut meshlets);
+                        jobs.push((si, tri, batch, aabb));
                         tri += batch;
                     }
                 } else {
                     for m in &s.meshlets {
+                        jobs.push((si, m.first_tri, m.tri_count, m.aabb));
+                    }
+                }
+            }
+            let batches: Vec<(Vec<Vertex>, Aabb3)> = if jobs.len() > 1 {
+                jobs.par_iter()
+                    .map(|(si, first, count, aabb)| {
                         let verts = mesh_vertices_range(
-                            &s.mesh,
-                            m.first_tri,
-                            m.tri_count,
+                            &self.solids[*si].mesh,
+                            *first,
+                            *count,
                             PLASTIC,
                             usize::MAX,
                         );
-                        solid.push_span(verts, m.aabb, &mut meshlets);
-                    }
-                }
+                        (verts, *aabb)
+                    })
+                    .collect()
+            } else {
+                jobs.iter()
+                    .map(|(si, first, count, aabb)| {
+                        let verts = mesh_vertices_range(
+                            &self.solids[*si].mesh,
+                            *first,
+                            *count,
+                            PLASTIC,
+                            usize::MAX,
+                        );
+                        (verts, *aabb)
+                    })
+                    .collect()
+            };
+            for (verts, aabb) in batches {
+                solid.push_span(verts, aabb, &mut meshlets);
             }
         }
         let overlay_start = solid.len() as u32;
@@ -387,7 +468,7 @@ impl ViewportScene {
         let overlay_count = solid.len() as u32 - overlay_start;
         let gizmos = self
             .gizmo
-            .map(|g| gizmo_arrows(g.origin, g.half))
+            .map(|g| gizmo_arrows(g.origin, g.axis_len))
             .unwrap_or_default();
         let (rt_positions, rt_indices, rt_instances) = self.rt_geometry();
         CachedGpuMesh {
@@ -537,6 +618,13 @@ pub enum ViewportEvent {
         aspect: f32,
     },
     DragEnd,
+    CursorMoved {
+        ndc_x: f32,
+        ndc_y: f32,
+        aspect: f32,
+        viewport_h: f32,
+    },
+    CursorLeft,
 }
 
 fn is_pan_button(button: mouse::Button) -> bool {
@@ -675,7 +763,22 @@ where
                         .and_capture(),
                     )
                 }
-                None => None,
+                None => {
+                    if let Some(pos) = cursor.position_over(bounds) {
+                        let (ndc_x, ndc_y, aspect) = cursor_ndc(bounds, pos);
+                        Some(shader::Action::publish(
+                            ViewportEvent::CursorMoved {
+                                ndc_x,
+                                ndc_y,
+                                aspect,
+                                viewport_h: bounds.height,
+                            }
+                            .into(),
+                        ))
+                    } else {
+                        Some(shader::Action::publish(ViewportEvent::CursorLeft.into()))
+                    }
+                }
             },
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 cursor.position_over(bounds)?;
@@ -1869,16 +1972,21 @@ fn grid_vertices(bed: &BedShape) -> Vec<Vertex> {
     out
 }
 
-fn gizmo_arrows(origin: Vec3, half: Vec3) -> Vec<Vertex> {
+fn gizmo_arrows(origin: Vec3, len: f32) -> Vec<Vertex> {
     let mut out = Vec::new();
-    axis_arrow(&mut out, origin, Vec3::X, axis_len(half.x), AXIS_X);
-    axis_arrow(&mut out, origin, Vec3::Y, axis_len(half.y), AXIS_Y);
-    axis_arrow(&mut out, origin, Vec3::Z, axis_len(half.z), AXIS_Z);
+    axis_arrow(&mut out, origin, Vec3::X, len, AXIS_X);
+    axis_arrow(&mut out, origin, Vec3::Y, len, AXIS_Y);
+    axis_arrow(&mut out, origin, Vec3::Z, len, AXIS_Z);
     out
 }
 
-fn axis_len(half: f32) -> f32 {
-    (half.abs() * 1.35 + 12.0).max(16.0)
+/// World length for ~18 px grabbers. Clamped so a large AABB cannot dwarf the mesh.
+pub fn screen_axis_len(distance: f32, viewport_height_px: f32) -> f32 {
+    const GRABBER_PX: f32 = 18.0;
+    const FOV: f32 = std::f32::consts::FRAC_PI_4;
+    let world_h = 2.0 * distance.max(1.0) * (FOV * 0.5).tan();
+    let px = viewport_height_px.max(1.0);
+    (GRABBER_PX * world_h / px).clamp(12.0, 48.0)
 }
 
 fn axis_arrow(out: &mut Vec<Vertex>, origin: Vec3, dir: Vec3, len: f32, color: [f32; 3]) {
@@ -2161,7 +2269,7 @@ mod tests {
 
     #[test]
     fn gizmo_arrows_are_solid_not_lines() {
-        let verts = gizmo_arrows(Vec3::ZERO, Vec3::splat(10.0));
+        let verts = gizmo_arrows(Vec3::ZERO, 24.0);
         assert!(
             verts.len() > 36,
             "shaft + cone should be tessellated, got {}",
@@ -2171,17 +2279,19 @@ mod tests {
     }
 
     #[test]
-    fn gizmo_arrows_grow_with_aabb() {
-        let small = gizmo_arrows(Vec3::ZERO, Vec3::splat(10.0));
-        let large = gizmo_arrows(Vec3::ZERO, Vec3::splat(40.0));
+    fn gizmo_arrows_are_screen_sized() {
+        let near = gizmo_arrows(Vec3::ZERO, screen_axis_len(200.0, 800.0));
+        let far = gizmo_arrows(Vec3::ZERO, screen_axis_len(800.0, 800.0));
         let tip = |verts: &[Vertex]| verts.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
         assert!(
-            tip(&large) > tip(&small) + 20.0,
-            "X arrow should lengthen with the mesh, small {} large {}",
-            tip(&small),
-            tip(&large)
+            tip(&far) > tip(&near),
+            "zoomed-out camera should lengthen world shafts, near {} far {}",
+            tip(&near),
+            tip(&far)
         );
-        assert!(tip(&large) > 40.0 * 0.5, "tip must stick out past the AABB");
+        let huge = screen_axis_len(2500.0, 800.0);
+        assert!(huge <= 48.0 + 1e-3, "shafts must not dwarf a large mesh");
+        assert!((screen_axis_len(200.0, 800.0) - screen_axis_len(200.0, 800.0)).abs() < 1e-5);
     }
 
     #[test]
@@ -2209,8 +2319,9 @@ mod tests {
         let g = AxisGizmo {
             origin: Vec3::ZERO,
             half: Vec3::splat(10.0),
+            axis_len: 24.0,
         };
-        let origin = Vec3::new(axis_len(10.0) * 0.5, 40.0, 0.0);
+        let origin = Vec3::new(g.axis_len * 0.5, 40.0, 0.0);
         let dir = Vec3::new(0.0, -1.0, 0.0);
         assert_eq!(g.pick_axis(origin, dir), Some(GizmoAxis::X));
         let miss = Vec3::new(80.0, 40.0, 80.0);
