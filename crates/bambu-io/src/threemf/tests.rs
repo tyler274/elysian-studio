@@ -7,8 +7,8 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::{
-    load_3mf_bytes, write_3mf_bytes, write_model_3mf_bytes, CORE_NS, MODEL_PATH,
-    MODEL_SETTINGS_PATH, PROJECT_SETTINGS_PATH,
+    load_3mf_bytes, load_3mf_bytes_with_progress, write_3mf_bytes, write_model_3mf_bytes, CORE_NS,
+    MODEL_PATH, MODEL_SETTINGS_PATH, PROJECT_SETTINGS_PATH,
 };
 
 fn cube_xml(unit: &str, extra_item_transform: &str) -> String {
@@ -864,4 +864,32 @@ fn support_paint_blocker_roundtrip_stays_blocker() {
         model.objects[0].volumes[0].triangle_support[0],
         TrianglePaint::Blocker
     );
+}
+
+#[test]
+fn load_progress_enumerates_zip_parse_flatten_settings() {
+    let mut stages = Vec::new();
+    let model = load_3mf_bytes_with_progress(&pack_xml(&cube_xml("millimeter", "")), |stage| {
+        stages.push(stage);
+    })
+    .unwrap();
+    assert_eq!(model.merged_mesh().unwrap().indices.len(), 12);
+    assert!(
+        stages.iter().any(|s| matches!(s, super::LoadStage::OpenArchive)),
+        "stages: {stages:?}"
+    );
+    assert!(
+        stages.iter().any(|s| matches!(s, super::LoadStage::ParseRoot)),
+        "stages: {stages:?}"
+    );
+    assert!(
+        stages.iter().any(|s| matches!(s, super::LoadStage::Flatten)),
+        "stages: {stages:?}"
+    );
+    assert!(
+        stages.iter().any(|s| matches!(s, super::LoadStage::Settings)),
+        "stages: {stages:?}"
+    );
+    let fractions: Vec<f32> = stages.iter().map(|s| s.fraction()).collect();
+    assert!(fractions.windows(2).all(|w| w[1] + 1e-6 >= w[0]));
 }

@@ -15,7 +15,7 @@ pub use compute::VulkanSliceAccel;
 pub use meshlet::{clusterize, Meshlet};
 pub use scene::{
     outward_triangle, paint_overlay_color, screen_axis_len, AxisGizmo, CameraView, GizmoAxis,
-    OrbitCamera, PlaterTool, SceneSolid, ViewportEvent, ViewportScene, BED_MM,
+    OrbitCamera, PlaterTool, SceneSolid, ShadedSolids, ViewportEvent, ViewportScene, BED_MM,
 };
 pub use slice_accel::{
     slice_on_vulkan, slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, SliceBackend,

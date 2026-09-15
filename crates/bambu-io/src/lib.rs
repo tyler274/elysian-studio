@@ -14,9 +14,9 @@ use stl_io::{IndexedMesh, Normal, Triangle, Vertex};
 use thiserror::Error;
 
 pub use threemf::{
-    load_3mf, load_3mf_bytes, load_3mf_timed, read_3mf_thumbnail, read_3mf_thumbnail_bytes,
-    write_3mf, write_3mf_bytes, write_model_3mf, write_model_3mf_bytes,
-    write_model_3mf_bytes_with_thumbnail, LoadTimings,
+    load_3mf, load_3mf_bytes, load_3mf_bytes_with_progress, load_3mf_timed, load_3mf_with_progress,
+    read_3mf_thumbnail, read_3mf_thumbnail_bytes, write_3mf, write_3mf_bytes, write_model_3mf,
+    write_model_3mf_bytes, write_model_3mf_bytes_with_thumbnail, LoadStage, LoadTimings,
 };
 
 #[derive(Debug, Error)]
@@ -74,6 +74,14 @@ pub fn load_mesh(path: impl AsRef<Path>) -> Result<TriangleMesh, IoError> {
 }
 
 pub fn load_model(path: impl AsRef<Path>) -> Result<Model, IoError> {
+    load_model_with_progress(path, |_| {})
+}
+
+/// Same as [`load_model`], with stage callbacks for a progress UI.
+pub fn load_model_with_progress(
+    path: impl AsRef<Path>,
+    mut progress: impl FnMut(LoadStage),
+) -> Result<Model, IoError> {
     let path = path.as_ref();
     let ext = path
         .extension()
@@ -81,8 +89,13 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<Model, IoError> {
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "3mf" => load_3mf(path),
-        "stl" | "" => load_model_stl(path),
+        "3mf" => load_3mf_with_progress(path, progress).map(|(model, _)| model),
+        "stl" | "" => {
+            progress(LoadStage::OpenArchive);
+            let model = load_model_stl(path)?;
+            progress(LoadStage::Flatten);
+            Ok(model)
+        }
         "obj" | "svg" | "step" | "stp" => Err(IoError::Message(format!(
             "unsupported mesh format '.{other}' — import STEP/SVG/OBJ is not available yet (stl|3mf)",
             other = ext

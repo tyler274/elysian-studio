@@ -33,7 +33,7 @@ pub(crate) use xml::CORE_NS;
 #[cfg(test)]
 pub(crate) use zip::{MODEL_PATH, MODEL_SETTINGS_PATH, PROJECT_SETTINGS_PATH};
 
-pub use zip::{read_3mf_thumbnail, read_3mf_thumbnail_bytes, LoadTimings};
+pub use zip::{read_3mf_thumbnail, read_3mf_thumbnail_bytes, LoadStage, LoadTimings};
 
 pub fn load_3mf(path: impl AsRef<Path>) -> Result<Model, IoError> {
     load_3mf_timed(path).map(|(model, _)| model)
@@ -42,14 +42,31 @@ pub fn load_3mf(path: impl AsRef<Path>) -> Result<Model, IoError> {
 /// Timed 3MF open used by `bambu-cli open-timing`. Opens the zip from a file
 /// handle (no extra full-file copy).
 pub fn load_3mf_timed(path: impl AsRef<Path>) -> Result<(Model, LoadTimings), IoError> {
+    load_3mf_with_progress(path, |_| {})
+}
+
+/// Timed 3MF open with stage callbacks for a progress UI.
+pub fn load_3mf_with_progress(
+    path: impl AsRef<Path>,
+    mut progress: impl FnMut(LoadStage),
+) -> Result<(Model, LoadTimings), IoError> {
+    progress(LoadStage::OpenArchive);
     let t = Instant::now();
     let file = std::fs::File::open(path.as_ref())?;
     let open_ms = t.elapsed().as_millis();
-    zip::load_package_seek(file, open_ms)
+    zip::load_package_seek_progress(file, open_ms, progress)
 }
 
 pub fn load_3mf_bytes(bytes: &[u8]) -> Result<Model, IoError> {
-    zip::load_package_seek(Cursor::new(bytes), 0).map(|(model, _)| model)
+    load_3mf_bytes_with_progress(bytes, |_| {})
+}
+
+pub fn load_3mf_bytes_with_progress(
+    bytes: &[u8],
+    mut progress: impl FnMut(LoadStage),
+) -> Result<Model, IoError> {
+    progress(LoadStage::OpenArchive);
+    zip::load_package_seek_progress(Cursor::new(bytes), 0, progress).map(|(model, _)| model)
 }
 
 /// Pack a single mesh as a Bambu 3MF (geometry + one plate).

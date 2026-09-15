@@ -2,7 +2,8 @@
 //! Calibration / Filament Manager · Slice plate / Print plate.
 
 use iced::widget::{
-    button, column, container, image, row, shader, slider, stack, text, vertical_slider, Space,
+    button, column, container, image, progress_bar, row, shader, slider, stack, text,
+    vertical_slider, Space,
 };
 use iced::{Alignment, ContentFit, Element, Fill, Padding};
 
@@ -320,9 +321,44 @@ impl crate::App {
 
     pub(crate) fn viewport_stage(&self) -> Element<'_, Message> {
         let viewport = shader(&self.scene).width(Fill).height(Fill);
-        stack![viewport, self.viewport_overlays()]
+        let overlays = self.viewport_overlays();
+        if self.load_progress.is_some() {
+            stack![viewport, overlays, self.load_progress_overlay()]
+                .width(Fill)
+                .height(Fill)
+                .into()
+        } else {
+            stack![viewport, overlays]
+                .width(Fill)
+                .height(Fill)
+                .into()
+        }
+    }
+
+    fn load_progress_overlay(&self) -> Element<'_, Message> {
+        let (label, fraction) = self
+            .load_progress
+            .as_ref()
+            .map(|p| (p.label.clone(), p.fraction))
+            .unwrap_or_else(|| (String::new(), 0.0));
+        let card = container(
+            column![
+                text("Opening project")
+                    .size(theme::TITLE_SIZE)
+                    .color(theme::TEXT),
+                text(label).size(theme::BODY_SIZE).color(theme::TEXT_MUTED),
+                progress_bar(0.0..=1.0, fraction).girth(8),
+            ]
+            .spacing(10),
+        )
+        .padding(18)
+        .width(320)
+        .style(|_| theme::card());
+        container(card)
             .width(Fill)
             .height(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Center)
             .into()
     }
 

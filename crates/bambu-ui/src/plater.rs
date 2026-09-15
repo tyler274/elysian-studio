@@ -1,5 +1,7 @@
 //! Prepare-tab plate tools: move / rotate / scale / lay-on-face / arrange.
 
+use std::sync::Arc;
+
 use bambu_config::BedShape;
 use bambu_geom::Aabb3;
 use bambu_gpu::{GizmoAxis, PlaterTool};
@@ -298,6 +300,7 @@ impl crate::App {
                 self.drag_last_ndc = None;
                 self.drag_last_bed = None;
                 self.drag_axis = None;
+                self.needs_display_pack = true;
                 self.sync_gizmo();
             }
             ViewportEvent::CursorMoved {
@@ -330,7 +333,8 @@ impl crate::App {
                         inst.offset.z += dz;
                     }
                     self.drag_last_ndc = Some((ndc_x, ndc_y));
-                    self.sync_scene_mesh();
+                    self.fill_xform_edits();
+                    self.sync_gizmo();
                     return;
                 }
                 let Some(hit) = self.scene.camera.hit_z0(ndc_x, ndc_y, aspect) else {
@@ -352,7 +356,8 @@ impl crate::App {
                     inst.offset.y += dy;
                 }
                 self.drag_last_bed = Some((hit.x, hit.y));
-                self.sync_scene_mesh();
+                self.fill_xform_edits();
+                self.sync_gizmo();
             }
             PlaterTool::Rotate => {
                 let Some((lx, ly)) = self.drag_last_ndc else {
@@ -372,7 +377,8 @@ impl crate::App {
                     }
                 }
                 self.drag_last_ndc = Some((ndc_x, ndc_y));
-                self.sync_scene_mesh();
+                self.fill_xform_edits();
+                self.sync_gizmo();
             }
             PlaterTool::Scale => {
                 let Some((lx, _)) = self.drag_last_ndc else {
@@ -393,7 +399,8 @@ impl crate::App {
                     inst.scale = inst.scale.clamp(Vec3::splat(0.05), Vec3::splat(20.0));
                 }
                 self.drag_last_ndc = Some((ndc_x, ndc_y));
-                self.sync_scene_mesh();
+                self.fill_xform_edits();
+                self.sync_gizmo();
             }
             PlaterTool::Orbit | PlaterTool::LayOnFace => {}
         }
@@ -403,7 +410,7 @@ impl crate::App {
         self.ensure_model();
         let (origin, dir) = self.scene.camera.ray_from_ndc(ndc_x, ndc_y, aspect);
         let idx = self.selected_object;
-        let picked = self.model.as_ref().and_then(|model| {
+        let picked = self.model.as_deref().and_then(|model| {
             let obj = model.objects.get(idx)?;
             let mesh = obj.printable_mesh();
             let inst = obj.instances.first().copied().unwrap_or_default();
@@ -418,8 +425,7 @@ impl crate::App {
             return;
         };
         if let Some(inst) = self
-            .model
-            .as_mut()
+            .model_mut()
             .and_then(|m| m.selected_instance_mut(idx))
         {
             lay_instance_on_normal(&mesh, inst, n);
@@ -432,7 +438,7 @@ impl crate::App {
         self.ensure_model();
         let bed = self.scene.bed.clone();
         let plate = self.plate;
-        if let Some(model) = &mut self.model {
+        if let Some(model) = self.model_mut() {
             model.arrange_on_plate(plate, &bed, 8.0);
         }
         self.status = "arranged on plate".into();
@@ -442,7 +448,7 @@ impl crate::App {
     pub(crate) fn auto_orient_selected(&mut self) {
         self.ensure_model();
         let idx = self.selected_object;
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model_mut() else {
             return;
         };
         let Some(obj) = model.objects.get_mut(idx) else {
@@ -462,7 +468,7 @@ impl crate::App {
     pub(crate) fn mirror_selected(&mut self, axis: u8) {
         self.ensure_model();
         let idx = self.selected_object;
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model_mut() else {
             return;
         };
         let Some(obj) = model.objects.get_mut(idx) else {
@@ -496,7 +502,7 @@ impl crate::App {
 
     pub(crate) fn drop_selected_to_bed(&mut self) {
         let idx = self.selected_object;
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model_mut() else {
             return;
         };
         let Some(obj) = model.objects.get_mut(idx) else {
@@ -633,7 +639,7 @@ impl crate::App {
     pub(crate) fn selected_instance_mut(&mut self) -> Option<&mut Instance> {
         self.ensure_model();
         let idx = self.selected_object;
-        let model = self.model.as_mut()?;
+        let model = self.model_mut()?;
         let obj = model.objects.get_mut(idx)?;
         if obj.instances.is_empty() {
             obj.instances.push(Instance::default());
@@ -642,10 +648,11 @@ impl crate::App {
     }
 
     pub(crate) fn selected_world_aabb(&self) -> Option<Aabb3> {
-        let obj = self.model.as_ref()?.objects.get(self.selected_object)?;
-        let mesh = obj.printable_mesh();
-        let inst = obj.instances.first().copied().unwrap_or_default();
-        inst.apply_to_mesh(&mesh).aabb()
+        let (origin, half) = self.selected_aabb()?;
+        Some(Aabb3 {
+            min: origin - half,
+            max: origin + half,
+        })
     }
 
     pub(crate) fn fill_xform_edits(&mut self) {
@@ -697,7 +704,7 @@ impl crate::App {
         }
         let mut model = Model::from_mesh("cube", self.scene.mesh.clone());
         model.place_on_bed_if_needed(&self.scene.bed);
-        self.model = Some(model);
+        self.model = Some(Arc::new(model));
     }
 
     pub(crate) fn apply_bed_from_settings(&mut self) {

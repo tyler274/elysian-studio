@@ -2,6 +2,7 @@
 
 use bambu_geom::{Aabb3, TriangleMesh};
 use glam::{Mat4, Vec3, Vec4};
+use rayon::prelude::*;
 
 pub const MESHLET_TRIS: usize = 128;
 
@@ -17,28 +18,29 @@ pub fn clusterize(mesh: &TriangleMesh) -> Vec<Meshlet> {
     if mesh.indices.is_empty() {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i < mesh.indices.len() {
-        let n = (mesh.indices.len() - i).min(MESHLET_TRIS);
-        let mut aabb: Option<Aabb3> = None;
-        for idx in &mesh.indices[i..i + n] {
-            let [a, b, c] = mesh.triangle(*idx);
-            if let Some(t) = Aabb3::from_points([a, b, c]) {
-                aabb = Some(match aabb {
-                    Some(cur) => cur.union(t),
-                    None => t,
-                });
+    let n = mesh.indices.len();
+    let starts: Vec<usize> = (0..n).step_by(MESHLET_TRIS).collect();
+    starts
+        .into_par_iter()
+        .map(|i| {
+            let count = (n - i).min(MESHLET_TRIS);
+            let mut aabb: Option<Aabb3> = None;
+            for idx in &mesh.indices[i..i + count] {
+                let [a, b, c] = mesh.triangle(*idx);
+                if let Some(t) = Aabb3::from_points([a, b, c]) {
+                    aabb = Some(match aabb {
+                        Some(cur) => cur.union(t),
+                        None => t,
+                    });
+                }
             }
-        }
-        out.push(Meshlet {
-            first_tri: i as u32,
-            tri_count: n as u32,
-            aabb: aabb.unwrap_or(Aabb3::empty()),
-        });
-        i += n;
-    }
-    out
+            Meshlet {
+                first_tri: i as u32,
+                tri_count: count as u32,
+                aabb: aabb.unwrap_or(Aabb3::empty()),
+            }
+        })
+        .collect()
 }
 
 /// Six frustum planes (ax+by+cz+d >= 0 inside) from `proj * view`.

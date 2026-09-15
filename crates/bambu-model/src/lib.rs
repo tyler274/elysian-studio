@@ -379,6 +379,29 @@ impl Instance {
         }
         out
     }
+
+    /// Transform an AABB by this instance (8 corners). Safe on the UI thread.
+    pub fn transform_aabb(self, aabb: bambu_geom::Aabb3) -> bambu_geom::Aabb3 {
+        if self.is_identity() {
+            return aabb;
+        }
+        let pivot = (aabb.min + aabb.max) * 0.5;
+        let m = self.transform_matrix(pivot);
+        let [x0, y0, z0] = [aabb.min.x, aabb.min.y, aabb.min.z];
+        let [x1, y1, z1] = [aabb.max.x, aabb.max.y, aabb.max.z];
+        let pts = [
+            Vec3::new(x0, y0, z0),
+            Vec3::new(x1, y0, z0),
+            Vec3::new(x0, y1, z0),
+            Vec3::new(x1, y1, z0),
+            Vec3::new(x0, y0, z1),
+            Vec3::new(x1, y0, z1),
+            Vec3::new(x0, y1, z1),
+            Vec3::new(x1, y1, z1),
+        ]
+        .map(|p| m.transform_point3(p));
+        bambu_geom::Aabb3::from_points(pts).unwrap_or(aabb)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

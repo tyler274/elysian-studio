@@ -49,6 +49,7 @@ const SAMPLE_COUNT: u32 = 4;
 const VERTEX_STRIDE: u64 = 36;
 const DEFAULT_MAX_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 const CHUNK_VERTS: usize = ((DEFAULT_MAX_BUFFER_BYTES / VERTEX_STRIDE / 3) * 3) as usize;
+const RT_TRI_LIMIT: usize = 200_000;
 
 fn msaa_state() -> wgpu::MultisampleState {
     wgpu::MultisampleState {
@@ -151,6 +152,7 @@ impl AxisGizmo {
 pub struct SceneSolid {
     pub mesh: TriangleMesh,
     pub meshlets: Vec<crate::meshlet::Meshlet>,
+    gpu_chunks: Option<Arc<[(Arc<[Vertex]>, Aabb3)]>>,
 }
 
 impl SceneSolid {
@@ -158,11 +160,29 @@ impl SceneSolid {
         Self {
             mesh,
             meshlets: Vec::new(),
+            gpu_chunks: None,
         }
     }
 
     pub fn clusterize(&mut self) {
         self.meshlets = crate::meshlet::clusterize(&self.mesh);
+    }
+}
+
+/// GPU-ready solids built off the UI thread (meshlets + lit vertices + pick BVH).
+#[derive(Debug, Clone)]
+pub struct ShadedSolids {
+    solids: Vec<SceneSolid>,
+    mesh: TriangleMesh,
+    pick_bvh: Option<Bvh>,
+    packed: CachedGpuMesh,
+    /// Object-space AABBs (meshlet unions) for UI gizmos — no vertex walks.
+    pub local_aabbs: Vec<Aabb3>,
+}
+
+impl ShadedSolids {
+    pub fn triangle_count(&self) -> usize {
+        self.mesh.indices.len()
     }
 }
 
@@ -204,6 +224,7 @@ struct CachedGpuMesh {
     key: u64,
     solid: Arc<[Arc<[Vertex]>]>,
     lines: Arc<[Vertex]>,
+    #[allow(dead_code)]
     gizmos: Arc<[Vertex]>,
     labels: Arc<[crate::label::LabelVertex]>,
     meshlets: Arc<[MeshletDraw]>,
@@ -229,7 +250,7 @@ impl ViewportScene {
     pub fn with_cube_on_bed(adapter_label: String, bed_mm: f32) -> Self {
         let bed = BedShape::square(bed_mm.clamp(80.0, 512.0));
         let bed_mm = bed.orbit_mm();
-        Self {
+        let mut scene = Self {
             adapter_label,
             camera: OrbitCamera::looking_at_center(
                 Vec3::new(bed.center().0, bed.center().1, 0.0),
@@ -256,6 +277,36 @@ impl ViewportScene {
             viewport_height: 800.0,
             pick_bvh: None,
             gpu: Mutex::new(None),
+        };
+        scene.pack_gpu();
+        scene
+    }
+
+    fn packing_scene(bed: BedShape) -> Self {
+        let bed_mm = bed.orbit_mm();
+        Self {
+            adapter_label: String::new(),
+            camera: OrbitCamera::looking_at_center(
+                Vec3::new(bed.center().0, bed.center().1, 0.0),
+                bed_mm,
+            ),
+            mesh: TriangleMesh::default(),
+            toolpaths: ToolpathBuffer::default(),
+            preview_layer: 0,
+            preview_vertices: 0,
+            hide_infill: false,
+            hide_support: false,
+            bed_mm,
+            bed,
+            keep_solid: true,
+            paint_overlay: Vec::new(),
+            tool: PlaterTool::Orbit,
+            gizmo: None,
+            solids: Vec::new(),
+            realistic: false,
+            viewport_height: 800.0,
+            pick_bvh: None,
+            gpu: Mutex::new(None),
         }
     }
 
@@ -268,6 +319,7 @@ impl ViewportScene {
         self.bed_mm = self.bed.orbit_mm();
         let (cx, cy) = self.bed.center();
         self.camera = OrbitCamera::looking_at_center(Vec3::new(cx, cy, 0.0), self.bed_mm);
+        self.invalidate_gpu();
     }
 
     /// Replace the solid mesh in world space. Does not recenter or move the camera.
@@ -279,6 +331,7 @@ impl ViewportScene {
         self.preview_vertices = 0;
         self.paint_overlay.clear();
         self.pick_bvh = None;
+        self.invalidate_gpu();
     }
 
     /// Replace plate volumes without merging them into one GPU mesh.
@@ -293,24 +346,105 @@ impl ViewportScene {
         self.preview_vertices = 0;
         self.paint_overlay.clear();
         self.pick_bvh = None;
+        self.invalidate_gpu();
     }
 
     pub fn apply_meshlets(&mut self, meshlets: Vec<Vec<crate::meshlet::Meshlet>>) {
         for (solid, lets) in self.solids.iter_mut().zip(meshlets) {
             solid.meshlets = lets;
         }
+        self.invalidate_gpu();
+    }
+
+    /// Cluster, shade, pack GPU buffers, and build a pick tree. Worker thread only.
+    pub fn shade_meshes(
+        meshes: Vec<TriangleMesh>,
+        bed: BedShape,
+        keep_solid: bool,
+        mut progress: impl FnMut(&str, f32),
+    ) -> ShadedSolids {
+        let nsol = meshes.len().max(1);
+        let mut solids: Vec<SceneSolid> = Vec::with_capacity(meshes.len());
+        for (i, mesh) in meshes.into_iter().enumerate() {
+            progress(
+                "Clustering meshlets…",
+                0.60 + 0.10 * (i as f32 / nsol as f32),
+            );
+            let mut solid = SceneSolid::from_mesh(mesh);
+            solid.clusterize();
+            solids.push(solid);
+        }
+        for (i, solid) in solids.iter_mut().enumerate() {
+            shade_solid_chunks(solid, |done, total| {
+                let local = if total == 0 {
+                    1.0
+                } else {
+                    done as f32 / total as f32
+                };
+                let base = 0.72 + 0.20 * (i as f32 / nsol as f32);
+                let span = 0.20 / nsol as f32;
+                progress("Preparing display mesh…", base + span * local);
+            });
+        }
+        let local_aabbs: Vec<Aabb3> = solids.iter().filter_map(solid_aabb).collect();
+        let mut mesh = TriangleMesh::default();
+        for solid in &solids {
+            mesh.append(&solid.mesh);
+        }
+        progress("Building pick tree…", 0.95);
+        let pick_bvh = if mesh.indices.len() > 8 {
+            Some(Bvh::build(&mesh))
+        } else {
+            None
+        };
+        progress("Packing display buffers…", 0.97);
+        let mut tmp = ViewportScene::packing_scene(bed);
+        tmp.keep_solid = keep_solid;
+        tmp.solids = solids;
+        tmp.mesh = mesh;
+        tmp.pick_bvh = pick_bvh;
+        let packed = tmp.tessellate(tmp.geom_key());
+        progress("Ready", 1.0);
+        ShadedSolids {
+            solids: tmp.solids,
+            mesh: tmp.mesh,
+            pick_bvh: tmp.pick_bvh,
+            packed,
+            local_aabbs,
+        }
+    }
+
+    pub fn apply_shaded(&mut self, shaded: ShadedSolids) {
+        self.solids = shaded.solids;
+        self.mesh = shaded.mesh;
+        self.pick_bvh = shaded.pick_bvh;
+        self.toolpaths = ToolpathBuffer::default();
+        self.preview_layer = 0;
+        self.preview_vertices = 0;
+        self.paint_overlay.clear();
+        self.install_gpu(shaded.packed);
+    }
+
+    /// Precompute GPU vertices. Must not run on the iced UI thread.
+    pub fn pack_gpu(&mut self) {
+        let packed = self.tessellate(self.geom_key());
+        self.install_gpu(packed);
+    }
+
+    fn install_gpu(&self, packed: CachedGpuMesh) {
+        *self.gpu.lock().unwrap_or_else(|err| err.into_inner()) = Some(packed);
+    }
+
+    fn invalidate_gpu(&self) {
+        *self.gpu.lock().unwrap_or_else(|err| err.into_inner()) = None;
     }
 
     pub fn pick_triangle(&mut self, origin: Vec3, dir: Vec3) -> Option<usize> {
         if self.mesh.indices.len() <= 8 {
             return self.mesh.pick_triangle_linear(origin, dir);
         }
-        if self.pick_bvh.is_none() {
-            self.pick_bvh = Some(Bvh::build(&self.mesh));
-        }
         self.pick_bvh
-            .as_ref()
-            .expect("bvh")
+            .as_ref()?
             .pick_triangle(&self.mesh, origin, dir)
     }
 
@@ -318,13 +452,10 @@ impl ViewportScene {
         if self.mesh.indices.len() <= 8 {
             return self.mesh.triangles_near_linear(point, radius);
         }
-        if self.pick_bvh.is_none() {
-            self.pick_bvh = Some(Bvh::build(&self.mesh));
-        }
         self.pick_bvh
             .as_ref()
-            .expect("bvh")
-            .triangles_near(&self.mesh, point, radius)
+            .map(|bvh| bvh.triangles_near(&self.mesh, point, radius))
+            .unwrap_or_default()
     }
 
     pub fn preview_z(&self) -> f32 {
@@ -340,6 +471,7 @@ impl ViewportScene {
         self.preview_layer = toolpaths.layer_zs.len().saturating_sub(1) as u32;
         self.preview_vertices = toolpaths.vertices.len() as u32;
         self.toolpaths = toolpaths;
+        self.invalidate_gpu();
     }
 
     /// Camera is excluded: orbit/pan must not rebuild or re-upload vertex buffers.
@@ -362,6 +494,7 @@ impl ViewportScene {
             solid.mesh.indices.len().hash(&mut hasher);
             hash_vec3_samples(&mut hasher, &solid.mesh.vertices);
             solid.meshlets.len().hash(&mut hasher);
+            solid.gpu_chunks.as_ref().map(|c| c.len()).unwrap_or(0).hash(&mut hasher);
         }
         self.paint_overlay.len().hash(&mut hasher);
         if let Some((idx, color)) = self.paint_overlay.first() {
@@ -372,15 +505,6 @@ impl ViewportScene {
             idx.hash(&mut hasher);
             color[0].to_bits().hash(&mut hasher);
         }
-        match self.gizmo {
-            Some(g) => {
-                1u8.hash(&mut hasher);
-                hash_vec3(&mut hasher, g.origin);
-                hash_vec3(&mut hasher, g.half);
-                g.axis_len.to_bits().hash(&mut hasher);
-            }
-            None => 0u8.hash(&mut hasher),
-        }
         let (x0, y0, x1, y1) = self.bed.printable_aabb();
         x0.to_bits().hash(&mut hasher);
         y0.to_bits().hash(&mut hasher);
@@ -390,12 +514,35 @@ impl ViewportScene {
     }
 
     fn cached_gpu_mesh(&self) -> CachedGpuMesh {
-        let key = self.geom_key();
-        let mut cache = self.gpu.lock().unwrap_or_else(|err| err.into_inner());
-        if cache.as_ref().is_none_or(|cached| cached.key != key) {
-            *cache = Some(self.tessellate(key));
+        let cache = self.gpu.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(cached) = cache.as_ref() {
+            return cached.clone();
         }
-        cache.as_ref().expect("tessellate filled the cache").clone()
+        drop(cache);
+        self.tessellate_chrome()
+    }
+
+    /// Bed / grid / labels only. Never shades model triangles or toolpaths.
+    fn tessellate_chrome(&self) -> CachedGpuMesh {
+        let lines = grid_vertices(&self.bed);
+        let mut solid = VertexPack::new(CHUNK_VERTS);
+        solid.extend(&bed_solids(&self.bed));
+        let bed_verts = solid.len() as u32;
+        let (rt_positions, rt_indices, rt_instances) = rt_bed_only(&self.bed);
+        CachedGpuMesh {
+            key: 0,
+            solid: solid.freeze(),
+            lines: Arc::from(lines),
+            gizmos: Arc::from(Vec::new()),
+            labels: Arc::from(crate::label::plate_labels(&self.bed, LABEL)),
+            meshlets: Arc::from(Vec::new()),
+            bed_verts,
+            overlay_start: bed_verts,
+            overlay_count: 0,
+            rt_positions: Arc::from(rt_positions),
+            rt_indices: Arc::from(rt_indices),
+            rt_instances: Arc::from(rt_instances),
+        }
     }
 
     fn tessellate(&self, key: u64) -> CachedGpuMesh {
@@ -413,52 +560,58 @@ impl ViewportScene {
         let mut meshlets = Vec::new();
         let show_solids = self.toolpaths.is_empty() || self.keep_solid;
         if show_solids {
-            let mut jobs: Vec<(usize, u32, u32, Aabb3)> = Vec::new();
-            for (si, s) in self.solids.iter().enumerate() {
+            for s in &self.solids {
+                if let Some(chunks) = &s.gpu_chunks {
+                    for (verts, aabb) in chunks.iter() {
+                        solid.push_arc(verts.clone(), *aabb, &mut meshlets);
+                    }
+                    continue;
+                }
+                let mut jobs: Vec<(u32, u32, Aabb3)> = Vec::new();
                 if s.meshlets.is_empty() {
                     let aabb = s.mesh.aabb().unwrap_or(Aabb3::empty());
                     let n = s.mesh.indices.len() as u32;
                     let mut tri = 0u32;
                     while tri < n {
                         let batch = ((CHUNK_VERTS / 3) as u32).min(n - tri);
-                        jobs.push((si, tri, batch, aabb));
+                        jobs.push((tri, batch, aabb));
                         tri += batch;
                     }
                 } else {
                     for m in &s.meshlets {
-                        jobs.push((si, m.first_tri, m.tri_count, m.aabb));
+                        jobs.push((m.first_tri, m.tri_count, m.aabb));
                     }
                 }
-            }
-            let batches: Vec<(Vec<Vertex>, Aabb3)> = if jobs.len() > 1 {
-                jobs.par_iter()
-                    .map(|(si, first, count, aabb)| {
-                        let verts = mesh_vertices_range(
-                            &self.solids[*si].mesh,
-                            *first,
-                            *count,
-                            PLASTIC,
-                            usize::MAX,
-                        );
-                        (verts, *aabb)
-                    })
-                    .collect()
-            } else {
-                jobs.iter()
-                    .map(|(si, first, count, aabb)| {
-                        let verts = mesh_vertices_range(
-                            &self.solids[*si].mesh,
-                            *first,
-                            *count,
-                            PLASTIC,
-                            usize::MAX,
-                        );
-                        (verts, *aabb)
-                    })
-                    .collect()
-            };
-            for (verts, aabb) in batches {
-                solid.push_span(verts, aabb, &mut meshlets);
+                let batches: Vec<(Vec<Vertex>, Aabb3)> = if jobs.len() > 1 {
+                    jobs.par_iter()
+                        .map(|(first, count, aabb)| {
+                            let verts = mesh_vertices_range(
+                                &s.mesh,
+                                *first,
+                                *count,
+                                PLASTIC,
+                                usize::MAX,
+                            );
+                            (verts, *aabb)
+                        })
+                        .collect()
+                } else {
+                    jobs.iter()
+                        .map(|(first, count, aabb)| {
+                            let verts = mesh_vertices_range(
+                                &s.mesh,
+                                *first,
+                                *count,
+                                PLASTIC,
+                                usize::MAX,
+                            );
+                            (verts, *aabb)
+                        })
+                        .collect()
+                };
+                for (verts, aabb) in batches {
+                    solid.push_span(verts, aabb, &mut meshlets);
+                }
             }
         }
         let overlay_start = solid.len() as u32;
@@ -505,7 +658,11 @@ impl ViewportScene {
             first_index: first,
             index_count: 6,
         });
-        if self.toolpaths.is_empty() || self.keep_solid {
+        let solid_tris: usize = self.solids.iter().map(|s| s.mesh.indices.len()).sum();
+        if (self.toolpaths.is_empty() || self.keep_solid)
+            && self.realistic
+            && solid_tris <= RT_TRI_LIMIT
+        {
             let room = crate::rt::MAX_INSTANCES.saturating_sub(instances.len() as u32) as usize;
             for solid in self.solids.iter().take(room) {
                 if solid.mesh.indices.is_empty() {
@@ -529,6 +686,30 @@ impl ViewportScene {
         }
         (positions, indices, instances)
     }
+}
+
+fn rt_bed_only(bed: &BedShape) -> (Vec<[f32; 4]>, Vec<u32>, Vec<crate::rt::RtInstance>) {
+    let (x0, y0, x1, y1) = bed.printable_aabb();
+    let positions = vec![
+        [x0, y0, 0.0, 1.0],
+        [x1, y0, 0.0, 1.0],
+        [x1, y1, 0.0, 1.0],
+        [x0, y1, 0.0, 1.0],
+    ];
+    let indices = vec![0, 1, 2, 0, 2, 3];
+    let instances = vec![crate::rt::RtInstance {
+        first_index: 0,
+        index_count: 6,
+    }];
+    (positions, indices, instances)
+}
+
+fn solid_aabb(solid: &SceneSolid) -> Option<Aabb3> {
+    solid
+        .meshlets
+        .iter()
+        .map(|m| m.aabb)
+        .reduce(|a, b| a.union(b))
 }
 
 /// Deterministic FNV-1a. `std::collections::hash_map::DefaultHasher` is not.
@@ -814,12 +995,16 @@ where
         _bounds: Rectangle,
     ) -> Self::Primitive {
         let mesh = self.cached_gpu_mesh();
+        let gizmos = self
+            .gizmo
+            .map(|g| gizmo_arrows(g.origin, g.axis_len))
+            .unwrap_or_default();
         ScenePrimitive {
             camera: self.camera,
             geom_key: mesh.key,
             solid: mesh.solid,
             lines: mesh.lines,
-            gizmos: mesh.gizmos,
+            gizmos: Arc::from(gizmos),
             labels: mesh.labels,
             meshlets: mesh.meshlets,
             bed_verts: mesh.bed_verts,
@@ -919,6 +1104,19 @@ impl VertexPack {
     }
 
     fn push_span(&mut self, verts: Vec<Vertex>, aabb: Aabb3, meshlets: &mut Vec<MeshletDraw>) {
+        if verts.is_empty() {
+            return;
+        }
+        let start = self.len() as u32;
+        self.extend(&verts);
+        let count = self.len() as u32 - start;
+        if count == 0 {
+            return;
+        }
+        meshlets.push(MeshletDraw { start, count, aabb });
+    }
+
+    fn push_arc(&mut self, verts: Arc<[Vertex]>, aabb: Aabb3, meshlets: &mut Vec<MeshletDraw>) {
         if verts.is_empty() {
             return;
         }
@@ -1280,14 +1478,6 @@ impl shader::Primitive for ScenePrimitive {
                 2,
                 "bambu-gpu-line-verts",
             );
-            pipeline.gizmo_count = upload_vertices(
-                device,
-                queue,
-                &mut pipeline.gizmo_buf,
-                &mut pipeline.gizmo_capacity,
-                &self.gizmos,
-                "bambu-gpu-gizmo-verts",
-            );
             pipeline.label_count = upload_labels(
                 device,
                 queue,
@@ -1297,6 +1487,14 @@ impl shader::Primitive for ScenePrimitive {
             );
             pipeline.uploaded_key = self.geom_key;
         }
+        pipeline.gizmo_count = upload_vertices(
+            device,
+            queue,
+            &mut pipeline.gizmo_buf,
+            &mut pipeline.gizmo_capacity,
+            &self.gizmos,
+            "bambu-gpu-gizmo-verts",
+        );
 
         if self.realistic {
             let mut rt = pipeline.rt.lock().unwrap_or_else(|err| err.into_inner());
@@ -1821,6 +2019,38 @@ fn label_gpu(
     )
 }
 
+fn shade_solid_chunks(solid: &mut SceneSolid, mut progress: impl FnMut(usize, usize)) {
+    if solid.meshlets.is_empty() {
+        solid.clusterize();
+    }
+    let total = solid.meshlets.len();
+    if total == 0 {
+        solid.gpu_chunks = Some(Arc::from([]));
+        progress(0, 0);
+        return;
+    }
+    const BATCH: usize = 256;
+    let mut out = Vec::with_capacity(total);
+    for chunk in solid.meshlets.chunks(BATCH) {
+        let part: Vec<(Arc<[Vertex]>, Aabb3)> = chunk
+            .par_iter()
+            .map(|m| {
+                let verts = mesh_vertices_range(
+                    &solid.mesh,
+                    m.first_tri,
+                    m.tri_count,
+                    PLASTIC,
+                    usize::MAX,
+                );
+                (Arc::<[Vertex]>::from(verts), m.aabb)
+            })
+            .collect();
+        out.extend(part);
+        progress(out.len(), total);
+    }
+    solid.gpu_chunks = Some(Arc::from(out));
+}
+
 fn overlay_vertices(mesh: &TriangleMesh, paints: &[(usize, [f32; 3])]) -> Vec<Vertex> {
     let center = mesh_center(mesh);
     let mut out = Vec::new();
@@ -2202,6 +2432,7 @@ mod tests {
         let expected: u32 = meshes.iter().map(|m| m.indices.len() as u32 * 3).sum();
         let mut scene = ViewportScene::with_cube("chunks".into());
         scene.set_solids(meshes);
+        scene.pack_gpu();
         let mesh = scene.cached_gpu_mesh();
         let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
         assert_eq!(covered, expected);
@@ -2337,5 +2568,37 @@ mod tests {
         assert!(covered > 0);
         assert!(!mesh.rt_instances.is_empty());
         assert!(mesh.bed_verts > 0);
+    }
+
+    #[test]
+    fn shade_meshes_precomputes_display_chunks() {
+        let shaded = ViewportScene::shade_meshes(
+            vec![TriangleMesh::cube(20.0)],
+            BedShape::square(BED_MM),
+            true,
+            |_, _| {},
+        );
+        let mut scene = ViewportScene::with_cube("shade".into());
+        scene.apply_shaded(shaded);
+        let mesh = scene.cached_gpu_mesh();
+        let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
+        assert_eq!(covered, 12 * 3);
+    }
+
+    #[test]
+    fn draw_without_pack_stays_chrome_only() {
+        let mut mesh = TriangleMesh::cube(20.0);
+        let base = mesh.indices.clone();
+        while mesh.indices.len() <= 48_000 {
+            mesh.indices.extend_from_slice(&base);
+        }
+        let mut scene = ViewportScene::with_cube("skip".into());
+        scene.set_solids(vec![mesh]);
+        let gpu = scene.cached_gpu_mesh();
+        let covered: u32 = gpu.meshlets.iter().map(|m| m.count).sum();
+        assert_eq!(
+            covered, 0,
+            "UI draw must not tessellate unprepared solids"
+        );
     }
 }

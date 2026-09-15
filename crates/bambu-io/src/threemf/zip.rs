@@ -49,16 +49,69 @@ pub struct LoadTimings {
     pub extra_models: usize,
 }
 
+/// Named 3MF open stages for a progress bar (parse is the long Belle path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadStage {
+    OpenArchive,
+    ParseRoot,
+    ParseObjects { done: usize, total: usize },
+    Flatten,
+    Settings,
+}
+
+impl LoadStage {
+    pub fn label(&self) -> String {
+        match self {
+            Self::OpenArchive => "Opening archive…".into(),
+            Self::ParseRoot => "Parsing 3D model…".into(),
+            Self::ParseObjects { done, total } => {
+                if *total == 0 {
+                    "Parsing object meshes…".into()
+                } else {
+                    format!("Parsing object meshes ({done}/{total})…")
+                }
+            }
+            Self::Flatten => "Flattening meshes…".into(),
+            Self::Settings => "Applying project settings…".into(),
+        }
+    }
+
+    pub fn fraction(&self) -> f32 {
+        match self {
+            Self::OpenArchive => 0.04,
+            Self::ParseRoot => 0.10,
+            Self::ParseObjects { done, total } => {
+                0.12 + 0.40 * ratio(*done, *total)
+            }
+            Self::Flatten => 0.54,
+            Self::Settings => 0.58,
+        }
+    }
+}
+
+fn ratio(done: usize, total: usize) -> f32 {
+    if total == 0 {
+        1.0
+    } else {
+        (done as f32 / total as f32).clamp(0.0, 1.0)
+    }
+}
+
 impl LoadTimings {
     pub fn total_ms(&self) -> u128 {
         self.open_ms + self.inflate_ms + self.parse_ms + self.flatten_ms + self.settings_ms
     }
 }
 
-pub(super) fn load_package_seek<R: Read + Seek>(
+pub(super) fn load_package_seek_progress<R, F>(
     reader: R,
     open_ms: u128,
-) -> Result<(Model, LoadTimings), IoError> {
+    mut progress: F,
+) -> Result<(Model, LoadTimings), IoError>
+where
+    R: Read + Seek,
+    F: FnMut(LoadStage),
+{
     let t_open = Instant::now();
     let mut zip = ZipArchive::new(reader)?;
     let open_ms = open_ms + t_open.elapsed().as_millis();
@@ -75,6 +128,7 @@ pub(super) fn load_package_seek<R: Read + Seek>(
         .cloned()
         .collect();
 
+    progress(LoadStage::ParseRoot);
     let t_root = Instant::now();
     let root = {
         let file = zip.by_name(&original)?;
@@ -83,7 +137,12 @@ pub(super) fn load_package_seek<R: Read + Seek>(
     let mut parse_ms = t_root.elapsed().as_millis();
     let mut inflate_ms = 0u128;
 
+    let extra_total = extra_names.len();
     let extras = if extra_names.len() >= 2 {
+        progress(LoadStage::ParseObjects {
+            done: 0,
+            total: extra_total,
+        });
         let t_inf = Instant::now();
         let blobs: Result<Vec<(String, Vec<u8>)>, IoError> = extra_names
             .iter()
@@ -97,15 +156,29 @@ pub(super) fn load_package_seek<R: Read + Seek>(
             .map(|(path, bytes)| Ok((path.clone(), parse_xml_bytes(bytes)?)))
             .collect();
         parse_ms += t_parse.elapsed().as_millis();
+        progress(LoadStage::ParseObjects {
+            done: extra_total,
+            total: extra_total,
+        });
         parsed?
     } else {
         let mut out = Vec::new();
-        for (orig, norm) in &extra_names {
+        for (i, (orig, norm)) in extra_names.iter().enumerate() {
+            progress(LoadStage::ParseObjects {
+                done: i,
+                total: extra_total,
+            });
             let t = Instant::now();
             let file = zip.by_name(orig)?;
             let parsed = parse_xml_reader(BufReader::new(file))?;
             parse_ms += t.elapsed().as_millis();
             out.push((norm.clone(), parsed));
+        }
+        if extra_total > 0 {
+            progress(LoadStage::ParseObjects {
+                done: extra_total,
+                total: extra_total,
+            });
         }
         out
     };
@@ -114,10 +187,12 @@ pub(super) fn load_package_seek<R: Read + Seek>(
     let project_json = zip_optional(&mut zip, &entries, PROJECT_SETTINGS_PATH)?;
     let extra_n = extras.len();
 
+    progress(LoadStage::Flatten);
     let t_flat = Instant::now();
     let mut model = model_from_parsed(root, extras)?;
     let flatten_ms = t_flat.elapsed().as_millis();
 
+    progress(LoadStage::Settings);
     let t_set = Instant::now();
     if let Some(settings_xml) = settings_xml {
         crate::bbs::apply(&mut model, &settings_xml)?;

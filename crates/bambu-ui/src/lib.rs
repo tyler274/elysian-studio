@@ -20,6 +20,7 @@ use bambu_alloc as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use bambu_config::{
@@ -33,13 +34,13 @@ use bambu_config::{
 use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, PrintJob, PrinterBackend};
 use bambu_gcode::{parse_gcode, write_gcode, write_gcode_for_objects};
 use bambu_gpu::{
-    clusterize, force_vulkan_env, paint_overlay_color, probe_vulkan, screen_axis_len,
+    force_vulkan_env, paint_overlay_color, probe_vulkan, screen_axis_len,
     slice_volumes_with_gpu_or_cpu, slice_with_gpu_or_cpu, AxisGizmo, CameraView, ExtrusionRole,
-    Meshlet, PlaterTool, ToolpathBuffer, ViewportEvent, ViewportScene,
+    Meshlet, PlaterTool, ShadedSolids, ToolpathBuffer, ViewportEvent, ViewportScene,
 };
 use bambu_io::{
-    load_mesh, load_model, read_3mf_thumbnail, write_model_3mf,
-    write_model_3mf_bytes_with_thumbnail,
+    load_mesh, load_model_with_progress, read_3mf_thumbnail, write_model_3mf,
+    write_model_3mf_bytes_with_thumbnail, LoadStage,
 };
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
@@ -180,7 +181,7 @@ pub struct App {
     last_gcode: Option<String>,
     estimated_seconds: Option<f64>,
     settings: SliceSettings,
-    model: Option<Model>,
+    model: Option<Arc<Model>>,
     plate: usize,
     by_object: bool,
     paint_kind: Option<PaintKind>,
@@ -189,6 +190,12 @@ pub struct App {
     show_axes: bool,
     gizmo_hover: bool,
     meshlet_gen: u64,
+    load_gen: u64,
+    load_progress: Option<LoadProgress>,
+    object_aabbs: Vec<bambu_geom::Aabb3>,
+    needs_display_pack: bool,
+    pack_inflight: bool,
+    pack_gen: u64,
     mqtt_status: String,
     process_profiles: Vec<BblProfileEntry>,
     filament_profiles: Vec<BblProfileEntry>,
@@ -292,6 +299,11 @@ pub enum Message {
     ProjectSaved(Result<PathBuf, String>),
     OpenRecent(PathBuf),
     MeshPicked(Option<PathBuf>),
+    LoadProgress {
+        gen: u64,
+        label: String,
+        fraction: f32,
+    },
     ModelLoaded(Result<Box<LoadedModel>, String>),
     Slice,
     ToggleSliceMenu,
@@ -337,6 +349,10 @@ pub enum Message {
     MeshletsReady {
         gen: u64,
         meshlets: Vec<Vec<Meshlet>>,
+    },
+    DisplayPacked {
+        gen: u64,
+        shaded: Box<ShadedSolids>,
     },
     PreviewMove(u32),
     EnableSupport(bool),
@@ -634,6 +650,22 @@ struct LoadedModel {
     model: Model,
     apply_settings: bool,
     load_ms: u128,
+    shaded: ShadedSolids,
+    object_aabbs: Vec<bambu_geom::Aabb3>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadProgress {
+    label: String,
+    fraction: f32,
+}
+
+#[derive(Clone)]
+struct LoadJob {
+    gen: u64,
+    path: PathBuf,
+    apply_settings: bool,
+    bed: bambu_config::BedShape,
 }
 
 #[derive(Debug, Clone)]
@@ -702,6 +734,7 @@ impl App {
         if let Some(mesh) = model.mesh_for_plate(0) {
             scene.set_mesh(mesh);
         }
+        scene.pack_gpu();
         let mut app = Self {
             adapter,
             scene,
@@ -714,7 +747,7 @@ impl App {
             last_gcode: None,
             estimated_seconds: None,
             settings,
-            model: Some(model),
+            model: Some(Arc::new(model)),
             plate: 0,
             by_object: false,
             paint_kind: None,
@@ -723,6 +756,12 @@ impl App {
             show_axes: true,
             gizmo_hover: false,
             meshlet_gen: 0,
+            load_gen: 0,
+            load_progress: None,
+            object_aabbs: Vec::new(),
+            needs_display_pack: false,
+            pack_inflight: false,
+            pack_gen: 0,
             mqtt_status: String::new(),
             process_profiles: list_bbl_profiles(BblProfileKind::Process),
             filament_profiles: list_instantiated_bbl_profiles(BblProfileKind::Filament),
@@ -824,6 +863,13 @@ impl App {
         app.load_ui_prefs();
         app.sync_gizmo();
         app.fill_xform_edits();
+        app.object_aabbs = app
+            .model
+            .as_deref()
+            .and_then(|m| m.objects.first())
+            .and_then(|o| o.mesh.aabb())
+            .into_iter()
+            .collect();
         app.load_account_from_disk();
         app.load_recents();
         app
@@ -885,7 +931,7 @@ impl App {
             vol.triangle_support[0] = TrianglePaint::Blocker;
             vol.triangle_support[1] = TrianglePaint::Blocker;
         }
-        self.model = Some(model);
+        self.model = Some(Arc::new(model));
         self.selected_object = 0;
         self.paint_kind = None;
         self.sync_scene_mesh();
@@ -1178,16 +1224,7 @@ impl App {
                     return Task::none();
                 }
                 let apply_settings = is_project_3mf(&path);
-                if apply_settings {
-                    self.project_file = Some(path.clone());
-                }
-                if !self.begin_work("loading model…") {
-                    return Task::none();
-                }
-                return offload(
-                    move || load_model_job(path, apply_settings),
-                    Message::ModelLoaded,
-                );
+                return self.begin_open(path, apply_settings, "loading model…");
             }
             Message::ProjectPicked(None) => {}
             Message::ProjectPicked(Some(path)) => return self.write_project_to(path),
@@ -1202,37 +1239,33 @@ impl App {
                 self.status = format!("save failed: {err}");
             }
             Message::OpenRecent(path) => {
-                if !self.begin_work("loading model…") {
-                    return Task::none();
-                }
                 let apply_settings = is_project_3mf(&path);
-                if apply_settings {
-                    self.project_file = Some(path.clone());
-                }
-                return offload(
-                    move || load_model_job(path, apply_settings),
-                    Message::ModelLoaded,
-                );
+                return self.begin_open(path, apply_settings, "loading model…");
             }
             Message::MeshPicked(None) => {}
             Message::MeshPicked(Some(path)) => {
-                if !self.begin_work("loading model…") {
-                    return Task::none();
-                }
                 let apply_settings = is_project_3mf(&path);
-                if apply_settings {
-                    self.project_file = Some(path.clone());
+                return self.begin_open(path, apply_settings, "loading model…");
+            }
+            Message::LoadProgress {
+                gen,
+                label,
+                fraction,
+            } => {
+                if gen == self.load_gen {
+                    self.status = label.clone();
+                    self.load_progress = Some(LoadProgress { label, fraction });
                 }
-                return offload(
-                    move || load_model_job(path, apply_settings),
-                    Message::ModelLoaded,
-                );
             }
             Message::ModelLoaded(result) => {
                 self.busy = false;
+                self.load_progress = None;
                 match result {
                     Ok(loaded) => return self.apply_loaded_model(*loaded),
-                    Err(err) => self.status = format!("open failed: {err}"),
+                    Err(err) => {
+                        self.sync_scene_mesh();
+                        self.status = format!("open failed: {err}");
+                    }
                 }
             }
             Message::ToggleSliceMenu => {
@@ -1748,6 +1781,19 @@ impl App {
                     self.scene.apply_meshlets(meshlets);
                 }
             }
+            Message::DisplayPacked { gen, shaded } => {
+                self.pack_inflight = false;
+                if gen == self.pack_gen {
+                    let keep = self.scene.keep_solid;
+                    self.scene.apply_shaded(*shaded);
+                    self.scene.keep_solid = keep;
+                    self.refresh_paint_overlay();
+                    self.sync_gizmo();
+                }
+                if self.needs_display_pack {
+                    return self.flush_display_pack();
+                }
+            }
             Message::PreviewMove(i) => {
                 self.scene.preview_vertices = i;
                 self.scene.preview_layer =
@@ -2018,9 +2064,7 @@ impl App {
                     return Task::none();
                 }
                 if let Some(path) = calibration_block_path() {
-                    self.busy = true;
-                    self.status = "loading calibration…".into();
-                    return offload(move || load_model_job(path, false), Message::ModelLoaded);
+                    return self.begin_open(path, false, "loading calibration…");
                 }
                 self.status = "tests/calibration_block not found".into();
             }
@@ -2204,7 +2248,7 @@ impl App {
             }
             Message::Toast(msg) => self.push_toast(msg),
         }
-        Task::none()
+        self.flush_display_pack()
     }
 
     pub fn theme(&self) -> Theme {
@@ -2439,7 +2483,7 @@ impl App {
             return;
         };
         if self.model.is_none() {
-            self.model = Some(Model::from_mesh("viewport", self.scene.mesh.clone()));
+            self.model = Some(Arc::new(Model::from_mesh("viewport", self.scene.mesh.clone())));
         }
         let idx = self.scene.mesh.indices[hit];
         let [a, b, c] = self.scene.mesh.triangle(idx);
@@ -2473,7 +2517,7 @@ impl App {
     }
 
     fn paint_one(&mut self, kind: PaintKind, tri: usize, paint: TrianglePaint) -> bool {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model_mut() else {
             return false;
         };
         let mut remaining = tri;
@@ -2646,6 +2690,32 @@ impl App {
         }
     }
 
+    fn begin_open(&mut self, path: PathBuf, apply_settings: bool, status: &str) -> Task<Message> {
+        self.file_menu_open = false;
+        self.workspace = Workspace::Prepare;
+        self.sync_keep_solid();
+        if apply_settings {
+            self.project_file = Some(path.clone());
+        }
+        if !self.begin_work(status) {
+            return Task::none();
+        }
+        self.load_gen = self.load_gen.wrapping_add(1);
+        let gen = self.load_gen;
+        self.load_progress = Some(LoadProgress {
+            label: LoadStage::OpenArchive.label(),
+            fraction: LoadStage::OpenArchive.fraction(),
+        });
+        self.scene.set_solids(Vec::new());
+        let job = LoadJob {
+            gen,
+            path,
+            apply_settings,
+            bed: self.scene.bed.clone(),
+        };
+        Task::stream(load_model_stream(job))
+    }
+
     fn sync_keep_solid(&mut self) {
         self.scene.keep_solid = self.workspace != Workspace::Preview
             || self.paint_kind.is_some()
@@ -2737,7 +2807,7 @@ impl App {
     }
 
     fn new_project(&mut self) -> Task<Message> {
-        self.model = Some(bambu_model::Model {
+        self.model = Some(Arc::new(bambu_model::Model {
             objects: Vec::new(),
             plates: vec![bambu_model::PartPlate {
                 name: "Plate 1".into(),
@@ -2745,7 +2815,7 @@ impl App {
                 locked: false,
             }],
             settings: None,
-        });
+        }));
         self.project_file = None;
         self.last_gcode = None;
         self.estimated_seconds = None;
@@ -2758,6 +2828,7 @@ impl App {
         });
         self.workspace = Workspace::Prepare;
         self.sync_keep_solid();
+        self.load_progress = None;
         self.status = "new project".into();
         Task::none()
     }
@@ -2787,19 +2858,17 @@ impl App {
         };
         offload(
             move || {
-                write_model_3mf(&path, &model).map_err(|e| e.to_string())?;
+                write_model_3mf(&path, model.as_ref()).map_err(|e| e.to_string())?;
                 Ok(path)
             },
             Message::ProjectSaved,
         )
     }
 
-    fn apply_loaded_model(&mut self, mut loaded: LoadedModel) -> Task<Message> {
+    fn apply_loaded_model(&mut self, loaded: LoadedModel) -> Task<Message> {
         self.remember_recent(loaded.path.clone());
-        if self.workspace == Workspace::Home {
-            self.workspace = Workspace::Prepare;
-            self.sync_keep_solid();
-        }
+        self.workspace = Workspace::Prepare;
+        self.sync_keep_solid();
         if loaded.apply_settings {
             if let Some(s) = loaded.model.settings.clone() {
                 self.settings = s;
@@ -2809,16 +2878,18 @@ impl App {
         if loaded.apply_settings {
             self.apply_bed_from_settings();
         }
-        loaded.model.place_on_bed_if_needed(&self.scene.bed);
-        let tris = loaded
-            .model
-            .mesh_for_plate(0)
-            .map(|m| m.indices.len())
-            .unwrap_or(0);
-        self.model = Some(loaded.model);
+        let tris = loaded.shaded.triangle_count();
+        self.object_aabbs = loaded.object_aabbs;
+        self.model = Some(Arc::new(loaded.model));
         self.selected_object = 0;
         self.selected_volume = 0;
-        self.sync_scene_mesh();
+        let keep = self.scene.keep_solid;
+        self.scene.apply_shaded(loaded.shaded);
+        self.scene.keep_solid = keep;
+        self.needs_display_pack = false;
+        self.refresh_paint_overlay();
+        self.sync_gizmo();
+        self.fill_xform_edits();
         let secs = loaded.load_ms as f64 / 1000.0;
         self.status = if loaded.apply_settings {
             format!(
@@ -2837,19 +2908,7 @@ impl App {
             )
         };
         self.sync_keep_solid();
-        self.meshlet_gen = self.meshlet_gen.wrapping_add(1);
-        let gen = self.meshlet_gen;
-        let meshes: Vec<bambu_geom::TriangleMesh> =
-            self.scene.solids.iter().map(|s| s.mesh.clone()).collect();
-        offload(
-            move || {
-                meshes
-                    .iter()
-                    .map(|mesh| clusterize(mesh))
-                    .collect::<Vec<Vec<Meshlet>>>()
-            },
-            move |meshlets| Message::MeshletsReady { gen, meshlets },
-        )
+        Task::none()
     }
 
     fn rewrite_filament_dir() -> PathBuf {
@@ -3443,31 +3502,68 @@ impl App {
     }
 
     fn selected_vol_mut(&mut self) -> Option<&mut bambu_model::ModelVolume> {
-        let obj = self.model.as_mut()?.objects.get_mut(self.selected_object)?;
+        let obj_i = self.selected_object;
+        let vol_i = self.selected_volume;
+        let obj = self.model_mut()?.objects.get_mut(obj_i)?;
         if obj.volumes.is_empty() {
             obj.volumes = obj.volumes_or_mesh();
         }
-        obj.volumes.get_mut(self.selected_volume)
+        obj.volumes.get_mut(vol_i)
     }
 
     fn sync_scene_mesh(&mut self) {
-        let Some(model) = self.model.as_ref() else {
-            return;
-        };
-        let meshes: Vec<bambu_geom::TriangleMesh> = model
-            .world_volumes_for_plate(self.plate)
-            .into_iter()
-            .map(|vol| vol.mesh)
-            .collect();
-        if meshes.is_empty() {
-            return;
-        }
-        let keep = self.scene.keep_solid;
-        self.scene.set_solids(meshes);
-        self.scene.keep_solid = keep;
+        self.needs_display_pack = true;
         self.refresh_paint_overlay();
         self.sync_gizmo();
         self.fill_xform_edits();
+    }
+
+    fn flush_display_pack(&mut self) -> Task<Message> {
+        if !self.needs_display_pack || self.pack_inflight || self.load_progress.is_some() {
+            return Task::none();
+        }
+        let Some(model) = self.model.clone() else {
+            return Task::none();
+        };
+        self.needs_display_pack = false;
+        self.pack_inflight = true;
+        self.pack_gen = self.pack_gen.wrapping_add(1);
+        let gen = self.pack_gen;
+        let plate = self.plate;
+        let bed = self.scene.bed.clone();
+        let keep = self.scene.keep_solid;
+        offload(
+            move || {
+                let meshes: Vec<bambu_geom::TriangleMesh> = model
+                    .world_volumes_for_plate(plate)
+                    .into_iter()
+                    .map(|vol| vol.mesh)
+                    .collect();
+                ViewportScene::shade_meshes(meshes, bed, keep, |_, _| {})
+            },
+            move |shaded| Message::DisplayPacked {
+                gen,
+                shaded: Box::new(shaded),
+            },
+        )
+    }
+
+    fn model_mut(&mut self) -> Option<&mut Model> {
+        self.model.as_mut().map(Arc::make_mut)
+    }
+
+    fn selected_aabb(&self) -> Option<(glam::Vec3, glam::Vec3)> {
+        let model = self.model.as_deref()?;
+        let inst = model
+            .objects
+            .get(self.selected_object)?
+            .instances
+            .first()
+            .copied()
+            .unwrap_or_default();
+        let local = self.object_aabbs.get(self.selected_object).copied()?;
+        let aabb = inst.transform_aabb(local);
+        Some(((aabb.min + aabb.max) * 0.5, (aabb.max - aabb.min) * 0.5))
     }
 
     fn sync_gizmo(&mut self) {
@@ -3486,15 +3582,6 @@ impl App {
         } else {
             None
         };
-    }
-
-    fn selected_aabb(&self) -> Option<(glam::Vec3, glam::Vec3)> {
-        let model = self.model.as_ref()?;
-        let obj = model.objects.get(self.selected_object)?;
-        let mesh = obj.printable_mesh();
-        let inst = obj.instances.first().copied().unwrap_or_default();
-        let aabb = inst.apply_to_mesh(&mesh).aabb()?;
-        Some(((aabb.min + aabb.max) * 0.5, (aabb.max - aabb.min) * 0.5))
     }
 
     fn cursor_near_selection(&self, ndc_x: f32, ndc_y: f32, aspect: f32) -> bool {
@@ -4032,28 +4119,125 @@ where
     )
 }
 
-fn load_model_job(path: PathBuf, apply_settings: bool) -> Result<Box<LoadedModel>, String> {
-    let t0 = std::time::Instant::now();
-    let label = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("mesh")
-        .to_string();
-    let model = load_model(&path).or_else(|err| {
-        if is_unsupported_import(&path) {
-            Err(err.to_string())
-        } else {
-            let mesh = load_mesh(&path).map_err(|e| e.to_string())?;
-            Ok(Model::from_mesh(&label, mesh))
+fn load_model_stream(job: LoadJob) -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(32, async move |output| {
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let _ = std::thread::Builder::new()
+            .name("bambu-load".into())
+            .spawn(move || {
+                load_model_worker(job, output);
+                let _ = done_tx.send(());
+            });
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = done_rx.recv();
+        })
+        .await;
+    })
+}
+
+fn emit_latest(tx: &mut iced::futures::channel::mpsc::Sender<Message>, msg: Message) {
+    match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(err) if err.is_full() => {}
+        Err(_) => {}
+    }
+}
+
+fn emit_block(tx: &mut iced::futures::channel::mpsc::Sender<Message>, mut msg: Message) {
+    loop {
+        match tx.try_send(msg) {
+            Ok(()) => return,
+            Err(err) if err.is_full() => {
+                msg = err.into_inner();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(_) => return,
         }
-    })?;
-    Ok(Box::new(LoadedModel {
-        label,
-        path,
-        model,
-        apply_settings,
-        load_ms: t0.elapsed().as_millis(),
-    }))
+    }
+}
+
+fn emit_stage(
+    tx: &mut iced::futures::channel::mpsc::Sender<Message>,
+    gen: u64,
+    stage: LoadStage,
+) {
+    emit_latest(
+        tx,
+        Message::LoadProgress {
+            gen,
+            label: stage.label(),
+            fraction: stage.fraction(),
+        },
+    );
+}
+
+fn load_model_worker(job: LoadJob, mut tx: iced::futures::channel::mpsc::Sender<Message>) {
+    let gen = job.gen;
+    let result = (|| {
+        let t0 = std::time::Instant::now();
+        let label = job
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("mesh")
+            .to_string();
+        let mut model = load_model_with_progress(&job.path, |stage| {
+            emit_stage(&mut tx, gen, stage);
+        })
+        .or_else(|err| {
+            if is_unsupported_import(&job.path) {
+                Err(err.to_string())
+            } else {
+                let mesh = load_mesh(&job.path).map_err(|e| e.to_string())?;
+                Ok(Model::from_mesh(&label, mesh))
+            }
+        })?;
+        let mut bed = job.bed;
+        if job.apply_settings {
+            if let Some(settings) = &model.settings {
+                bed = settings.bed_shape();
+            }
+        }
+        emit_latest(
+            &mut tx,
+            Message::LoadProgress {
+                gen,
+                label: "Placing on build plate…".into(),
+                fraction: 0.59,
+            },
+        );
+        model.place_on_bed_if_needed(&bed);
+        let object_aabbs: Vec<bambu_geom::Aabb3> = model
+            .objects
+            .iter()
+            .filter_map(|o| o.mesh.aabb())
+            .collect();
+        let meshes: Vec<bambu_geom::TriangleMesh> = model
+            .world_volumes_for_plate(0)
+            .into_iter()
+            .map(|vol| vol.mesh)
+            .collect();
+        let shaded = ViewportScene::shade_meshes(meshes, bed, true, |label, fraction| {
+            emit_latest(
+                &mut tx,
+                Message::LoadProgress {
+                    gen,
+                    label: label.into(),
+                    fraction,
+                },
+            );
+        });
+        Ok(Box::new(LoadedModel {
+            label,
+            path: job.path,
+            model,
+            apply_settings: job.apply_settings,
+            load_ms: t0.elapsed().as_millis(),
+            shaded,
+            object_aabbs,
+        }))
+    })();
+    emit_block(&mut tx, Message::ModelLoaded(result));
 }
 
 fn file_mtime(path: &std::path::Path) -> u64 {
@@ -4360,6 +4544,50 @@ mod device_sync {
     }
 
     #[test]
+    fn open_recent_switches_to_prepare_with_progress() {
+        let mut app = App::new_for_gui_test();
+        app.workspace = Workspace::Home;
+        let path = std::env::temp_dir().join("bambu-ui-open-progress.3mf");
+        let _ = std::fs::remove_file(&path);
+        App::write_recent_preview_3mf(&path).unwrap();
+        let _ = app.update(Message::OpenRecent(path.clone()));
+        assert_eq!(app.workspace, Workspace::Prepare);
+        assert!(app.busy);
+        let progress = app.load_progress.as_ref().expect("progress overlay");
+        assert!(progress.fraction > 0.0);
+        assert!(progress.fraction < 1.0);
+        assert!(progress.label.to_ascii_lowercase().contains("open"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_progress_message_updates_overlay() {
+        let mut app = App::new_for_gui_test();
+        app.workspace = Workspace::Home;
+        app.busy = true;
+        app.load_gen = 3;
+        let _ = app.update(Message::LoadProgress {
+            gen: 3,
+            label: "Parsing object meshes (0/1)…".into(),
+            fraction: 0.2,
+        });
+        assert_eq!(app.workspace, Workspace::Home);
+        let progress = app.load_progress.as_ref().expect("progress");
+        assert_eq!(progress.label, "Parsing object meshes (0/1)…");
+        assert!((progress.fraction - 0.2).abs() < f32::EPSILON);
+        assert_eq!(app.status, "Parsing object meshes (0/1)…");
+        let _ = app.update(Message::LoadProgress {
+            gen: 99,
+            label: "stale".into(),
+            fraction: 0.9,
+        });
+        assert_eq!(
+            app.load_progress.as_ref().unwrap().label,
+            "Parsing object meshes (0/1)…"
+        );
+    }
+
+    #[test]
     fn chamber_jpeg_stores_image_handle() {
         let mut app = App::new_for_gui_test();
         let rgba = vec![
@@ -4529,7 +4757,7 @@ mod device_sync {
     #[test]
     fn slice_all_visits_each_plate() {
         let mut app = App::new_for_gui_test();
-        if let Some(model) = app.model.as_mut() {
+        if let Some(model) = app.model.as_mut().map(Arc::make_mut) {
             model.plates.push(bambu_model::PartPlate {
                 name: "Plate 2".into(),
                 object_indices: vec![0],
