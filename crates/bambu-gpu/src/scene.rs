@@ -51,6 +51,22 @@ const DEFAULT_MAX_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 const CHUNK_VERTS: usize = ((DEFAULT_MAX_BUFFER_BYTES / VERTEX_STRIDE / 3) * 3) as usize;
 const RT_TRI_LIMIT: usize = 200_000;
 
+/// Off-thread packs set `realistic = false`, and huge meshes omit solids from
+/// the TLAS (`RT_TRI_LIMIT`). Blit RT only when the acceleration structure
+/// actually contains the model; otherwise Fast-raster the meshlets.
+fn blit_raytraced_solids(realistic: bool, rt_ready: bool, rt_instance_count: usize) -> bool {
+    realistic && rt_ready && rt_instance_count > 1
+}
+
+fn gizmo_primitive_state() -> wgpu::PrimitiveState {
+    wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        cull_mode: Some(wgpu::Face::Back),
+        front_face: wgpu::FrontFace::Ccw,
+        ..Default::default()
+    }
+}
+
 fn msaa_state() -> wgpu::MultisampleState {
     wgpu::MultisampleState {
         count: SAMPLE_COUNT,
@@ -349,6 +365,25 @@ impl ViewportScene {
         self.invalidate_gpu();
     }
 
+    /// Orbit so the loaded solids fill the view (Prepare after open).
+    pub fn frame_contents(&mut self) {
+        let aabb = self
+            .solids
+            .iter()
+            .filter_map(|s| s.mesh.aabb())
+            .chain(self.mesh.aabb())
+            .reduce(|a, b| a.union(b));
+        let Some(aabb) = aabb else {
+            return;
+        };
+        if !aabb.min.is_finite() || !aabb.max.is_finite() {
+            return;
+        }
+        let span = aabb.size().max_element().max(self.bed_mm * 0.35);
+        let target = (aabb.min + aabb.max) * 0.5;
+        self.camera = OrbitCamera::looking_at_center(target, span);
+    }
+
     pub fn apply_meshlets(&mut self, meshlets: Vec<Vec<crate::meshlet::Meshlet>>) {
         for (solid, lets) in self.solids.iter_mut().zip(meshlets) {
             solid.meshlets = lets;
@@ -494,7 +529,12 @@ impl ViewportScene {
             solid.mesh.indices.len().hash(&mut hasher);
             hash_vec3_samples(&mut hasher, &solid.mesh.vertices);
             solid.meshlets.len().hash(&mut hasher);
-            solid.gpu_chunks.as_ref().map(|c| c.len()).unwrap_or(0).hash(&mut hasher);
+            solid
+                .gpu_chunks
+                .as_ref()
+                .map(|c| c.len())
+                .unwrap_or(0)
+                .hash(&mut hasher);
         }
         self.paint_overlay.len().hash(&mut hasher);
         if let Some((idx, color)) = self.paint_overlay.first() {
@@ -585,26 +625,16 @@ impl ViewportScene {
                 let batches: Vec<(Vec<Vertex>, Aabb3)> = if jobs.len() > 1 {
                     jobs.par_iter()
                         .map(|(first, count, aabb)| {
-                            let verts = mesh_vertices_range(
-                                &s.mesh,
-                                *first,
-                                *count,
-                                PLASTIC,
-                                usize::MAX,
-                            );
+                            let verts =
+                                mesh_vertices_range(&s.mesh, *first, *count, PLASTIC, usize::MAX);
                             (verts, *aabb)
                         })
                         .collect()
                 } else {
                     jobs.iter()
                         .map(|(first, count, aabb)| {
-                            let verts = mesh_vertices_range(
-                                &s.mesh,
-                                *first,
-                                *count,
-                                PLASTIC,
-                                usize::MAX,
-                            );
+                            let verts =
+                                mesh_vertices_range(&s.mesh, *first, *count, PLASTIC, usize::MAX);
                             (verts, *aabb)
                         })
                         .collect()
@@ -1293,11 +1323,7 @@ impl ScenePipeline {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
+            primitive: gizmo_primitive_state(),
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(false),
@@ -1446,7 +1472,7 @@ impl shader::Primitive for ScenePrimitive {
 
         // Match the pane we `set_viewport` to in `render`, not the full window.
         let aspect = pane_aspect(*bounds);
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
+        let proj = self.camera.perspective(aspect);
         let view = self.camera.view_matrix();
         let model = Mat4::IDENTITY;
         let mvp = proj * view * model;
@@ -1543,7 +1569,11 @@ impl shader::Primitive for ScenePrimitive {
                 gpu.build_and_trace(encoder, &self.rt_instances);
             }
         }
-        let do_rt = self.realistic && rt.as_ref().is_some_and(|gpu| gpu.is_ready());
+        let do_rt = blit_raytraced_solids(
+            self.realistic,
+            rt.as_ref().is_some_and(|gpu| gpu.is_ready()),
+            self.rt_instances.len(),
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("bambu-gpu-viewport"),
@@ -1607,7 +1637,7 @@ impl shader::Primitive for ScenePrimitive {
             pass.set_bind_group(0, &pipeline.bind_group, &[]);
             draw_vert_span(&mut pass, &pipeline.solid_bufs, 0, self.bed_verts);
             let aspect = (vp_w / vp_h.max(1.0)).max(0.1);
-            let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 1.0, 4000.0);
+            let proj = self.camera.perspective(aspect);
             let planes = crate::meshlet::frustum_planes(proj * self.camera.view_matrix());
             for meshlet in self.meshlets.iter() {
                 if meshlet.count == 0 || !crate::meshlet::aabb_in_frustum(meshlet.aabb, &planes) {
@@ -2035,13 +2065,8 @@ fn shade_solid_chunks(solid: &mut SceneSolid, mut progress: impl FnMut(usize, us
         let part: Vec<(Arc<[Vertex]>, Aabb3)> = chunk
             .par_iter()
             .map(|m| {
-                let verts = mesh_vertices_range(
-                    &solid.mesh,
-                    m.first_tri,
-                    m.tri_count,
-                    PLASTIC,
-                    usize::MAX,
-                );
+                let verts =
+                    mesh_vertices_range(&solid.mesh, m.first_tri, m.tri_count, PLASTIC, usize::MAX);
                 (Arc::<[Vertex]>::from(verts), m.aabb)
             })
             .collect();
@@ -2596,9 +2621,105 @@ mod tests {
         scene.set_solids(vec![mesh]);
         let gpu = scene.cached_gpu_mesh();
         let covered: u32 = gpu.meshlets.iter().map(|m| m.count).sum();
+        assert_eq!(covered, 0, "UI draw must not tessellate unprepared solids");
+    }
+
+    #[test]
+    fn gizmo_pipeline_culls_back_faces() {
         assert_eq!(
-            covered, 0,
-            "UI draw must not tessellate unprepared solids"
+            gizmo_primitive_state().cull_mode,
+            Some(wgpu::Face::Back),
+            "back-face cull hides cone interiors"
         );
+        assert_eq!(gizmo_primitive_state().front_face, wgpu::FrontFace::Ccw);
+    }
+
+    #[test]
+    fn gizmo_triangles_are_ccw_from_outside() {
+        let verts = gizmo_arrows(Vec3::ZERO, 24.0);
+        assert!(verts.len() >= 9);
+        for tri in verts.chunks_exact(3) {
+            let a = Vec3::from(tri[0].position);
+            let b = Vec3::from(tri[1].position);
+            let c = Vec3::from(tri[2].position);
+            let geometric = (b - a).cross(c - a);
+            let stored = Vec3::from(tri[0].normal);
+            assert!(
+                geometric.dot(stored) > 0.0,
+                "winding must match the outward normal so Back cull keeps the shell"
+            );
+        }
+    }
+
+    #[test]
+    fn worker_pack_without_rt_still_rasters_meshlets() {
+        let shaded = ViewportScene::shade_meshes(
+            vec![TriangleMesh::cube(20.0)],
+            BedShape::square(BED_MM),
+            true,
+            |_, _| {},
+        );
+        let mut scene = ViewportScene::with_cube("worker-pack".into());
+        scene.realistic = true;
+        scene.apply_shaded(shaded);
+        let mesh = scene.cached_gpu_mesh();
+        let covered: u32 = mesh.meshlets.iter().map(|m| m.count).sum();
+        assert!(
+            covered >= 12 * 3,
+            "Fast raster meshlets must survive the pack"
+        );
+        assert!(
+            !blit_raytraced_solids(true, true, mesh.rt_instances.len()),
+            "off-thread packs omit the model from the TLAS; blit would show an empty bed"
+        );
+    }
+
+    #[test]
+    fn over_rt_limit_omits_tlas_solids() {
+        assert!(RT_TRI_LIMIT < usize::MAX / 2);
+        assert!(!blit_raytraced_solids(true, true, 1));
+        assert!(blit_raytraced_solids(true, true, 2));
+        assert!(!blit_raytraced_solids(true, false, 2));
+        assert!(!blit_raytraced_solids(false, true, 2));
+    }
+
+    #[test]
+    fn frame_contents_looks_at_solid_center() {
+        let mut mesh = TriangleMesh::cube(20.0);
+        mesh.translate(Vec3::new(80.0, 40.0, 0.0));
+        let mut scene = ViewportScene::with_cube("frame".into());
+        scene.set_mesh(mesh);
+        scene.frame_contents();
+        assert!(
+            (scene.camera.target.x - 90.0).abs() < 1.0,
+            "{}",
+            scene.camera.target
+        );
+        assert!((scene.camera.target.y - 50.0).abs() < 1.0);
+        assert!(scene.camera.distance > 20.0);
+    }
+
+    #[test]
+    fn framed_meshlets_stay_in_frustum() {
+        let shaded = ViewportScene::shade_meshes(
+            vec![TriangleMesh::cube(20.0)],
+            BedShape::square(BED_MM),
+            true,
+            |_, _| {},
+        );
+        let mut scene = ViewportScene::with_cube("frustum".into());
+        scene.apply_shaded(shaded);
+        scene.frame_contents();
+        let mesh = scene.cached_gpu_mesh();
+        let proj = scene.camera.perspective(1.0);
+        let planes = crate::meshlet::frustum_planes(proj * scene.camera.view_matrix());
+        assert!(!mesh.meshlets.is_empty());
+        for m in mesh.meshlets.iter() {
+            assert!(
+                crate::meshlet::aabb_in_frustum(m.aabb, &planes),
+                "packed meshlet AABB {:?} culled after frame",
+                m.aabb
+            );
+        }
     }
 }

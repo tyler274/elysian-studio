@@ -433,20 +433,28 @@ impl Model {
         self.merge_indices(0..self.objects.len())
     }
 
+    /// Object indices on `plate`. A single plate with no matched instances
+    /// still yields every object so an id-mismatch cannot hide the mesh.
+    pub fn plate_object_indices(&self, plate: usize) -> Vec<usize> {
+        match self.plates.get(plate) {
+            Some(p) if !p.object_indices.is_empty() => p.object_indices.clone(),
+            Some(_) if self.plates.len() == 1 => (0..self.objects.len()).collect(),
+            None => (0..self.objects.len()).collect(),
+            Some(_) => Vec::new(),
+        }
+    }
+
     /// Objects on `plate` (0-based). Missing plate falls back to [`Self::merged_mesh`].
     pub fn mesh_for_plate(&self, plate: usize) -> Option<TriangleMesh> {
-        let Some(p) = self.plates.get(plate) else {
+        if self.plates.get(plate).is_none() {
             return self.merged_mesh();
-        };
-        self.merge_indices(p.object_indices.iter().copied())
+        }
+        self.merge_indices(self.plate_object_indices(plate))
     }
 
     /// World-space volumes on `plate` (instance transforms baked into each mesh).
     pub fn world_volumes_for_plate(&self, plate: usize) -> Vec<ModelVolume> {
-        let indices: Vec<usize> = match self.plates.get(plate) {
-            Some(p) => p.object_indices.clone(),
-            None => (0..self.objects.len()).collect(),
-        };
+        let indices = self.plate_object_indices(plate);
         let mut out = Vec::new();
         for i in indices {
             let Some(object) = self.objects.get(i) else {
@@ -595,5 +603,32 @@ mod tests {
             mixed.enable_support,
             "disagreeing objects keep the project enable_support"
         );
+    }
+
+    #[test]
+    fn single_plate_with_empty_indices_still_lists_objects() {
+        let mut model = Model::from_mesh("belle", TriangleMesh::cube(20.0));
+        model.objects[0].object_id = 3;
+        model.plates[0].object_indices.clear();
+        assert_eq!(model.plate_object_indices(0), vec![0]);
+        assert_eq!(model.world_volumes_for_plate(0).len(), 1);
+        assert!(model.mesh_for_plate(0).is_some());
+    }
+
+    #[test]
+    fn empty_second_plate_stays_empty() {
+        let mut model = Model::from_mesh("a", TriangleMesh::cube(20.0));
+        model
+            .objects
+            .push(crate::ModelObject::new("b", TriangleMesh::cube(20.0)));
+        model.plates[0].object_indices = vec![0];
+        model.plates.push(crate::PartPlate {
+            name: "Plate 2".into(),
+            object_indices: Vec::new(),
+            locked: false,
+        });
+        assert_eq!(model.plate_object_indices(0), vec![0]);
+        assert!(model.plate_object_indices(1).is_empty());
+        assert!(model.world_volumes_for_plate(1).is_empty());
     }
 }

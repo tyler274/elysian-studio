@@ -54,10 +54,7 @@ impl Model {
     /// `{0.5, 0.5}` in Bambu Studio). A single object therefore stays centered.
     pub fn arrange_on_plate(&mut self, plate: usize, bed: &BedShape, gap: f32) {
         let (x0, y0, x1, y1) = bed.printable_aabb();
-        let indices: Vec<usize> = match self.plates.get(plate) {
-            Some(p) => p.object_indices.clone(),
-            None => (0..self.objects.len()).collect(),
-        };
+        let indices: Vec<usize> = self.plate_object_indices(plate);
         let gap = gap.max(1.0);
         for &i in &indices {
             if let Some(obj) = self.objects.get_mut(i) {

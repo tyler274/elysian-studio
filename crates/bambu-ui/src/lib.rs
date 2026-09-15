@@ -2368,11 +2368,7 @@ impl App {
     fn build_slice_job(&self) -> SliceJob {
         let settings = self.settings.clone();
         if let Some(model) = &self.model {
-            let indices: Vec<usize> = model
-                .plates
-                .get(self.plate)
-                .map(|p| p.object_indices.clone())
-                .unwrap_or_else(|| (0..model.objects.len()).collect());
+            let indices: Vec<usize> = model.plate_object_indices(self.plate);
             if settings.print_sequence_by_object() && indices.len() > 1 {
                 let objects = indices
                     .iter()
@@ -2901,6 +2897,7 @@ impl App {
         self.scene.apply_shaded(loaded.shaded);
         self.scene.keep_solid = keep;
         self.needs_display_pack = false;
+        self.scene.frame_contents();
         self.refresh_paint_overlay();
         self.sync_gizmo();
         self.fill_xform_edits();

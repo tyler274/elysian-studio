@@ -27,6 +27,7 @@ impl OrbitCamera {
     pub const PITCH_MAX: f32 = 1.45;
     pub const ISO_YAW: f32 = 0.65;
     pub const ISO_PITCH: f32 = 0.55;
+    pub const FOV: f32 = std::f32::consts::FRAC_PI_4;
 
     pub fn looking_at_bed(bed_mm: f32) -> Self {
         Self::looking_at_center(Vec3::new(bed_mm * 0.5, bed_mm * 0.5, 0.0), bed_mm)
@@ -69,6 +70,18 @@ impl OrbitCamera {
             }
             CameraView::Fit => *self = Self::looking_at_center(target, span_mm),
         }
+    }
+
+    /// Near/far that keep a framed model inside the clip volume.
+    pub fn clip_range(self) -> (f32, f32) {
+        let near = (self.distance * 0.005).clamp(0.1, 5.0);
+        let far = (self.distance * 12.0).max(4000.0);
+        (near, far)
+    }
+
+    pub fn perspective(self, aspect: f32) -> Mat4 {
+        let (near, far) = self.clip_range();
+        Mat4::perspective_rh(Self::FOV, aspect.max(0.1), near, far)
     }
 
     /// Ray ∩ z=0 plane, or `None` if parallel / behind the camera.
@@ -126,7 +139,7 @@ impl OrbitCamera {
     }
 
     pub fn ray_from_ndc(self, ndc_x: f32, ndc_y: f32, aspect: f32) -> (Vec3, Vec3) {
-        let proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect.max(0.1), 1.0, 4000.0);
+        let proj = self.perspective(aspect);
         let view = self.view_matrix();
         let inv = (proj * view).inverse();
         let n = inv * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
@@ -187,5 +200,13 @@ mod tests {
         front.apply_view(CameraView::Front, iso.target, 256.0);
         assert!((front.yaw - iso.yaw).abs() > 0.2);
         assert!((front.pitch - iso.pitch).abs() > 0.2);
+    }
+
+    #[test]
+    fn clip_range_grows_with_distance() {
+        let near = OrbitCamera::looking_at_center(Vec3::ZERO, 100.0);
+        let far = OrbitCamera::looking_at_center(Vec3::ZERO, 2000.0);
+        assert!(far.clip_range().1 > near.clip_range().1);
+        assert!(far.clip_range().1 > far.distance);
     }
 }

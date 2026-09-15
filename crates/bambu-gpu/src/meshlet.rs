@@ -50,16 +50,35 @@ pub fn frustum_planes(view_proj: Mat4) -> [Vec4; 6] {
     let r2 = view_proj.row(2);
     let r3 = view_proj.row(3);
     [
-        (r3 + r0).normalize_or_zero(),
-        (r3 - r0).normalize_or_zero(),
-        (r3 + r1).normalize_or_zero(),
-        (r3 - r1).normalize_or_zero(),
-        r2.normalize_or_zero(),
-        (r3 - r2).normalize_or_zero(),
+        plane(r3 + r0),
+        plane(r3 - r0),
+        plane(r3 + r1),
+        plane(r3 - r1),
+        // wgpu clip z is [0, 1] (DX), not OpenGL [-1, 1].
+        plane(r2),
+        plane(r3 - r2),
     ]
 }
 
+fn plane(p: Vec4) -> Vec4 {
+    let len = Vec3::new(p.x, p.y, p.z).length();
+    if len <= 1e-8 {
+        Vec4::ZERO
+    } else {
+        p / len
+    }
+}
+
 pub fn aabb_in_frustum(aabb: Aabb3, planes: &[Vec4; 6]) -> bool {
+    // Inverted/empty meshlet AABBs must not hide the model.
+    if !aabb.min.is_finite()
+        || !aabb.max.is_finite()
+        || aabb.min.x > aabb.max.x
+        || aabb.min.y > aabb.max.y
+        || aabb.min.z > aabb.max.z
+    {
+        return true;
+    }
     let c = (aabb.min + aabb.max) * 0.5;
     let e = (aabb.max - aabb.min) * 0.5;
     for p in planes {
@@ -83,5 +102,42 @@ mod tests {
         let covered: u32 = lets.iter().map(|m| m.tri_count).sum();
         assert_eq!(covered as usize, mesh.indices.len());
         assert!(!lets.is_empty());
+    }
+
+    #[test]
+    fn look_at_target_aabb_is_inside_frustum() {
+        let cam =
+            crate::camera::OrbitCamera::looking_at_center(Vec3::new(128.0, 128.0, 20.0), 256.0);
+        let proj = cam.perspective(1.0);
+        let planes = frustum_planes(proj * cam.view_matrix());
+        let aabb = Aabb3 {
+            min: Vec3::new(118.0, 118.0, 0.0),
+            max: Vec3::new(138.0, 138.0, 40.0),
+        };
+        assert!(
+            aabb_in_frustum(aabb, &planes),
+            "a figure on the bed must survive frustum culling"
+        );
+    }
+
+    #[test]
+    fn behind_camera_aabb_is_outside_frustum() {
+        let cam =
+            crate::camera::OrbitCamera::looking_at_center(Vec3::new(128.0, 128.0, 0.0), 256.0);
+        let proj = cam.perspective(1.0);
+        let planes = frustum_planes(proj * cam.view_matrix());
+        let behind = cam.eye() + (cam.eye() - cam.target).normalize() * 200.0;
+        let aabb = Aabb3 {
+            min: behind - Vec3::splat(5.0),
+            max: behind + Vec3::splat(5.0),
+        };
+        assert!(!aabb_in_frustum(aabb, &planes));
+    }
+
+    #[test]
+    fn inverted_aabb_is_not_culled() {
+        let cam = crate::camera::OrbitCamera::looking_at_bed(256.0);
+        let planes = frustum_planes(cam.perspective(1.0) * cam.view_matrix());
+        assert!(aabb_in_frustum(Aabb3::empty(), &planes));
     }
 }
