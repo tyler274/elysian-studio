@@ -158,6 +158,7 @@ pub fn stream_ttcode_frames(
     api: &mut CloudApi,
     serial: &str,
     lan_code: &str,
+    firmware: Option<&str>,
     mut on_frame: impl FnMut(Frame) -> bool,
 ) -> Result<(), CameraError> {
     if serial.is_empty() {
@@ -166,7 +167,7 @@ pub fn stream_ttcode_frames(
         ));
     }
     let mut creds = api
-        .with_retry(|api| api.mint_camera_creds(serial))
+        .with_retry(|api| api.mint_camera_creds_with(serial, firmware))
         .map_err(|err| CameraError::Message(ttcode_error(&err)))?;
     if creds.device.is_empty() {
         creds.device = serial.to_string();

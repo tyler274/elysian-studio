@@ -32,6 +32,7 @@ pub struct CloudDevice {
     pub online: bool,
     pub dev_name: String,
     pub access_code: String,
+    pub dev_ver: String,
 }
 
 impl CloudDevice {
@@ -281,12 +282,15 @@ fn parse_device(v: &Value) -> Option<CloudDevice> {
         .unwrap_or(false);
     let access_code = string_field(v, &["dev_access_code", "access_code", "user_access_code"])
         .unwrap_or_default();
+    let dev_ver =
+        string_field(v, &["dev_ver", "fw_ver", "ota_version", "sw_ver"]).unwrap_or_default();
     Some(CloudDevice {
         dev_id,
         name,
         online,
         dev_name,
         access_code,
+        dev_ver,
     })
 }
 
@@ -731,6 +735,7 @@ impl CloudApi {
             retry_after,
             body_len = text.len(),
             body_keys = %json_field_names(&text),
+            error_code = json_error_code(&text),
             "cloud HTTPS response"
         );
         if resp.status < 200 || resp.status >= 300 {
@@ -762,9 +767,31 @@ impl CloudApi {
         serial: &str,
         firmware: Option<&str>,
     ) -> Result<CameraCreds, CloudApiError> {
-        let serial = match self.list_devices() {
-            Ok(devs) => camera_serial_from_bind(serial, &devs),
-            Err(_) => serial.trim().to_string(),
+        let (serial, bind_fw) = match self.list_devices() {
+            Ok(devs) => {
+                let serial = camera_serial_from_bind(serial, &devs);
+                let bind_fw = devs
+                    .iter()
+                    .find(|d| d.dev_id == serial)
+                    .map(|d| d.dev_ver.trim().to_string())
+                    .filter(|v| !v.is_empty());
+                tracing::debug!(
+                    target: "bambu_protocol::cloud",
+                    requested = %redact_id(&serial),
+                    device_count = devs.len(),
+                    bind_fw_len = bind_fw.as_ref().map(String::len).unwrap_or(0),
+                    "bind for camera mint"
+                );
+                (serial, bind_fw)
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "bambu_protocol::cloud",
+                    error = %err,
+                    "bind list failed; using requested serial"
+                );
+                (serial.trim().to_string(), None)
+            }
         };
         let owned = firmware
             .map(str::trim)
@@ -775,7 +802,8 @@ impl CloudApi {
                     .ok()
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-            });
+            })
+            .or(bind_fw);
         let fw = owned.as_deref();
         tracing::debug!(
             target: "bambu_protocol::cloud",
@@ -784,10 +812,7 @@ impl CloudApi {
             "mint camera creds"
         );
         let attempts: Vec<(&[&str], Option<&str>)> = if let Some(ver) = fw {
-            vec![
-                (&["agora"], Some(ver)),
-                (&["tutk", "agora"], Some(ver)),
-            ]
+            vec![(&["agora"], Some(ver)), (&["tutk", "agora"], Some(ver))]
         } else {
             vec![(&["agora"], None), (&["tutk", "agora"], None)]
         };
@@ -834,12 +859,7 @@ impl CloudApi {
                     }
                 }
                 if parsed.firmware.is_some() || !protocols.is_empty() {
-                    match self.ttcode_post(
-                        &parsed.dev_id,
-                        None,
-                        &[],
-                        parsed.channel.as_deref(),
-                    ) {
+                    match self.ttcode_post(&parsed.dev_id, None, &[], parsed.channel.as_deref()) {
                         Ok(creds) => return Ok(creds),
                         Err(err) if is_cloud_rate_limited(&err) => return Err(err),
                         Err(_) => {}
@@ -1071,9 +1091,23 @@ fn auth_rejected(err: &CloudApiError) -> bool {
     err.to_string().contains("HTTP 401")
 }
 
+fn json_error_code(text: &str) -> Option<i64> {
+    serde_json::from_str::<Value>(text).ok().and_then(|v| {
+        v.get("code")
+            .and_then(|c| c.as_i64().or_else(|| c.as_u64().map(|n| n as i64)))
+            .or_else(|| {
+                v.get("code")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse().ok())
+            })
+    })
+}
+
 fn json_error_hint(text: &str) -> String {
-    serde_json::from_str::<Value>(text)
-        .ok()
+    let parsed = serde_json::from_str::<Value>(text).ok();
+    let code = json_error_code(text);
+    let msg = parsed
+        .as_ref()
         .and_then(|v| {
             v.get("error")
                 .and_then(Value::as_str)
@@ -1086,7 +1120,13 @@ fn json_error_hint(text: &str) -> String {
                         .map(str::to_string)
                 })
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    match (code, msg.is_empty()) {
+        (Some(code), false) => format!("error code {code}: {msg}"),
+        (Some(code), true) => format!("error code {code}"),
+        (None, false) => msg,
+        (None, true) => String::new(),
+    }
 }
 
 pub fn ttcode_post_body(dev_id: &str, firmware: Option<&str>, protocols: &[&str]) -> Value {
@@ -1356,11 +1396,13 @@ mod tests {
                 "name": "H2C",
                 "dev_product_name": "H2C",
                 "online": true,
-                "dev_access_code": "abcd1234"
+                "dev_access_code": "abcd1234",
+                "dev_ver": "01.02.00.00"
             }]
         });
         let devices = parse_bind_devices(&v);
         assert_eq!(devices[0].access_code, "abcd1234");
+        assert_eq!(devices[0].dev_ver, "01.02.00.00");
         assert_eq!(
             camera_serial_from_bind("01P00AFAKE00001", &devices),
             "01H2C0000000001"
@@ -1546,6 +1588,7 @@ mod tests {
             r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
         );
         assert!(hint.contains("forbidden"));
+        assert!(hint.contains("error code 8"));
         let err = CloudApiError::Message(cloud_http_error(
             403,
             r#"{"code":8,"error":"The specified resource is forbidden.","message":""}"#,
@@ -1650,17 +1693,16 @@ mod tests {
         let get = api.json_headers(false);
         assert!(!get.iter().any(|(k, _)| *k == "Content-Type"));
         assert!(get.iter().any(|(k, _)| *k == "Authorization"));
-        assert!(get
-            .iter()
-            .any(|(k, v)| *k == "user-id" && v == "u_4242"));
+        assert!(get.iter().any(|(k, v)| *k == "user-id" && v == "u_4242"));
         assert!(get
             .iter()
             .any(|(k, v)| *k == "X-BBL-Client-Type" && v == "slicer"));
         assert!(get
             .iter()
             .any(|(k, v)| *k == "X-BBL-Client-Name" && v == "BambuStudio"));
-        assert!(get.iter().any(|(k, v)| *k == "User-Agent"
-            && v.starts_with("bambu_network_agent/")));
+        assert!(get
+            .iter()
+            .any(|(k, v)| *k == "User-Agent" && v.starts_with("bambu_network_agent/")));
         let post = api.json_headers(true);
         assert!(post.iter().any(|(k, _)| *k == "Content-Type"));
     }

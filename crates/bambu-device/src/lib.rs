@@ -74,6 +74,9 @@ pub struct MachineState {
     /// H2C induction rack (`print.device.holder` + rack nozzles). Empty on P1/A1.
     #[serde(default)]
     pub nozzle_rack: NozzleRackState,
+    /// MQTT `info.get_version` module `ota.sw_ver` (Studio `dev_ver` for ttcode).
+    #[serde(default)]
+    pub ota_version: String,
 }
 
 impl Default for MachineState {
@@ -108,6 +111,7 @@ impl Default for MachineState {
             wifi_signal: String::new(),
             hms: Vec::new(),
             nozzle_rack: NozzleRackState::default(),
+            ota_version: String::new(),
         }
     }
 }

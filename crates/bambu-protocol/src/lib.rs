@@ -53,12 +53,12 @@ pub use cloud::{
 };
 pub use cloud_api::{
     api_host, bind_path, camera_serial_from_bind, camera_url_key, cloud_error_is_rate_limited,
-    cloud_http_error, http_user_id, iot_user_id, jwt_iot_user_id, jwt_user_id, login_body, md5_hex, parse_bind_devices,
-    parse_camera_creds, parse_camera_url_key, parse_login, parse_profile, parse_upload_ticket,
-    profile_path, refresh_body, slicer_device_id, slicer_http_headers, ticket_body, ticket_path,
-    ttcode_after_post, ttcode_get_path, ttcode_path, ttcode_post_body, ttcode_should_retry_get,
-    upload_ticket_body, CameraCreds, CameraProto, CameraUrlKey, CloudApi, CloudApiError,
-    CloudDevice, CloudProfile, LoginResult, UploadTicket, SLICER_AGENT_VERSION,
+    cloud_http_error, http_user_id, iot_user_id, jwt_iot_user_id, jwt_user_id, login_body, md5_hex,
+    parse_bind_devices, parse_camera_creds, parse_camera_url_key, parse_login, parse_profile,
+    parse_upload_ticket, profile_path, refresh_body, slicer_device_id, slicer_http_headers,
+    ticket_body, ticket_path, ttcode_after_post, ttcode_get_path, ttcode_path, ttcode_post_body,
+    ttcode_should_retry_get, upload_ticket_body, CameraCreds, CameraProto, CameraUrlKey, CloudApi,
+    CloudApiError, CloudDevice, CloudProfile, LoginResult, UploadTicket, SLICER_AGENT_VERSION,
     SLICER_CLIENT_VERSION,
 };
 pub use credentials::{
@@ -81,12 +81,13 @@ pub use inventory::{
 };
 pub use mqtt::{
     ams_change_filament, ams_filament_drying, app_cert_install, auto_stop_ams_dry, chamber_light,
-    gcode_line, hms_ignore, hms_resume, hms_stop, holder_nozzle_refresh, next_sequence_id,
-    nozzle_holder_ctrl, nozzle_info_confirm, parse_ams, parse_hms_items, parse_nozzle_rack,
-    parse_printer_cert, parse_push_status, pause, print_speed, project_file, project_file_cloud,
-    project_file_cloud_opts, project_file_with_ams, project_file_with_ams_opts, pushall,
-    report_topic, request_topic, resume, set_bed_temp, set_fan, set_nozzle_temp, skip_objects,
-    stop, ProjectFileOpts, AMS_DRY_MODE_OFF, AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT, LAN_MQTT_USER,
+    gcode_line, get_version, hms_ignore, hms_resume, hms_stop, holder_nozzle_refresh,
+    next_sequence_id, nozzle_holder_ctrl, nozzle_info_confirm, parse_ams, parse_hms_items,
+    parse_nozzle_rack, parse_ota_version, parse_printer_cert, parse_push_status, pause,
+    print_speed, project_file, project_file_cloud, project_file_cloud_opts, project_file_with_ams,
+    project_file_with_ams_opts, pushall, report_topic, request_topic, resume, set_bed_temp,
+    set_fan, set_nozzle_temp, skip_objects, stop, ProjectFileOpts, AMS_DRY_MODE_OFF,
+    AMS_DRY_MODE_ON_TIME, LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 pub use oauth::{
     login_with_ticket, oauth_callback_url, oauth_login, open_default_browser, persist_login,

@@ -58,6 +58,41 @@ pub fn pushall(sequence_id: u64) -> String {
     .to_string()
 }
 
+/// C++ `MachineObject::command_get_version`.
+pub fn get_version(sequence_id: u64) -> String {
+    serde_json::json!({
+        "info": {
+            "sequence_id": sequence_id.to_string(),
+            "command": "get_version"
+        }
+    })
+    .to_string()
+}
+
+/// Studio `get_ota_version`: `info.module[]` entry named `ota`.
+pub fn parse_ota_version(payload: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(payload).ok()?;
+    let info = v.get("info")?;
+    if info.get("command").and_then(Value::as_str) != Some("get_version") {
+        return None;
+    }
+    let modules = info.get("module")?.as_array()?;
+    for module in modules {
+        if module.get("name").and_then(Value::as_str) != Some("ota") {
+            continue;
+        }
+        let ver = module
+            .get("sw_ver")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !ver.is_empty() {
+            return Some(ver.to_string());
+        }
+    }
+    None
+}
+
 fn print_command(sequence_id: u64, command: &str, param: &str) -> String {
     serde_json::json!({
         "print": {
@@ -528,6 +563,7 @@ pub fn parse_push_status(payload: &str) -> Option<MachineState> {
         wifi_signal: textish(print, "wifi_signal").unwrap_or_default(),
         hms: parse_hms_items(print.get("hms")),
         nozzle_rack: parse_nozzle_rack(print.get("device")),
+        ota_version: String::new(),
     })
 }
 
@@ -865,6 +901,23 @@ mod tests {
         assert_eq!(ams.trays.len(), 2);
         assert_eq!(ams.trays[0].filament_type, "PLA");
         assert_eq!(ams.trays[1].filament_type, "PETG");
+    }
+
+    #[test]
+    fn get_version_parses_ota_sw_ver() {
+        let req: Value = serde_json::from_str(&get_version(20001)).unwrap();
+        assert_eq!(req["info"]["command"], "get_version");
+        let json = r#"{
+            "info": {
+                "command": "get_version",
+                "module": [
+                    {"name": "esp32", "sw_ver": "00.00.00.00"},
+                    {"name": "ota", "sw_ver": "01.02.00.00"}
+                ]
+            }
+        }"#;
+        assert_eq!(parse_ota_version(json).as_deref(), Some("01.02.00.00"));
+        assert!(parse_ota_version(r#"{"print":{"command":"push_status"}}"#).is_none());
     }
 
     #[test]

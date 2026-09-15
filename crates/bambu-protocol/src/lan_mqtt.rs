@@ -9,8 +9,8 @@ use thiserror::Error;
 
 use crate::credentials::SlicerCredentials;
 use crate::mqtt::{
-    parse_ams, parse_push_status, pushall, report_topic, request_topic, LAN_MQTT_PORT,
-    LAN_MQTT_USER,
+    get_version, parse_ams, parse_ota_version, parse_push_status, pushall, report_topic,
+    request_topic, LAN_MQTT_PORT, LAN_MQTT_USER,
 };
 use crate::signing::maybe_sign_ex;
 use crate::tls::{lan_client_config, peek_peer_cn, TlsError};
@@ -112,15 +112,29 @@ pub async fn fetch_status_on(
         )
         .await
         .map_err(|err| MqttSessionError::Message(err.to_string()))?;
+    client
+        .publish(
+            request_topic(&serial),
+            QoS::AtMostOnce,
+            false,
+            get_version(crate::mqtt::next_sequence_id()),
+        )
+        .await
+        .map_err(|err| MqttSessionError::Message(err.to_string()))?;
 
     let deadline = Instant::now() + timeout;
     let mut machine = None;
     let mut ams = None;
+    let mut ota = None;
+    let mut status_at = None::<Instant>;
     while Instant::now() < deadline {
         let left = deadline.saturating_duration_since(Instant::now());
         match tokio::time::timeout(left.min(Duration::from_millis(400)), eventloop.poll()).await {
             Ok(Ok(Event::Incoming(Incoming::Publish(p)))) => {
                 let payload = String::from_utf8_lossy(&p.payload);
+                if let Some(ver) = parse_ota_version(&payload) {
+                    ota = Some(ver);
+                }
                 if machine.is_none() {
                     if let Some(mut st) = parse_push_status(&payload) {
                         if st.serial.is_empty() {
@@ -128,18 +142,33 @@ pub async fn fetch_status_on(
                         }
                         st.online = true;
                         machine = Some(st);
+                        status_at = Some(Instant::now());
                     }
                 }
                 if ams.is_none() {
                     ams = parse_ams(&payload);
                 }
-                if machine.is_some() {
+                if machine.is_some() && ota.is_some() {
+                    break;
+                }
+                if machine.is_some()
+                    && ota.is_none()
+                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800))
+                {
                     break;
                 }
             }
             Ok(Ok(_)) => {}
             Ok(Err(err)) => return Err(MqttSessionError::Message(err.to_string())),
-            Err(_) => continue,
+            Err(_) => {
+                if machine.is_some()
+                    && ota.is_none()
+                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800))
+                {
+                    break;
+                }
+                continue;
+            }
         }
     }
     let _ = client.disconnect().await;
@@ -150,7 +179,12 @@ pub async fn fetch_status_on(
                 auth.host
             ))
         })
-        .map(|st| (st, ams))
+        .map(|mut st| {
+            if let Some(ver) = ota {
+                st.ota_version = ver;
+            }
+            (st, ams)
+        })
 }
 
 pub struct PublishRequest<'a> {

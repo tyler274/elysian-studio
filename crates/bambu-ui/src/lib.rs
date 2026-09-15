@@ -40,8 +40,7 @@ use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
     describe_hms, load_cached_catalog, load_cloud_session, load_inventory, load_lan_codes,
     refresh_catalog, save_cloud_session, save_inventory, save_lan_codes, CloudApi, CloudBackend,
-    CloudDevice,
-    FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
+    CloudDevice, FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, text};
@@ -3403,6 +3402,7 @@ impl App {
                     id
                 }
             },
+            firmware: self.machine.ota_version.clone(),
         }
     }
 
@@ -4077,6 +4077,7 @@ mod device_sync {
             online: true,
             dev_name: "H2C".into(),
             access_code: "abcd1234".into(),
+            dev_ver: String::new(),
         });
         let label = app.cloud_devices[0].label();
         let _ = app.update(Message::PickDevice(label));

@@ -1010,6 +1010,7 @@ fn camera_worker(job: CameraJob, mut tx: iced::futures::channel::mpsc::Sender<Me
             cloud,
             serial_len = job.serial.len(),
             user_id_len = job.user_id.len(),
+            firmware_len = job.firmware.len(),
             "camera worker tick"
         );
         if lan {
@@ -1103,6 +1104,8 @@ enum WorkerCtrl {
 fn camera_error_backoff(err: &str) -> std::time::Duration {
     if cloud_error_is_rate_limited(err) {
         std::time::Duration::from_secs(60)
+    } else if err.contains("HTTP 403") || err.to_ascii_lowercase().contains("forbidden") {
+        std::time::Duration::from_secs(30)
     } else {
         std::time::Duration::from_secs(2)
     }
@@ -1115,11 +1118,17 @@ fn cloud_tutk_loop(
     tracing::debug!(
         target: "bambu_ui::camera",
         serial_len = job.serial.len(),
+        firmware_len = job.firmware.len(),
         region = %job.region,
         "cloud ttcode mint"
     );
     let mut api = CloudApi::new(&job.region, &job.token, &job.refresh).with_user_id(&job.user_id);
-    let result = stream_ttcode_frames(&mut api, &job.serial, &job.code, |frame| {
+    let firmware = if job.firmware.is_empty() {
+        None
+    } else {
+        Some(job.firmware.as_str())
+    };
+    let result = stream_ttcode_frames(&mut api, &job.serial, &job.code, firmware, |frame| {
         let bytes = frame.rgba.len();
         emit_latest(
             tx,
@@ -1140,7 +1149,7 @@ fn cloud_tutk_loop(
             if !emit_latest(tx, Message::ChamberShot(Err(text.clone()))) {
                 return WorkerCtrl::Stop;
             }
-            if cloud_error_is_rate_limited(&text) {
+            if cloud_error_is_rate_limited(&text) || text.contains("HTTP 403") {
                 WorkerCtrl::Wait(camera_error_backoff(&text))
             } else {
                 WorkerCtrl::Retry
@@ -1178,6 +1187,7 @@ pub(crate) struct CameraJob {
     pub token: String,
     pub refresh: String,
     pub user_id: String,
+    pub firmware: String,
 }
 
 pub(crate) fn camera_frames(job: CameraJob) -> impl iced::futures::Stream<Item = Message> {
@@ -1212,6 +1222,10 @@ mod tests {
         assert_eq!(
             camera_error_backoff("ttcode: cloud HTTP 429: error code: 1015").as_secs(),
             60
+        );
+        assert_eq!(
+            camera_error_backoff("ttcode: cloud HTTP 403: error code 8: forbidden").as_secs(),
+            30
         );
         assert_eq!(camera_error_backoff("LAN JPEG :6000 failed").as_secs(), 2);
     }
