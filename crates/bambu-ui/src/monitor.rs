@@ -6,7 +6,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill};
 
-use bambu_device::{AmsTray, AmsUnit, NozzleSlot, PrinterBackend};
+use bambu_device::{AmsState, AmsTray, AmsUnit, MachineState, NozzleSlot, PrinterBackend};
 use bambu_protocol::{
     capture_chamber, cloud_error_is_rate_limited, default_config_dir, describe_hms, jpeg_to_frame,
     load_cached_catalog, load_cloud_session, save_cloud_session, stream_rtsps_frames,
@@ -826,11 +826,7 @@ fn tray_card(tray: &AmsTray, active: bool) -> Element<'_, Message> {
     .into()
 }
 
-pub(crate) async fn snapshot_backend<B: PrinterBackend>(
-    backend: B,
-) -> Result<MonitorSnapshot, String> {
-    let st = backend.status().await.map_err(|e| e.to_string())?;
-    let ams = backend.ams().await.unwrap_or_default();
+fn monitor_snapshot(st: MachineState, ams: AmsState) -> MonitorSnapshot {
     let catalog = load_cached_catalog(bambu_protocol::default_config_dir(), "en");
     let hms_lines = st
         .hms
@@ -853,7 +849,7 @@ pub(crate) async fn snapshot_backend<B: PrinterBackend>(
             .collect::<Vec<_>>()
             .join(" · ")
     };
-    Ok(MonitorSnapshot {
+    MonitorSnapshot {
         line: format!(
             "{} {}% L{}/{} nozzle {:.0}/{:.0}°C bed {:.0}/{:.0}°C wifi {} spd {} · AMS {trays}",
             st.gcode_state,
@@ -870,7 +866,25 @@ pub(crate) async fn snapshot_backend<B: PrinterBackend>(
         machine: st,
         ams,
         hms_lines,
-    })
+    }
+}
+
+pub(crate) fn retain_ams(prev: &AmsState, next: AmsState) -> AmsState {
+    if next.reports_hardware() || !prev.reports_hardware() {
+        next
+    } else {
+        prev.clone()
+    }
+}
+
+pub(crate) fn retain_machine(prev: &MachineState, mut next: MachineState) -> MachineState {
+    if !next.nozzle_rack.supported && prev.nozzle_rack.supported {
+        next.nozzle_rack = prev.nozzle_rack.clone();
+    }
+    if next.ota_version.is_empty() && !prev.ota_version.is_empty() {
+        next.ota_version = prev.ota_version.clone();
+    }
+    next
 }
 
 pub(crate) async fn fetch_monitor(
@@ -880,11 +894,17 @@ pub(crate) async fn fetch_monitor(
     serial: String,
 ) -> Result<MonitorSnapshot, String> {
     if lan_ready(&host, &code) {
-        return snapshot_backend(lan_from(host, code, serial)).await;
+        let (st, ams) = lan_from(host, code, serial)
+            .machine_and_ams()
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(monitor_snapshot(st, ams));
     }
-    let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
+    let (st, ams) = cloud_backend(&serial)?
+        .machine_and_ams()
+        .await
         .map_err(|e| e.to_string())?;
-    snapshot_backend(backend).await
+    Ok(monitor_snapshot(st, ams))
 }
 
 pub(crate) async fn run_cmd(
@@ -963,9 +983,7 @@ pub(crate) async fn run_cmd(
     if lan_ready(&host, &code) {
         return go(lan_from(host, code, serial), cmd).await;
     }
-    let backend = CloudBackend::from_config_dir(bambu_protocol::default_config_dir())
-        .map_err(|e| e.to_string())?;
-    go(backend, cmd).await
+    go(cloud_backend(&serial)?, cmd).await
 }
 
 pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, String> {
@@ -986,6 +1004,21 @@ pub(crate) fn grab_chamber(host: String, code: String) -> Result<ChamberResult, 
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+fn cloud_backend(serial: &str) -> Result<CloudBackend, String> {
+    let dir = bambu_protocol::default_config_dir();
+    let mut session = load_cloud_session(&dir).map_err(|err| err.to_string())?;
+    if !serial.trim().is_empty() {
+        session.serial = serial.trim().to_string();
+    }
+    if !session.is_ready() {
+        return Err(
+            "cloud MQTT needs a login and a bound printer (last device is restored from /bind)"
+                .into(),
+        );
+    }
+    Ok(CloudBackend::new(session))
 }
 
 pub(crate) fn print_speed_active(state: &str) -> bool {
@@ -1312,5 +1345,29 @@ mod tests {
         assert!(sb.contains("27°C"));
         assert!(!sb.contains("drying"));
         assert_ne!(sa, sb);
+    }
+
+    #[test]
+    fn retain_ams_keeps_last_hardware() {
+        let prev = AmsState {
+            trays: vec![AmsTray {
+                id: 0,
+                filament_type: "PLA".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let kept = retain_ams(&prev, AmsState::default());
+        assert_eq!(kept.trays.len(), 1);
+        let next = AmsState {
+            trays: vec![AmsTray {
+                id: 1,
+                filament_type: "PETG".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let updated = retain_ams(&prev, next);
+        assert_eq!(updated.trays[0].filament_type, "PETG");
     }
 }

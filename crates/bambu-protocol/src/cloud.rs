@@ -230,6 +230,17 @@ impl CloudBackend {
         self
     }
 
+    /// One cloud MQTT `pushall` for machine + AMS (Device live monitor).
+    pub async fn machine_and_ams(&self) -> Result<(MachineState, AmsState), DeviceError> {
+        let (mut state, ams) = lan_mqtt::fetch_status_on(self.auth(), Duration::from_secs(8))
+            .await
+            .map_err(Self::map_err)?;
+        if state.serial.is_empty() {
+            state.serial = self.session.serial.clone();
+        }
+        Ok((state, ams.unwrap_or_default()))
+    }
+
     fn auth(&self) -> BrokerAuth<'_> {
         BrokerAuth {
             host: cloud_mqtt_host(&self.session.region),
@@ -254,13 +265,7 @@ impl CloudBackend {
 
 impl PrinterBackend for CloudBackend {
     async fn status(&self) -> Result<MachineState, DeviceError> {
-        let (mut state, _) = lan_mqtt::fetch_status_on(self.auth(), Duration::from_secs(8))
-            .await
-            .map_err(Self::map_err)?;
-        if state.serial.is_empty() {
-            state.serial = self.session.serial.clone();
-        }
-        Ok(state)
+        Ok(self.machine_and_ams().await?.0)
     }
 
     async fn start_print(&self, job: PrintJob) -> Result<(), DeviceError> {
@@ -322,12 +327,14 @@ impl PrinterBackend for CloudBackend {
     }
 
     async fn ams(&self) -> Result<AmsState, DeviceError> {
-        let (_, ams) = lan_mqtt::fetch_status_on(self.auth(), Duration::from_secs(8))
-            .await
-            .map_err(Self::map_err)?;
-        ams.ok_or(DeviceError::Message(
-            "push_status had no AMS block (external spool or older firmware)".into(),
-        ))
+        let ams = self.machine_and_ams().await?.1;
+        if ams.reports_hardware() {
+            Ok(ams)
+        } else {
+            Err(DeviceError::Message(
+                "push_status had no AMS block (external spool or older firmware)".into(),
+            ))
+        }
     }
 
     async fn camera_frame(&self) -> Result<Frame, DeviceError> {

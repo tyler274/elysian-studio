@@ -693,7 +693,7 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
         .find_map(|unit| optional_u8(unit, "humidity"))
         .or_else(|| ams.and_then(|a| optional_u8(a, "humidity")));
     let vt_tray = print.get("vt_tray").map(|tray| parse_tray(tray, 254, 254));
-    Some(AmsState {
+    let state = AmsState {
         slot_count: trays.len().max(slots.len()) as u8,
         active_slot: active,
         trays,
@@ -702,7 +702,8 @@ pub fn parse_ams(payload: &str) -> Option<AmsState> {
         unit_temp,
         vt_tray,
         units,
-    })
+    };
+    state.reports_hardware().then_some(state)
 }
 
 fn parse_tray(tray: &Value, fallback_id: u8, ams_id: u8) -> AmsTray {
@@ -1144,6 +1145,12 @@ mod tests {
         assert_eq!(ams.humidity, Some(2));
         assert!((ams.unit_temp.unwrap() - 32.5).abs() < 0.01);
         assert_eq!(ams.trays.len(), 8);
+    }
+
+    #[test]
+    fn parse_ams_skips_empty_block() {
+        assert!(parse_ams(r#"{"print":{"command":"push_status"}}"#).is_none());
+        assert!(parse_ams(r#"{"print":{"command":"push_status","ams":{"ams":[]}}}"#).is_none());
     }
 
     #[test]

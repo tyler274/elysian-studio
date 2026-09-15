@@ -145,15 +145,17 @@ pub async fn fetch_status_on(
                         status_at = Some(Instant::now());
                     }
                 }
-                if ams.is_none() {
-                    ams = parse_ams(&payload);
+                if let Some(parsed) = parse_ams(&payload) {
+                    if parsed.reports_hardware() || ams.is_none() {
+                        ams = Some(parsed);
+                    }
                 }
-                if machine.is_some() && ota.is_some() {
+                let ams_ready = ams.as_ref().is_some_and(AmsState::reports_hardware);
+                if machine.is_some() && ota.is_some() && ams_ready {
                     break;
                 }
                 if machine.is_some()
-                    && ota.is_none()
-                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800))
+                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(1500))
                 {
                     break;
                 }
@@ -162,8 +164,7 @@ pub async fn fetch_status_on(
             Ok(Err(err)) => return Err(MqttSessionError::Message(err.to_string())),
             Err(_) => {
                 if machine.is_some()
-                    && ota.is_none()
-                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800))
+                    && status_at.is_some_and(|t| t.elapsed() > Duration::from_millis(1500))
                 {
                     break;
                 }

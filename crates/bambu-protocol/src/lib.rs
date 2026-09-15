@@ -185,6 +185,23 @@ impl LanBackend {
         self
     }
 
+    /// One MQTT `pushall` for machine + AMS (Device live monitor).
+    pub async fn machine_and_ams(&self) -> Result<(MachineState, AmsState), DeviceError> {
+        let (mut state, ams) = lan_mqtt::fetch_status(
+            &self.host,
+            &self.access_code,
+            &self.serial,
+            Duration::from_secs(8),
+        )
+        .await
+        .map_err(Self::map_err)?;
+        if state.serial.is_empty() {
+            state.serial = self.resolved_serial();
+        }
+        let _ = self.device_cert_pem();
+        Ok((state, ams.unwrap_or_default()))
+    }
+
     fn map_err(err: impl std::fmt::Display) -> DeviceError {
         DeviceError::Message(err.to_string())
     }
@@ -265,19 +282,7 @@ impl LanBackend {
 
 impl PrinterBackend for LanBackend {
     async fn status(&self) -> Result<MachineState, DeviceError> {
-        let (mut state, _) = lan_mqtt::fetch_status(
-            &self.host,
-            &self.access_code,
-            &self.serial,
-            Duration::from_secs(8),
-        )
-        .await
-        .map_err(Self::map_err)?;
-        if state.serial.is_empty() {
-            state.serial = self.resolved_serial();
-        }
-        let _ = self.device_cert_pem();
-        Ok(state)
+        Ok(self.machine_and_ams().await?.0)
     }
 
     async fn start_print(&self, job: PrintJob) -> Result<(), DeviceError> {
@@ -347,17 +352,14 @@ impl PrinterBackend for LanBackend {
     }
 
     async fn ams(&self) -> Result<AmsState, DeviceError> {
-        let (_, ams) = lan_mqtt::fetch_status(
-            &self.host,
-            &self.access_code,
-            &self.serial,
-            Duration::from_secs(8),
-        )
-        .await
-        .map_err(Self::map_err)?;
-        ams.ok_or(DeviceError::Message(
-            "push_status had no AMS block (external spool or older firmware)".into(),
-        ))
+        let ams = self.machine_and_ams().await?.1;
+        if ams.reports_hardware() {
+            Ok(ams)
+        } else {
+            Err(DeviceError::Message(
+                "push_status had no AMS block (external spool or older firmware)".into(),
+            ))
+        }
     }
 
     async fn camera_frame(&self) -> Result<Frame, DeviceError> {

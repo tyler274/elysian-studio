@@ -162,6 +162,13 @@ pub struct AmsState {
     pub units: Vec<AmsUnit>,
 }
 
+impl AmsState {
+    /// Trays, AMS 2 Pro units, or an external spool were in `push_status`.
+    pub fn reports_hardware(&self) -> bool {
+        !self.trays.is_empty() || self.vt_tray.is_some() || !self.units.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NozzleSlot {
     pub id: i32,

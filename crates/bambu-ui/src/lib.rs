@@ -38,9 +38,10 @@ use bambu_gpu::{
 use bambu_io::{load_mesh, load_model, write_model_3mf};
 use bambu_model::{Model, TrianglePaint};
 use bambu_protocol::{
-    describe_hms, load_cached_catalog, load_cloud_session, load_inventory, load_lan_codes,
-    refresh_catalog, save_cloud_session, save_inventory, save_lan_codes, CloudApi, CloudBackend,
-    CloudDevice, FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts, StudioPrinter,
+    camera_serial_from_bind, describe_hms, load_cached_catalog, load_cloud_session, load_inventory,
+    load_lan_codes, refresh_catalog, save_cloud_session, save_inventory, save_lan_codes, CloudApi,
+    CloudBackend, CloudDevice, FilamentSpool, Inventory, LanBackend, LoginResult, ProjectFileOpts,
+    StudioPrinter,
 };
 use bambu_slicer::{check_print_path_conflicts, compute_filament_map, GroupSlot, GroupTray};
 use iced::widget::{button, checkbox, column, container, row, text};
@@ -105,20 +106,32 @@ pub fn run() -> iced::Result {
     {
         window.platform_specific.application_id = String::from(desktop::APP_ID);
     }
-    iced::application(move || App::new(adapter.clone()), App::update, App::view)
-        .subscription(App::subscription)
-        .title("Bambu Studio")
-        .theme(App::theme)
-        .style(|_, t| theme::window(t))
-        .settings(Settings {
-            antialiasing: true,
-            default_text_size: iced::Pixels(13.0),
-            id: Some(String::from("bambu-studio-rs")),
-            ..Settings::default()
-        })
-        .window(window)
-        .centered()
-        .run()
+    iced::application(
+        move || {
+            let app = App::new(adapter.clone());
+            let boot = if app.has_bearer {
+                Task::done(Message::RefreshDevices)
+            } else {
+                Task::none()
+            };
+            (app, boot)
+        },
+        App::update,
+        App::view,
+    )
+    .subscription(App::subscription)
+    .title("Bambu Studio")
+    .theme(App::theme)
+    .style(|_, t| theme::window(t))
+    .settings(Settings {
+        antialiasing: true,
+        default_text_size: iced::Pixels(13.0),
+        id: Some(String::from("bambu-studio-rs")),
+        ..Settings::default()
+    })
+    .window(window)
+    .centered()
+    .run()
 }
 
 fn window_icon() -> Option<window::Icon> {
@@ -202,6 +215,7 @@ pub struct App {
     ams: AmsState,
     hms_lines: Vec<String>,
     live_monitor: bool,
+    monitor_fetching: bool,
     camera_live: bool,
     stop_confirm: bool,
     slice_all_next: Option<usize>,
@@ -708,6 +722,7 @@ impl App {
             ams: AmsState::default(),
             hms_lines: Vec::new(),
             live_monitor: false,
+            monitor_fetching: false,
             camera_live: false,
             stop_confirm: false,
             slice_all_next: None,
@@ -794,6 +809,8 @@ impl App {
         app.has_bearer = false;
         app.live_monitor = false;
         app.camera_live = false;
+        app.selected_device = None;
+        app.cloud_devices.clear();
         app.stop_confirm = false;
         app.slice_all_next = None;
         app.recent_models.clear();
@@ -907,6 +924,10 @@ impl App {
                 access_code,
             })
             .collect();
+        if !self.serial.is_empty() {
+            let serial = self.serial.clone();
+            self.apply_device(&serial);
+        }
     }
 
     fn apply_studio_import(&mut self, imported: StudioImportUi) {
@@ -999,7 +1020,7 @@ impl App {
         let mut subs = vec![iced::event::listen_with(on_window_event)];
         if self.live_monitor {
             subs.push(
-                iced::time::every(std::time::Duration::from_secs(5))
+                iced::time::every(std::time::Duration::from_secs(10))
                     .map(|_| Message::RefreshStatus),
             );
         }
@@ -1299,11 +1320,11 @@ impl App {
             Message::DevicesLoaded(Ok(devices)) => {
                 self.cloud_devices = devices;
                 Self::persist_bind_lan_codes(&self.cloud_devices);
-                if self.access_code.is_empty() && !self.serial.is_empty() {
-                    let serial = self.serial.clone();
-                    self.apply_device(&serial);
-                }
+                let restored = self.restore_bound_printer();
                 self.status = format!("{} cloud device(s)", self.cloud_devices.len());
+                if restored {
+                    return self.start_live_sync();
+                }
             }
             Message::DevicesLoaded(Err(err)) => {
                 self.status = format!("devices: {err}");
@@ -1402,7 +1423,7 @@ impl App {
                 self.login_password.clear();
                 self.login_code.clear();
                 self.status = msg;
-                return Task::batch([Task::done(Message::RefreshDevices), self.start_live_sync()]);
+                return Task::done(Message::RefreshDevices);
             }
             Message::CloudLogged(Err(err)) => self.status = format!("login: {err}"),
             Message::Discover => {
@@ -1639,19 +1660,23 @@ impl App {
             Message::EnableSupport(v) => self.settings.enable_support = v,
             Message::RefreshStatus => return self.refresh_monitor(),
             Message::Status(Ok(snap)) => {
+                self.monitor_fetching = false;
                 if self.control_bed.is_empty() && snap.machine.bed_target_c > 0.0 {
                     self.control_bed = format!("{:.0}", snap.machine.bed_target_c);
                 }
                 if self.control_nozzle.is_empty() && snap.machine.nozzle_target_c > 0.0 {
                     self.control_nozzle = format!("{:.0}", snap.machine.nozzle_target_c);
                 }
-                self.machine = snap.machine.clone();
-                self.ams = snap.ams.clone();
+                self.machine = monitor::retain_machine(&self.machine, snap.machine.clone());
+                self.ams = monitor::retain_ams(&self.ams, snap.ams.clone());
                 self.hms_lines = snap.hms_lines.clone();
                 self.mqtt_status = snap.line.clone();
                 self.status = snap.line.clone();
             }
-            Message::Status(Err(err)) => self.status = format!("status failed: {err}"),
+            Message::Status(Err(err)) => {
+                self.monitor_fetching = false;
+                self.status = format!("status failed: {err}");
+            }
             Message::Pause => return self.run_print_cmd(PrintCmd::Pause),
             Message::Resume => return self.run_print_cmd(PrintCmd::Resume),
             Message::Stop => {
@@ -3320,6 +3345,18 @@ impl App {
         self.sync_keep_solid();
     }
 
+    fn restore_bound_printer(&mut self) -> bool {
+        if self.cloud_devices.is_empty() {
+            return false;
+        }
+        let serial = camera_serial_from_bind(&self.serial, &self.cloud_devices);
+        if serial.is_empty() {
+            return false;
+        }
+        self.apply_device(&serial);
+        true
+    }
+
     fn start_live_sync(&mut self) -> Task<Message> {
         if !self.can_monitor() {
             return Task::none();
@@ -3493,7 +3530,11 @@ impl App {
         (old, new)
     }
 
-    fn refresh_monitor(&self) -> Task<Message> {
+    fn refresh_monitor(&mut self) -> Task<Message> {
+        if self.monitor_fetching {
+            return Task::none();
+        }
+        self.monitor_fetching = true;
         let host = self.host.clone();
         let code = self.access_code.clone();
         let serial = self.serial.clone();
@@ -3985,6 +4026,31 @@ mod device_sync {
         assert_ne!(a, b);
         let snap = app.snapshot();
         assert!(snap.labels.iter().any(|s| s == "File"));
+    }
+
+    #[test]
+    fn status_keeps_ams_and_rack_when_push_omits_them() {
+        let mut app = App::new_for_gui_test();
+        app.ams.trays.push(AmsTray {
+            id: 0,
+            filament_type: "PLA".into(),
+            ..Default::default()
+        });
+        app.machine.nozzle_rack.supported = true;
+        app.machine.ota_version = "01.02.00.00".into();
+        app.monitor_fetching = true;
+        let snap = MonitorSnapshot {
+            line: "IDLE".into(),
+            machine: MachineState::default(),
+            ams: AmsState::default(),
+            hms_lines: Vec::new(),
+        };
+        let _ = app.update(Message::Status(Ok(Box::new(snap))));
+        assert_eq!(app.ams.trays.len(), 1);
+        assert_eq!(app.ams.trays[0].filament_type, "PLA");
+        assert!(app.machine.nozzle_rack.supported);
+        assert_eq!(app.machine.ota_version, "01.02.00.00");
+        assert!(!app.monitor_fetching);
     }
 
     #[test]
