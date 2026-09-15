@@ -907,19 +907,48 @@ impl CloudApi {
         if let Some(ch) = channel.filter(|c| !c.is_empty()) {
             body["channel"] = json!(ch);
         }
-        let uid = self.ttcode_user_id();
+        let bind_uid = self.auth_user_id();
+        let plugin_uid = self.ttcode_user_id();
         tracing::debug!(
             target: "bambu_protocol::cloud",
             dev = %redact_id(dev_id),
             firmware = firmware.unwrap_or(""),
             protocols = ?protocols,
             channel_set = channel.map(|c| !c.is_empty()).unwrap_or(false),
-            user_id_len = uid.len(),
-            user_id_u_prefix = uid.starts_with("u_"),
+            user_id_len = bind_uid.len(),
+            user_id_u_prefix = bind_uid.starts_with("u_"),
             "POST ttcode"
         );
-        let v =
-            self.send_json_typed("POST", ttcode_path(), Some(&body), true, Some(uid.as_str()))?;
+        let v = match self.send_json_typed(
+            "POST",
+            ttcode_path(),
+            Some(&body),
+            true,
+            Some(bind_uid.as_str()),
+        ) {
+            Ok(v) => v,
+            Err(err)
+                if is_cloud_forbidden(&err) && plugin_uid != bind_uid && !plugin_uid.is_empty() =>
+            {
+                tracing::debug!(
+                    target: "bambu_protocol::cloud",
+                    user_id_len = plugin_uid.len(),
+                    user_id_u_prefix = plugin_uid.starts_with("u_"),
+                    "retry POST ttcode with plugin user-id"
+                );
+                match self.send_json_typed(
+                    "POST",
+                    ttcode_path(),
+                    Some(&body),
+                    true,
+                    Some(plugin_uid.as_str()),
+                ) {
+                    Ok(v) => v,
+                    Err(_) => return Err(err),
+                }
+            }
+            Err(err) => return Err(err),
+        };
         let creds = parse_camera_creds(&v).ok_or_else(|| {
             CloudApiError::Message("ttcode response missing uid/authkey/channel".into())
         })?;
